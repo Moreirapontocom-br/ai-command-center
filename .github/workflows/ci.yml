@@ -46,3 +46,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check build for leaked credentials
+        run: npm run check:secrets

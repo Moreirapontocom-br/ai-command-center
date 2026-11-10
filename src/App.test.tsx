@@ -59,5 +59,6 @@ describe('App', () => {
 
     await user.click(within(getNav()).getByRole('button', { name: 'Agentes' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('heading', { level: 1, name: 'Agentes' })).toBeInTheDocument();
   });
 });

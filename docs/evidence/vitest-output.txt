@@ -1,0 +1,22 @@
+ ✓ src/features/tasks/TaskList.test.tsx > TaskList > exibe título, agente responsável e status de cada tarefa
+ ✓ src/features/tasks/TaskList.test.tsx > TaskList > exibe estado vazio quando não há tarefas
+ ✓ src/features/tasks/taskUtils.test.ts > countTasksByStatus > conta tarefas por status, incluindo status sem tarefas
+ ✓ src/features/tasks/taskUtils.test.ts > countTasksByStatus > retorna zeros para lista vazia
+ ✓ src/features/tasks/taskUtils.test.ts > countOpenTasksForAgent > ignora tarefas concluídas e de outros agentes
+ ✓ src/App.test.tsx > App > abre no dashboard com aviso de dados fictícios
+ ✓ src/App.test.tsx > App > exibe os agentes ChatGPT, Claude Code e Gemini
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > atualiza nome acessível e aria-expanded conforme o estado
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > não expõe a gaveta como diálogo quando fechada
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > move o foco para dentro da gaveta ao abrir
+ ✓ src/App.test.tsx > App > navega entre as seções pela sidebar
+ ✓ src/App.test.tsx > App > identifica todas as tarefas demonstrativas como fictícias
+ ✓ src/App.test.tsx > App > abre e fecha o menu mobile
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha com Escape e devolve o foco ao botão do menu
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha pelo botão interno e devolve o foco
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha ao clicar no overlay e devolve o foco
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > mantém o foco do Tab dentro da gaveta (nos dois sentidos)
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > torna o conteúdo de fundo inerte apenas com a gaveta aberta
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > navega pela gaveta, fecha o menu e devolve o foco
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha a gaveta ao mudar para o layout desktop
+ Test Files  4 passed (4)
+      Tests  20 passed (20)

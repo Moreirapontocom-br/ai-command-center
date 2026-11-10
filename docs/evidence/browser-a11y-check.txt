@@ -1,0 +1,15 @@
+# Verificação em navegador real (Chrome 157 headless via DevTools Protocol), 390x844 e 1440x900
+
+PASS mobile, gaveta fechada: sidebar invisível hidden
+PASS Tab com gaveta fechada não entra na sidebar — Abrir menu → <main> (rolável) → contêiner raiz (rolável) → Abrir menu; nenhum foco na sidebar
+PASS foco inicial dentro da gaveta Fechar menu [drawer]
+PASS fundo com inert
+PASS Tab circula só dentro da gaveta Dashboard [drawer] → Agentes [drawer] → Tarefas [drawer] → Fechar menu [drawer] → Dashboard [drawer] → Agentes [drawer]
+PASS Shift+Tab circula só dentro da gaveta Dashboard [drawer] → Fechar menu [drawer] → Tarefas [drawer]
+PASS clique no fundo atinge o overlay sidebar-overlay
+PASS Escape fecha
+PASS foco volta ao botão do menu Abrir menu [fora]
+PASS fundo sem inert após fechar
+PASS desktop: sidebar visível
+PASS desktop: navegação funciona
+PASS resize para desktop fecha a gaveta

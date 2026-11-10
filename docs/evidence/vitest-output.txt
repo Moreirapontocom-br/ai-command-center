@@ -1,0 +1,12 @@
+ ✓ src/features/tasks/TaskList.test.tsx > TaskList > exibe título, agente responsável e status de cada tarefa 61ms
+ ✓ src/features/tasks/TaskList.test.tsx > TaskList > exibe estado vazio quando não há tarefas 2ms
+ ✓ src/features/tasks/taskUtils.test.ts > countTasksByStatus > conta tarefas por status, incluindo status sem tarefas 2ms
+ ✓ src/features/tasks/taskUtils.test.ts > countTasksByStatus > retorna zeros para lista vazia 0ms
+ ✓ src/features/tasks/taskUtils.test.ts > countOpenTasksForAgent > ignora tarefas concluídas e de outros agentes 0ms
+ ✓ src/App.test.tsx > App > abre no dashboard com aviso de dados fictícios 71ms
+ ✓ src/App.test.tsx > App > exibe os agentes ChatGPT, Claude Code e Gemini 9ms
+ ✓ src/App.test.tsx > App > navega entre as seções pela sidebar 99ms
+ ✓ src/App.test.tsx > App > identifica todas as tarefas demonstrativas como fictícias 1ms
+ ✓ src/App.test.tsx > App > abre e fecha o menu mobile 102ms
+ Test Files  3 passed (3)
+      Tests  10 passed (10)

@@ -30,8 +30,21 @@ Os dados fictícios são identificados de três formas:
 ## Responsividade
 
 - `≥ 1024px (lg)`: sidebar fixa à esquerda.
-- `< 1024px`: sidebar vira gaveta, aberta pelo botão de menu no cabeçalho, com overlay; fecha ao navegar, ao clicar no overlay ou no botão "Fechar menu".
+- `< 1024px`: sidebar vira gaveta, aberta pelo botão de menu no cabeçalho, com overlay; fecha ao navegar, ao clicar no overlay, no botão "Fechar menu" ou com Escape.
 - Grades adaptam de 1 a 4 colunas conforme a largura.
+
+## Acessibilidade da gaveta mobile
+
+- O botão do cabeçalho alterna o nome acessível ("Abrir menu" / "Fechar menu") e `aria-expanded`, além de `aria-controls="app-sidebar"`.
+- Aberta, a gaveta é um `role="dialog"` com `aria-modal="true"` e o foco vai para o botão "Fechar menu".
+- O conteúdo de fundo (cabeçalho + `<main>`) recebe o atributo `inert`. O Tab e o Shift+Tab circulam só dentro da gaveta.
+- Ao fechar, por qualquer meio, o foco volta ao botão do menu.
+- Fechada no mobile, a gaveta fica `visibility: hidden` e sai da ordem de foco. A visibilidade só é animada no fechamento, para que o foco inicial funcione ao abrir.
+- Se a janela passar para o layout desktop com a gaveta aberta, ela é fechada (`matchMedia`) para não deixar um estado modal invisível.
+
+## Integração contínua
+
+`.github/workflows/ci.yml` roda em pull requests para a `main` (e manualmente): `npm ci` → `npm test` → `npm run lint` → `npm run build`, em Node 22.x e 24.x (faixa de `engines`). Permissões: `contents: read`; actions fixadas por SHA; `persist-credentials: false`; sem segredos.
 
 ## Fora do escopo (não implementado)
 

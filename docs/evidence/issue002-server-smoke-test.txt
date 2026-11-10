@@ -1,0 +1,52 @@
+# Teste de fumaça do servidor real (npm run server), SEM credencial configurada — 2026-11-10T20:26Z
+
+$ curl http://127.0.0.1:8787/api/status
+{"configured":false,"authMode":"none","repositories":["Moreirapontocom-br/ai-command-center"]}  [HTTP 200]
+
+$ curl http://127.0.0.1:8787/api/repos/Moreirapontocom-br/ai-command-center/snapshot
+{"error":{"code":"missing_credentials","message":"Nenhuma credencial do GitHub está configurada no servidor."}}  [HTTP 503]
+
+$ curl http://127.0.0.1:8787/api/repos/torvalds/linux/snapshot
+{"error":{"code":"not_found","message":"Recurso não encontrado ou não autorizado neste servidor."}}  [HTTP 404]
+
+$ curl http://127.0.0.1:8787/api/graphql
+{"error":{"code":"not_found","message":"Recurso não encontrado ou não autorizado neste servidor."}}  [HTTP 404]
+
+$ curl http://127.0.0.1:8787/api/repos/Moreirapontocom-br/ai-command-center/snapshot?query=mutation
+{"error":{"code":"bad_request","message":"Parâmetros inválidos."}}  [HTTP 400]
+
+$ curl -X POST http://127.0.0.1:8787/api/status
+{"error":{"code":"method_not_allowed","message":"Este servidor aceita apenas operações de leitura (GET)."}}  [HTTP 405]
+
+$ curl -X DELETE http://127.0.0.1:8787/api/repos/Moreirapontocom-br/ai-command-center/snapshot
+{"error":{"code":"method_not_allowed","message":"Este servidor aceita apenas operações de leitura (GET)."}}  [HTTP 405]
+
+$ curl -H Host: evil.example http://127.0.0.1:8787/api/status
+{"error":{"code":"forbidden_origin","message":"Origem da requisição não autorizada."}}  [HTTP 403]
+
+$ curl -H Origin: https://evil.example http://127.0.0.1:8787/api/status
+{"error":{"code":"forbidden_origin","message":"Origem da requisição não autorizada."}}  [HTTP 403]
+
+# Log do servidor (somente caminho, sem query string nem credenciais):
+{"time":"2026-11-10T20:26:44.377Z","level":"info","message":"Servidor somente leitura iniciado","url":"http://127.0.0.1:8787","credential":"nenhuma (modo demonstração)","repositories":"Moreirapontocom-br/ai-command-center"}
+{"time":"2026-11-10T20:26:44.617Z","level":"info","message":"request","method":"GET","path":"/api/status","status":200,"ms":1}
+{"time":"2026-11-10T20:26:44.702Z","level":"info","message":"request","method":"GET","path":"/api/status","status":200,"ms":0}
+{"time":"2026-11-10T20:26:44.746Z","level":"info","message":"request","method":"GET","path":"/api/repos/Moreirapontocom-br/ai-command-center/snapshot","status":503,"ms":0}
+{"time":"2026-11-10T20:26:44.795Z","level":"info","message":"request","method":"GET","path":"/api/repos/torvalds/linux/snapshot","status":404,"ms":1}
+{"time":"2026-11-10T20:26:44.845Z","level":"info","message":"request","method":"GET","path":"/api/graphql","status":404,"ms":1}
+{"time":"2026-11-10T20:26:44.886Z","level":"info","message":"request","method":"GET","path":"/api/repos/Moreirapontocom-br/ai-command-center/snapshot","status":400,"ms":0}
+{"time":"2026-11-10T20:26:44.927Z","level":"info","message":"request","method":"POST","path":"/api/status","status":405,"ms":1}
+{"time":"2026-11-10T20:26:44.977Z","level":"info","message":"request","method":"DELETE","path":"/api/repos/Moreirapontocom-br/ai-command-center/snapshot","status":405,"ms":0}
+{"time":"2026-11-10T20:26:45.028Z","level":"info","message":"request","method":"GET","path":"/api/status","status":403,"ms":1}
+{"time":"2026-11-10T20:26:45.098Z","level":"info","message":"request","method":"GET","path":"/api/status","status":403,"ms":0}
+
+# Recusas de configuração insegura (processo encerra com código 1):
+$ API_HOST=0.0.0.0 npm run server
+{"time":"2026-11-10T20:26:46.113Z","level":"error","message":"API_HOST deve ser um endereço de loopback (127.0.0.1, localhost ou ::1). O servidor não possui autenticação de usuários e não pode ser exposto à rede nesta versão."}
+exit=1
+$ GITHUB_TOKEN=ghp_<token clássico fictício> npm run server
+{"time":"2026-11-10T20:26:47.110Z","level":"error","message":"GITHUB_TOKEN deve ser um token fine-grained (prefixo github_pat_) com permissões somente de leitura."}
+exit=1
+$ VITE_GITHUB_TOKEN=<fictício> npm run server
+{"time":"2026-11-10T20:26:48.104Z","level":"error","message":"Variáveis com prefixo VITE_ seriam expostas ao navegador e não podem conter credenciais: VITE_GITHUB_TOKEN."}
+exit=1

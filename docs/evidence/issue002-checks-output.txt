@@ -1,0 +1,139 @@
+# Issue #002 — verificações locais (2026-11-10T20:25Z), Node v24.18.1, branch feature/002-github-integration
+
+$ npm test
+ RUN  v5.1.0 C:/Users/rmmo0/OneDrive/Desktop/Pasta pontocom-br/AI Command Center
+ ✓ server/config.test.ts > configuração > sem token, inicia em modo demonstração 4ms
+ ✓ server/config.test.ts > configuração > aceita token fine-grained 1ms
+ ✓ server/config.test.ts > configuração > recusa tokens que não são fine-grained, sem repetir o valor na mensagem 1ms
+ ✓ server/config.test.ts > configuração > recusa credenciais em variáveis VITE_ (seriam embutidas no frontend) 2ms
+ ✓ server/config.test.ts > configuração > recusa expor o servidor fora do loopback 1ms
+ ✓ server/config.test.ts > configuração > valida a porta 0ms
+ ✓ server/config.test.ts > proteção contra exposição de credenciais > o provedor de credencial não revela o token ao ser serializado ou inspecionado 1ms
+ ✓ server/config.test.ts > proteção contra exposição de credenciais > o logger mascara tokens e chaves privadas 2ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > converte um repositório acessível para o contrato interno 14ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > não inventa dados para um repositório sem issues nem PRs 3ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > descarta itens com campos obrigatórios ausentes e registra aviso 4ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > trata campos opcionais ausentes ou inválidos como indisponíveis 3ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > converte erros parciais do GraphQL em avisos sanitizados 4ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > marca listas truncadas e contagem parcial de revisão 2ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > lança "forbidden" quando o repositório não é acessível ao token (NOT_FOUND) 3ms
+ ✓ server/github/normalize.test.ts > normalizeSnapshot > lança "upstream_invalid" para respostas inesperadas 2ms
+ ✓ server/github/normalize.test.ts > Pull Requests > PR em draft: aberto, sem estado de revisão aplicável 1ms
+ ✓ server/github/normalize.test.ts > Pull Requests > PR aberto sem exigência de revisão não é contado como aguardando revisão 3ms
+ ✓ server/github/normalize.test.ts > Pull Requests > PR aberto com revisão exigida ou revisor solicitado aguarda revisão 1ms
+ ✓ server/github/normalize.test.ts > Pull Requests > PR fechado sem merge 1ms
+ ✓ server/github/normalize.test.ts > Pull Requests > PR incorporado 0ms
+ ✓ server/github/normalize.test.ts > Pull Requests > PR com estado desconhecido é descartado 0ms
+ ✓ server/github/normalize.test.ts > Pull Requests > conta aguardando revisão apenas quando confirmado 1ms
+ ✓ server/github/normalize.test.ts > mapeamentos > mapeia o estado de CI do GitHub 1ms
+ ✓ server/github/normalize.test.ts > mapeamentos > alterações solicitadas 0ms
+ ✓ server/snapshotService.test.ts > snapshotService > consulta o GitHub com owner e nome separados e usa cache dentro do TTL 17ms
+ ✓ server/snapshotService.test.ts > snapshotService > atualização manual respeita o intervalo mínimo entre consultas 3ms
+ ✓ server/snapshotService.test.ts > snapshotService > agrupa requisições simultâneas em uma única consulta 1ms
+ ✓ server/snapshotService.test.ts > snapshotService > serve o último snapshot marcado como desatualizado quando a rede falha 3ms
+ ✓ server/snapshotService.test.ts > snapshotService > não serve cache quando a credencial passa a ser recusada 8ms
+ ✓ server/snapshotService.test.ts > snapshotService > após limite de requisições, não consulta o GitHub até o horário de reset 5ms
+ ✓ server/snapshotService.test.ts > snapshotService > erros inesperados viram "internal" sem vazar detalhes 2ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > envia apenas a consulta fixa, com o token somente no cabeçalho Authorization 92ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > a consulta do snapshot é somente leitura 2ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > falha de autenticação (401) 6ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > erro de permissão (403 sem indicação de limite) 2ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > repositório fora do escopo do token (NOT_FOUND no GraphQL) 2ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > limite primário (403 + x-ratelimit-remaining: 0) informa quando a cota volta 3ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > limite secundário (429 + retry-after) 3ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > limite sinalizado no corpo GraphQL (RATE_LIMITED) 2ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > falha de conexão 1ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > tempo limite excedido 28ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > resposta que não é JSON ou sem dados 3ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > erro 5xx do GitHub 2ms
+ ✓ server/github/client.test.ts > cliente GraphQL do GitHub > devolve erros parciais junto com os dados 6ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > /api/status informa se há credencial sem expor o token 101ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > /api/status sem credencial 13ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > snapshot sem credencial responde "missing_credentials" 10ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > serve o snapshot de um repositório autorizado (sem diferenciar maiúsculas) 11ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > recusa repositórios fora da lista autorizada sem consultar o GitHub 12ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > não funciona como proxy aberto da API do GitHub 15ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > valida parâmetros 15ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > aceita apenas operações de leitura 12ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > bloqueia Host externo (DNS rebinding), Origin desconhecida e requisições cross-site 11ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > limita requisições por cliente 8ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > erros do GitHub viram respostas normalizadas, sem token nem detalhes internos 28ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > erro inesperado responde 500 genérico 9ms
+ ✓ server/http/app.test.ts > servidor HTTP somente leitura > não registra a query string nos logs 5ms
+ ✓ src/features/tasks/taskUtils.test.ts > countTasksByStatus > conta tarefas por status, incluindo status sem tarefas 2ms
+ ✓ src/features/tasks/taskUtils.test.ts > countTasksByStatus > retorna zeros para lista vazia 0ms
+ ✓ src/features/tasks/taskUtils.test.ts > countOpenTasksForAgent > ignora tarefas concluídas e de outros agentes 0ms
+ ✓ src/services/githubApi.test.ts > githubApi > consulta apenas endpoints internos de mesma origem 9ms
+ ✓ src/services/githubApi.test.ts > githubApi > lê o status da integração 2ms
+ ✓ src/services/githubApi.test.ts > githubApi > propaga o código de erro normalizado do servidor 3ms
+ ✓ src/services/githubApi.test.ts > githubApi > falha de conexão com o servidor local 2ms
+ ✓ src/services/githubApi.test.ts > githubApi > resposta que não é JSON (servidor não iniciado / proxy ausente) 1ms
+ ✓ src/services/githubApi.test.ts > githubApi > JSON em formato inesperado 1ms
+ ✓ src/features/tasks/TaskList.test.tsx > TaskList > exibe título, agente responsável e status de cada tarefa 97ms
+ ✓ src/features/tasks/TaskList.test.tsx > TaskList > exibe estado vazio quando não há tarefas 4ms
+stderr | src/App.test.tsx > App > abre no dashboard com aviso de dados fictícios
+An update to GitHubDataProvider inside a test was not wrapped in act(...).
+When testing, code that causes React state updates should be wrapped into act(...):
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > atualiza nome acessível e aria-expanded conforme o estado 157ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > não expõe a gaveta como diálogo quando fechada 9ms
+stderr | src/App.test.tsx > App > exibe os agentes ChatGPT, Claude Code e Gemini
+An update to GitHubDataProvider inside a test was not wrapped in act(...).
+When testing, code that causes React state updates should be wrapped into act(...):
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+ ✓ src/App.test.tsx > App > abre no dashboard com aviso de dados fictícios 122ms
+ ✓ src/App.test.tsx > App > exibe os agentes ChatGPT, Claude Code e Gemini 19ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > move o foco para dentro da gaveta ao abrir 66ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha com Escape e devolve o foco ao botão do menu 89ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > mostra carregamento e depois os indicadores reais 185ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > credencial ausente: mantém o modo demonstração sem dados do GitHub 33ms
+ ✓ src/App.test.tsx > App > navega entre as seções pela sidebar 127ms
+ ✓ src/App.test.tsx > App > identifica todas as tarefas demonstrativas como fictícias 1ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha pelo botão interno e devolve o foco 62ms
+ ✓ src/App.test.tsx > App > abre e fecha o menu mobile 103ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > servidor indisponível: erro de rede com nova tentativa 90ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > erro "unauthorized" exibe "502" 24ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > erro "forbidden" exibe "502" 24ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > erro "rate_limited" exibe "429" 31ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha ao clicar no overlay e devolve o foco 93ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > erro "network" exibe "502" 33ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > erro "upstream_invalid" exibe "502" 30ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > limite de requisições informa quando a cota volta 28ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > dados desatualizados vindos do cache do servidor 33ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > atualização manual que falha mantém os dados e os marca como desatualizados 64ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > atualização manual bem-sucedida pede dados novos ao servidor 88ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > mantém o foco do Tab dentro da gaveta (nos dois sentidos) 341ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > lista issues com número, título, repositório, estado, responsável, labels, data e link 114ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > torna o conteúdo de fundo inerte apenas com a gaveta aberta 126ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > navega pela gaveta, fecha o menu e devolve o foco 79ms
+ ✓ src/components/layout/AppLayout.test.tsx > AppLayout — menu mobile > fecha a gaveta ao mudar para o layout desktop 49ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > repositório sem issues mostra estado vazio 107ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > diferencia PR draft, pronto, incorporado e fechado sem merge 105ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > lista branches com commit HEAD 82ms
+ ✓ src/features/github/GitHubIntegration.test.tsx > integração GitHub na interface > páginas do GitHub não mostram dados fictícios quando a integração está fora do ar 58ms
+ Test Files  11 passed (11)
+      Tests  101 passed (101)
+   Start at  17:25:57
+   Duration  13.17s (environment 51%, setup 28%, tests 13%, import 3%, transform 3%, worker 1%)
+
+$ npm run lint
+(sem problemas)
+
+$ npm run build
+computing gzip size...
+dist/index.html                   0.47 kB │ gzip:  0.30 kB
+dist/assets/index-DafavoBI.css   18.07 kB │ gzip:  4.43 kB
+dist/assets/index-BCO30ysg.js   248.32 kB │ gzip: 76.64 kB
+
+✓ built in 189ms
+
+$ npm run check:secrets
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.

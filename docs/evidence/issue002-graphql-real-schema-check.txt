@@ -1,0 +1,16 @@
+# Validação da consulta GraphQL fixa contra a API real do GitHub — 2026-11-10T20:30Z
+#
+# Execução: REPO_SNAPSHOT_QUERY (server/github/queries.ts) enviada com `gh api graphql` (credencial do gh CLI do PO,
+# NÃO a credencial da aplicação) e a resposta passada por normalizeSnapshot (server/github/normalize.ts).
+# Objetivo: provar que a consulta e a normalização funcionam com o schema real. O caminho completo com o token
+# fine-grained da aplicação (npm run server + .env.local) ainda depende da configuração manual do PO.
+# Títulos de issues omitidos de propósito (repositório privado).
+
+erros GraphQL: []
+rateLimit: {"cost":2,"remaining":4992,"resetAt":"2026-11-10T20:59:33Z"}
+repo: Moreirapontocom-br/ai-command-center | default: main | privado: true
+metrics: {"openIssues":23,"closedIssues":0,"openPullRequests":0,"mergedPullRequests":1,"closedUnmergedPullRequests":0,"awaitingReview":{"count":0,"undetermined":0,"complete":true},"branches":2,"ci":{"defaultBranch":"unknown","openPullRequests":{"success":0,"failure":0,"pending":0,"unknown":0}}}
+issues: #18 open, #13 open, #12 open, #10 open, #8 open, #24 open, #23 open, #22 open, #21 open, #20 open, #19 open, #17 open, #16 open, #15 open, #14 open, #11 open, #9 open, #7 open, #6 open, #5 open, #4 open, #3 open, #2 open
+PRs: #1 merged review=not_applicable ci=success feature/001-project-setup->main
+branches: main*@90f1849 ci=unknown, feature/001-project-setup@0e17cc2 ci=success
+warnings: [] | truncated: {"openIssues":false,"openPullRequests":false,"branches":false}

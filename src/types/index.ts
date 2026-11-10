@@ -23,4 +23,4 @@ export interface Task {
   updatedAt: string;
 }
 
-export type ViewId = 'dashboard' | 'agentes' | 'tarefas';
+export type ViewId = 'dashboard' | 'issues' | 'pull-requests' | 'branches' | 'agentes' | 'tarefas';

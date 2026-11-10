@@ -1,10 +1,32 @@
 import type { Ref } from 'react';
+import { useGitHubData } from '../../features/github/githubDataContext';
 
 interface HeaderProps {
   title: string;
   isMenuOpen: boolean;
   onMenuToggle: () => void;
   menuButtonRef?: Ref<HTMLButtonElement>;
+}
+
+function DataSourceBadge() {
+  const { state } = useGitHubData();
+  // Só indica dados reais quando um snapshot do GitHub foi de fato carregado.
+  if (state.phase === 'ready') {
+    return state.stale ? (
+      <span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-900">
+        GitHub: dados desatualizados
+      </span>
+    ) : (
+      <span className="shrink-0 rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800">
+        GitHub conectado
+      </span>
+    );
+  }
+  return (
+    <span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-900">
+      Modo demonstração
+    </span>
+  );
 }
 
 export function Header({ title, isMenuOpen, onMenuToggle, menuButtonRef }: HeaderProps) {
@@ -29,9 +51,7 @@ export function Header({ title, isMenuOpen, onMenuToggle, menuButtonRef }: Heade
         </svg>
       </button>
       <h1 className="min-w-0 flex-1 truncate text-lg font-semibold">{title}</h1>
-      <span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-900">
-        Modo demonstração
-      </span>
+      <DataSourceBadge />
     </header>
   );
 }

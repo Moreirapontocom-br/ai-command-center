@@ -6,6 +6,58 @@
 
 Decisões de arquitetura, segurança e configuração: [`GITHUB_INTEGRATION.md`](GITHUB_INTEGRATION.md).
 
+## Atualização — rodada de segurança (revisão independente)
+
+Evidências: [`evidence/issue002-security-round-checks.txt`](evidence/issue002-security-round-checks.txt). Nenhum valor de credencial foi exibido, registrado ou versionado; os achados mostram só uma impressão digital SHA-256 truncada.
+
+### 1. Token exposto no commit `c368bbf`
+- **Continua acessível.** Está em `.env.example` nos commits `c368bbf` e `3aaca74`, alcançáveis pela branch local e por `origin/feature/002-github-integration`. A API do GitHub ainda serve esse conteúdo (`contents/.env.example?ref=c368bbf`).
+- **Exposição limitada:** o repositório é privado e não tem forks. O secret scanning do GitHub está desativado, então o GitHub não gerou alerta nem revogou o token.
+- **A árvore atual está limpa** (`e47475e`). Nada foi revogado nem reescrito: as duas ações dependem do PO.
+
+### 2. Verificação de segredos no repositório
+- O novo `scripts/check-secrets.mjs` tem quatro modos: `tracked`, `commits <range>`, `history` e `staged`.
+- O núcleo fica em `scripts/secret-scan.mjs`, sem dependências externas.
+- Na CI, o novo job `secret-scan` analisa os arquivos versionados e as linhas adicionadas por cada commit do PR (`base..head`).
+- O hook opcional `.githooks/pre-commit` usa o modo `staged`.
+- Regras:
+  - tokens do GitHub, chaves PEM e chaves AWS;
+  - o valor exato do `GITHUB_TOKEN` local;
+  - qualquer valor preenchido em variável sensível de `.env.example`;
+  - arquivos `.env*` versionados.
+- Exceções só por SHA-256 completo, com justificativa. Hoje a única exceção é o canário fictício dos testes.
+- **Consequência esperada:** o job `secret-scan` do PR #25 **falha** enquanto `c368bbf` estiver no intervalo do PR. Isso é intencional. O job deixa de falhar quando o histórico for reescrito ou quando o PO decidir registrar a impressão digital do token, depois de revogado, como incidente conhecido.
+
+### 3. Testes da verificação
+- `scripts/secret-scan.test.mjs` tem 20 testes, com tokens no formato real gerados em tempo de execução.
+- Repetem o cenário de `c368bbf` em repositórios Git temporários: `.env.example` com token faz `tracked`, `commits` e `history` saírem com código 1.
+- Também verificam que, depois da correção, a árvore passa, mas o histórico continua acusando o commit.
+- A saída nunca contém o valor.
+
+### 4. Revisão do `gh-cli`
+| Ponto | Situação |
+|---|---|
+| Subprocesso | `execFile` sem shell, argumentos congelados, timeout de 5 s, saída de até 1 KiB, stderr descartado. Agora há um teste estrutural que garante um único `execFile` com `GH_AUTH_TOKEN_ARGS`. |
+| **PATH (corrigido)** | Antes, com `gh` sem caminho, o Windows procurava o executável primeiro no diretório atual, e um `gh.exe` na pasta do projeto seria executado. Agora `resolveGhExecutable` usa só entradas absolutas do PATH e, no Windows, apenas `gh.exe`. Validado com o `gh` real. |
+| Cache | Token só em memória por 10 min, protegido contra serialização. Chamadas simultâneas compartilham uma execução e falhas não ficam em cache. Sem mudança. |
+| Renovação após 401 | Uma única `invalidate()` e uma única nova tentativa. Sem mudança; continua coberta só por testes unitários. |
+| Erros | Mensagens fixas, sem stdout/stderr; `reason` só no log. Sem mudança. |
+| Ambiente | `GH_TOKEN`/`GITHUB_TOKEN`/`GH_HOST` removidos. `GH_CONFIG_DIR` é respeitado de propósito, pois é uma configuração legítima do usuário local. |
+
+### 5. Escrita e mutations
+- O novo `server/security.test.ts` tem 14 testes estruturais:
+  - uma única chamada de rede (`client.ts`) e um único endpoint (`https://api.github.com/graphql`);
+  - só `ghCli.ts` cria subprocessos;
+  - o servidor HTTP aceita apenas GET/HEAD;
+  - todo documento de `queries.ts` é uma `query`, e a allowlist é igual a esse conjunto;
+  - nenhuma string `mutation`/`subscription` no servidor;
+  - documentos fora da allowlist são recusados sem obter credencial nem usar a rede;
+  - o frontend não fala com `api.github.com` e não usa métodos de escrita.
+- No servidor real, POST/PUT/PATCH/DELETE retornam 405, `/api/graphql` retorna 404 e `?query=mutation` retorna 400.
+
+### 6. Resultados
+**178/178 testes** (139 anteriores, todos preservados, e 39 novos). Typecheck, lint, build e `check:secrets` do `dist/` passaram, assim como o `check:secrets:repo`. O `check:secrets:history` falha **somente** por causa de `c368bbf`. O teste ponta a ponta real com `gh-cli` retornou HTTP 200 sem nenhum padrão de token.
+
 ## Atualização — autenticação via GitHub CLI (Opção B, aprovada pelo PO)
 
 ### Diagnóstico que motivou a mudança

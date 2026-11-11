@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { delimiter } from 'node:path';
 import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { CredentialError } from './credentials.ts';
@@ -7,6 +8,7 @@ import {
   GH_AUTH_TOKEN_ARGS,
   GH_CLI_ERROR_MESSAGE,
   GH_DEFAULTS,
+  resolveGhExecutable,
   type ExecFileLike,
 } from './ghCli.ts';
 
@@ -143,11 +145,43 @@ describe('provedor de credencial do GitHub CLI', () => {
     expect(String(provider)).not.toContain(GH_CANARY);
   });
 
+  it('execução real: sem `gh` em entradas absolutas do PATH, falha de forma controlada sem executar nada', async () => {
+    const provider = createGhCliCredentialProvider({ env: { PATH: '.' + delimiter + 'relativo' + delimiter } });
+    const error = await errorOf(provider.getAuthorizationHeader());
+    expect(error).toBeInstanceOf(CredentialError);
+    expect(error.message).toBe(GH_CLI_ERROR_MESSAGE);
+  });
+
   it('execução real (sem simulação): um executável que não é o `gh` falha de forma controlada', async () => {
     // Node recebe `auth token --hostname github.com` como script inexistente e sai com erro.
     const provider = createGhCliCredentialProvider({ ghPath: process.execPath, env: process.env });
     const error = await errorOf(provider.getAuthorizationHeader());
     expect(error).toBeInstanceOf(CredentialError);
     expect(error.message).toBe(GH_CLI_ERROR_MESSAGE);
+  });
+});
+
+describe('resolução do executável `gh` (sem busca no diretório atual)', () => {
+  const only = (...files: string[]) => (path: string) => files.includes(path);
+
+  it('Windows: ignora `.`, entradas vazias e relativas; aceita só gh.exe em entrada absoluta', () => {
+    const env = { Path: '.;tools;;"C:\\Program Files\\GitHub CLI"' };
+    const isFile = only('gh.exe', 'tools\\gh.exe', 'C:\\Program Files\\GitHub CLI\\gh.exe');
+    expect(resolveGhExecutable(env, { platform: 'win32', isFile })).toBe('C:\\Program Files\\GitHub CLI\\gh.exe');
+  });
+
+  it('Windows: não aceita gh.cmd/gh.bat (exigiriam shell)', () => {
+    const isFile = only('C:\\bin\\gh.cmd', 'C:\\bin\\gh.bat');
+    expect(resolveGhExecutable({ PATH: 'C:\\bin' }, { platform: 'win32', isFile })).toBeNull();
+  });
+
+  it('POSIX: ignora entradas relativas e usa a primeira absoluta que contém `gh`', () => {
+    const isFile = only('bin/gh', '/usr/local/bin/gh', '/usr/bin/gh');
+    expect(resolveGhExecutable({ PATH: 'bin::/opt:/usr/local/bin:/usr/bin' }, { platform: 'linux', isFile })).toBe('/usr/local/bin/gh');
+  });
+
+  it('sem PATH, devolve null', () => {
+    expect(resolveGhExecutable({}, { platform: 'linux', isFile: () => true })).toBeNull();
+    expect(resolveGhExecutable({}, { platform: 'win32', isFile: () => true })).toBeNull();
   });
 });

@@ -79,7 +79,7 @@ Limitações e por que **não** serve para servidor público:
 - **Credencial pessoal:** todas as consultas saem como o dono da sessão do `gh`. O servidor não autentica usuários, então qualquer visitante agiria como essa pessoa, e a auditoria do GitHub registraria o nome dela, não o da aplicação.
 - **Alcance:** o token vale para todos os repositórios da conta, com escrita.
 - **Depende da sessão interativa:** keyring do Windows/macOS, `gh` instalado e login ativo. Um `gh auth logout` derruba a integração (`missing_credentials`). Não funciona como serviço sem usuário logado.
-- **PATH:** sem `GH_PATH`, o executável é resolvido pelo PATH, e um `gh` falso colocado antes seria executado. É aceitável na máquina do próprio desenvolvedor, inaceitável em máquina compartilhada.
+- **PATH:** sem `GH_PATH`, o servidor resolve o `gh` por conta própria (`resolveGhExecutable`): considera só entradas **absolutas** do PATH, ignora `.`, entradas vazias e relativas e, no Windows, aceita apenas `gh.exe`. Assim, um `gh.exe` plantado na pasta do projeto não é executado (a busca padrão do Windows consulta o diretório atual antes do PATH). Um `gh` falso colocado numa pasta absoluta do PATH, antes do verdadeiro, ainda seria executado. É aceitável na máquina do próprio desenvolvedor, inaceitável em máquina compartilhada. Use `GH_PATH` para fixar o executável.
 - **Para servidor público:** GitHub App (tokens de instalação curtos, restritos ao repositório e só leitura) com autenticação de usuários. Isso está previsto para a Issue #003.
 
 Para voltar ao fine-grained basta mudar a configuração: remova `GITHUB_AUTH` (ou use `fine-grained`) e preencha `GITHUB_TOKEN`.
@@ -134,6 +134,12 @@ Para o navegador, `FORBIDDEN`, `NOT_FOUND` e HTTP 403 têm o mesmo código e a m
 8. **Nada de segredo no frontend:**
    - o servidor não inicia se houver variáveis `VITE_*` com nomes de credencial;
    - `npm run check:secrets` varre o `dist/` em busca de padrões de token e do valor exato configurado, e roda também na CI.
+10. **Verificação de segredos no repositório** (`scripts/check-secrets.mjs`, job `secret-scan` da CI). Nunca imprime o valor: cada achado mostra arquivo, linha, regra e uma impressão digital SHA-256 truncada.
+   - `tracked`: todos os arquivos versionados. Também recusa `.env`/`.env.*` versionados, exceto `.env.example`.
+   - `commits <base>..<head>`: linhas adicionadas por cada commit do PR. Na CI roda sobre o intervalo do PR.
+   - `history`: todo o histórico de `HEAD`. `staged`: conteúdo preparado, para o hook opcional `.githooks/pre-commit` (ative com `git config core.hooksPath .githooks`).
+   - Regras: tokens do GitHub (`github_pat_`, `gh[pousr]_`), chaves PEM, chaves AWS, o valor exato do `GITHUB_TOKEN` local e **qualquer valor preenchido** em variável sensível (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`…) de `.env.example`.
+   - Exceções só pelo SHA-256 completo do valor, com justificativa, em `scripts/secret-scan-allowlist.json`. Hoje a lista contém apenas o canário fictício dos testes.
 9. **Links seguros:** só URLs `https://github.com/…` passam pela normalização. Os links abrem com `rel="noopener noreferrer"`.
 
 ## Estado "desatualizado" e dados ausentes
@@ -166,6 +172,6 @@ Variáveis (ver [`.env.example`](../.env.example)):
 | --- | --- | --- | --- |
 | `GITHUB_AUTH` | Não | `fine-grained` | `fine-grained` ou `gh-cli` (somente desenvolvimento local) |
 | `GITHUB_TOKEN` | Não (sem ela = modo demonstração) | — | Token fine-grained somente leitura. Deve ficar vazio com `gh-cli`. |
-| `GH_PATH` | Não | `gh` no PATH | Caminho absoluto do GitHub CLI (apenas com `gh-cli`) |
+| `GH_PATH` | Não | `gh` (`gh.exe` no Windows) na primeira entrada absoluta do PATH | Caminho absoluto do GitHub CLI (apenas com `gh-cli`) |
 | `API_HOST` | Não | `127.0.0.1` | Apenas loopback |
 | `API_PORT` | Não | `8787` | Porta do servidor. Para mudá-la também no proxy do Vite, exporte a variável no shell: o Vite não lê `.env.local` para `vite.config.ts`. |

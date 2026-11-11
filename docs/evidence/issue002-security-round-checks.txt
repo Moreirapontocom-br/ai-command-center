@@ -1,0 +1,60 @@
+# Issue #002 — Rodada de segurança: saída das verificações (2026-11-11T03:05Z)
+# Nenhum valor de credencial aparece neste arquivo (só impressões digitais SHA-256 truncadas).
+
+## 1. Token do commit c368bbf no histórico
+$ git branch -a --contains c368bbf
+* feature/002-github-integration
+  remotes/origin/feature/002-github-integration
+$ commits cujo .env.example contém padrão de token (git grep -c, sem valor)
+e47475e .env.example matches=0
+3aaca74 .env.example matches=1
+c368bbf .env.example matches=1
+1012f68 .env.example matches=0
+$ GitHub: commit c368bbf acessível pela API (repo privado) -> c368bbf
+$ GitHub: .env.example@c368bbf contém padrão de token -> 1 ocorrência(s)
+$ GitHub: repositório privado=true forks=0
+$ GitHub secret scanning: "message":"Secret scanning is disabled on this repository."
+
+## 2. Verificação de segredos (novo scripts/check-secrets.mjs)
+$ node scripts/check-secrets.mjs tracked
+Nenhuma credencial encontrada (87 arquivo(s) versionado(s)).
+(exit 0)
+$ node scripts/check-secrets.mjs commits origin/main..HEAD
+Possível credencial encontrada (7 commit(s) em origin/main..HEAD):
+  - .env.example:8 [commit c368bbf]: token fine-grained do GitHub (impressão digital bca1a8cc341f)
+  - .env.example:8 [commit c368bbf]: valor preenchido em GITHUB_TOKEN no arquivo de exemplo (impressão digital bca1a8cc341f)
+Remova o valor, revogue a credencial se ela for real e, se for um valor de teste conhecido, registre o SHA-256 completo em scripts/secret-scan-allowlist.json com justificativa.
+(exit 1)
+$ node scripts/check-secrets.mjs history
+Possível credencial encontrada (15 commit(s) do histórico de HEAD):
+  - .env.example:8 [commit c368bbf]: token fine-grained do GitHub (impressão digital bca1a8cc341f)
+  - .env.example:8 [commit c368bbf]: valor preenchido em GITHUB_TOKEN no arquivo de exemplo (impressão digital bca1a8cc341f)
+Remova o valor, revogue a credencial se ela for real e, se for um valor de teste conhecido, registre o SHA-256 completo em scripts/secret-scan-allowlist.json com justificativa.
+(exit 1)
+$ node scripts/check-secrets.mjs staged
+Nenhuma credencial encontrada (1 arquivo(s) preparado(s)).
+(exit 0)
+$ npm run check:secrets (dist/)
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+
+## 3. Testes
+ Test Files  14 passed (14)
+      Tests  178 passed (178)
+
+## 4. Typecheck / lint / build
+$ npx tsc -p tsconfig.server.json --noEmit
+OK
+$ npm run lint
+OK
+$ npm run build
+dist/assets/index-Bm0adKrc.css   18.13 kB │ gzip:  4.45 kB
+dist/assets/index-cf08gVW2.js   248.46 kB │ gzip: 76.69 kB
+
+✓ built in 149ms
+
+## 5. Ponta a ponta real (GITHUB_AUTH=gh-cli, API_PORT=8788, após o endurecimento do PATH)
+GET /api/status -> {"configured":true,"authMode":"gh-cli",...}
+GET snapshot -> 200, stale=false, warnings=0, openIssues=23, openPRs=1, branches=3
+POST/PUT/PATCH/DELETE snapshot -> 405/405/405/405
+GET /api/graphql -> 404 | repo fora da allowlist -> 404 | ?query=mutation -> 400
+padrões de token no log do servidor + respostas: 0

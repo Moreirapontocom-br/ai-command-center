@@ -1,0 +1,5 @@
+#!/bin/sh
+# Hook opcional: bloqueia commits com possível credencial. Ative com:
+#   git config core.hooksPath .githooks
+# Nunca imprime o valor encontrado.
+exec node scripts/check-secrets.mjs staged

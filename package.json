@@ -12,6 +12,8 @@
     "dev:server": "node --experimental-strip-types --disable-warning=ExperimentalWarning --watch server/index.ts",
     "build": "tsc -b && vite build",
     "check:secrets": "node scripts/check-dist-secrets.mjs",
+    "check:secrets:repo": "node scripts/check-secrets.mjs tracked",
+    "check:secrets:history": "node scripts/check-secrets.mjs history",
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",

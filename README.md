@@ -38,6 +38,8 @@ Detalhes, permissões do token e segurança: [`docs/GITHUB_INTEGRATION.md`](docs
 | `npm run server`     | Inicia o servidor somente leitura do GitHub (porta 8787) |
 | `npm run dev:server` | Mesmo servidor, reiniciando ao editar arquivos     |
 | `npm run check:secrets` | Verifica se o build (`dist/`) contém credenciais |
+| `npm run check:secrets:repo` | Verifica credenciais em todos os arquivos versionados |
+| `npm run check:secrets:history` | Verifica credenciais nas linhas adicionadas em todo o histórico |
 | `npm run build`      | Verifica tipos (`tsc -b`) e gera o build em `dist/` |
 | `npm run preview`    | Serve localmente o build de produção               |
 | `npm run lint`       | Executa o ESLint                                   |
@@ -76,5 +78,5 @@ Mais detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) e [`docs/GITHUB_
 ## Segurança
 
 - Nenhuma credencial ou chave de API faz parte do código. O token do GitHub fica apenas no servidor local (`.env.local`), nunca no navegador nem em variáveis `VITE_*`.
-- Arquivos `.env*` estão no `.gitignore` (exceto `.env.example`, sem valores).
+- Arquivos `.env*` estão no `.gitignore` (exceto `.env.example`, sem valores). A CI recusa credenciais em arquivos versionados e nos commits do PR (`scripts/check-secrets.mjs`); localmente, ative o hook opcional com `git config core.hooksPath .githooks`.
 - O servidor só escuta em loopback, aceita apenas `GET` em rotas fixas e consulta somente repositórios da allowlist.

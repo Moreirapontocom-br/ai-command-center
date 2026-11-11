@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { statSync } from 'node:fs';
+import { posix, win32 } from 'node:path';
 import { CredentialError, sealProvider, type CredentialProvider } from './credentials.ts';
 
 /**
@@ -43,9 +45,53 @@ export interface ExecFileOptions {
 
 export type ExecFileLike = (file: string, args: readonly string[], options: ExecFileOptions) => Promise<string>;
 
+function defaultIsFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export interface ResolveExecutableOptions {
+  platform?: NodeJS.Platform;
+  isFile?: (path: string) => boolean;
+}
+
+/**
+ * Localiza o `gh` no PATH sem delegar a busca ao sistema operacional. No Windows, a busca padrão
+ * de executáveis consulta o DIRETÓRIO ATUAL antes do PATH, então um `gh.exe` plantado na pasta do
+ * projeto seria executado. Aqui só entram entradas ABSOLUTAS do PATH (`.`, vazias e relativas são
+ * ignoradas) e, no Windows, apenas `gh.exe` (`.cmd`/`.bat` exigiriam shell). Devolve o caminho
+ * absoluto ou `null`.
+ */
+export function resolveGhExecutable(env: NodeJS.ProcessEnv, options: ResolveExecutableOptions = {}): string | null {
+  const platform = options.platform ?? process.platform;
+  const isFile = options.isFile ?? defaultIsFile;
+  const path = platform === 'win32' ? win32 : posix;
+  // No Windows a variável costuma se chamar `Path`; numa cópia do ambiente a chave diferencia caixa.
+  const key = platform === 'win32' ? Object.keys(env).find((name) => name.toUpperCase() === 'PATH') : 'PATH';
+  const value = key ? env[key] : undefined;
+  if (!value) return null;
+  const name = platform === 'win32' ? 'gh.exe' : 'gh';
+  for (const rawEntry of value.split(path.delimiter)) {
+    const entry = rawEntry.trim().replace(/^"(.*)"$/, '$1');
+    if (!entry || !path.isAbsolute(entry)) continue;
+    const candidate = path.join(entry, name);
+    if (isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
 const defaultExec: ExecFileLike = (file, args, options) =>
   new Promise((resolve, reject) => {
-    execFile(file, [...args], options, (error, stdout) => {
+    // Nunca deixa o sistema operacional resolver um nome relativo (ver `resolveGhExecutable`).
+    const executable = win32.isAbsolute(file) || posix.isAbsolute(file) ? file : resolveGhExecutable(options.env);
+    if (!executable) {
+      reject(new Error('gh não encontrado'));
+      return;
+    }
+    execFile(executable, [...args], options, (error, stdout) => {
       // O erro original (que pode conter stderr) nunca é propagado: só o fato de ter falhado.
       if (error) reject(new Error('gh falhou'));
       else resolve(String(stdout));
@@ -53,7 +99,10 @@ const defaultExec: ExecFileLike = (file, args, options) =>
   });
 
 export interface GhCliProviderOptions {
-  /** Caminho absoluto opcional do executável (validado em `config.ts`). Padrão: `gh` no PATH. */
+  /**
+   * Caminho absoluto opcional do executável (validado em `config.ts`). Padrão: `gh` resolvido
+   * apenas em entradas absolutas do PATH (`resolveGhExecutable`).
+   */
   ghPath?: string;
   exec?: ExecFileLike;
   env?: NodeJS.ProcessEnv;

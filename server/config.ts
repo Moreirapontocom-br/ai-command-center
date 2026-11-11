@@ -1,4 +1,6 @@
+import { isAbsolute } from 'node:path';
 import { createFineGrainedTokenProvider, type CredentialProvider } from './auth/credentials.ts';
+import { createGhCliCredentialProvider, type GhCliProviderOptions } from './auth/ghCli.ts';
 
 /**
  * Lista EXPLÍCITA de repositórios que o servidor aceita consultar. Qualquer outro `owner/repo`
@@ -37,11 +39,56 @@ function parsePort(value: string | undefined, fallback: number): number {
   return port;
 }
 
+export const AUTH_MODES = ['fine-grained', 'gh-cli'] as const;
+
+/**
+ * Seleciona o provedor de credencial. Regras:
+ * - `GITHUB_AUTH` ausente/vazio ou `fine-grained` → token fine-grained em `GITHUB_TOKEN` (ou demonstração);
+ * - `GITHUB_AUTH=gh-cli` → sessão local do GitHub CLI (somente desenvolvimento local). Exige
+ *   `GITHUB_TOKEN` vazio (configuração ambígua é recusada) e é recusado com `NODE_ENV=production`;
+ * - qualquer outro valor → erro. Nunca há detecção automática.
+ */
+function resolveCredentials(
+  env: Record<string, string | undefined>,
+  ghCliOverrides: Pick<GhCliProviderOptions, 'exec' | 'now'>,
+): CredentialProvider | null {
+  const mode = env.GITHUB_AUTH?.trim() || 'fine-grained';
+  const token = env.GITHUB_TOKEN?.trim() ?? '';
+
+  if (!(AUTH_MODES as readonly string[]).includes(mode)) {
+    // O valor não é repetido na mensagem (pode ter sido um segredo colado no lugar errado).
+    throw new ConfigError(`GITHUB_AUTH inválido. Valores aceitos: ${AUTH_MODES.join(', ')}.`);
+  }
+
+  if (mode === 'fine-grained') {
+    if (env.GH_PATH?.trim()) throw new ConfigError('GH_PATH só pode ser usado com GITHUB_AUTH=gh-cli.');
+    return token === '' ? null : createFineGrainedTokenProvider(token);
+  }
+
+  if (token !== '') {
+    throw new ConfigError(
+      'Configuração ambígua: GITHUB_AUTH=gh-cli não pode ser usado junto com GITHUB_TOKEN. Remova um dos dois.',
+    );
+  }
+  if (env.NODE_ENV === 'production') {
+    throw new ConfigError('GITHUB_AUTH=gh-cli é exclusivo para desenvolvimento local e não pode ser usado em produção.');
+  }
+  const ghPath = env.GH_PATH?.trim() || undefined;
+  if (ghPath !== undefined && !isAbsolute(ghPath)) {
+    throw new ConfigError('GH_PATH deve ser o caminho absoluto do executável do GitHub CLI.');
+  }
+  return createGhCliCredentialProvider({ ...ghCliOverrides, ghPath, env });
+}
+
 /**
  * Lê a configuração do ambiente. Falha de forma explícita em configurações inseguras.
  * As mensagens de erro nunca incluem o valor do token.
  */
-export function loadConfig(env: Record<string, string | undefined>): ServerConfig {
+export function loadConfig(
+  env: Record<string, string | undefined>,
+  /** Apenas para testes: substitui a execução do `gh` (o caminho e o ambiente vêm de `env`). */
+  ghCliOverrides: Pick<GhCliProviderOptions, 'exec' | 'now'> = {},
+): ServerConfig {
   // Uma credencial com prefixo VITE_ seria embutida no bundle do navegador pelo Vite.
   const leakedKeys = Object.keys(env).filter(
     (key) => key.startsWith('VITE_') && /TOKEN|SECRET|GITHUB|KEY|PAT/i.test(key),
@@ -61,7 +108,7 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
   }
 
   const port = parsePort(env.API_PORT, 8787);
-  const token = env.GITHUB_TOKEN?.trim() ?? '';
+  const credentials = resolveCredentials(env, ghCliOverrides);
 
   return {
     host,
@@ -73,7 +120,7 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
       'http://localhost:4173',
       'http://127.0.0.1:4173',
     ],
-    credentials: token === '' ? null : createFineGrainedTokenProvider(token),
+    credentials,
     requestTimeoutMs: 10_000,
     cacheTtlMs: 60_000,
     minRefreshIntervalMs: 15_000,

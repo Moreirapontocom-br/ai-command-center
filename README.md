@@ -27,6 +27,7 @@ cp .env.example .env.local   # opcional: GITHUB_TOKEN fine-grained somente leitu
 
 Rode em dois terminais: `npm run server` (API local em `127.0.0.1:8787`) e `npm run dev` (frontend com proxy `/api`).
 Sem token, ou sem o servidor, a interface continua funcionando em modo demonstração e indica o motivo.
+Em desenvolvimento local também é possível usar a sessão do GitHub CLI (`GITHUB_AUTH=gh-cli`). Esse token costuma ter permissões amplas: veja os riscos antes de usar.
 Detalhes, permissões do token e segurança: [`docs/GITHUB_INTEGRATION.md`](docs/GITHUB_INTEGRATION.md).
 
 ## Scripts
@@ -47,7 +48,7 @@ Detalhes, permissões do token e segurança: [`docs/GITHUB_INTEGRATION.md`](docs
 
 ```
 server/                # Servidor intermediário somente leitura (token só aqui)
-├── auth/              # CredentialProvider (token fine-grained; preparado para GitHub App)
+├── auth/              # CredentialProvider: token fine-grained ou GitHub CLI local (preparado para GitHub App)
 ├── github/            # Cliente GraphQL, consulta fixa, tipos crus e normalização
 ├── http/              # Rotas, validação, proteções e limite de requisições
 └── snapshotService.ts # Cache, fallback desatualizado e respeito aos limites da API

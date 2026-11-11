@@ -145,7 +145,8 @@ export interface ApiErrorBody {
 export interface StatusResponse {
   /** `true` quando há credencial válida configurada no servidor. Nunca inclui a credencial. */
   configured: boolean;
-  authMode: 'fine-grained-token' | 'none';
+  /** `gh-cli`: sessão local do GitHub CLI, apenas para desenvolvimento local. */
+  authMode: 'fine-grained-token' | 'gh-cli' | 'none';
   repositories: string[];
 }
 

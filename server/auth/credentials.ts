@@ -1,18 +1,44 @@
 /**
  * Abstração de credenciais do GitHub.
  *
- * Hoje existe apenas o token fine-grained (somente leitura, restrito ao repositório autorizado).
+ * Provedores disponíveis:
+ * - `fine-grained-token`: token fine-grained somente leitura, restrito ao repositório autorizado;
+ * - `gh-cli`: token da sessão local do GitHub CLI (ver `ghCli.ts`) — apenas desenvolvimento local.
+ *
  * Um provedor de GitHub App poderá implementar a mesma interface no futuro (gerando o token de
  * instalação sob demanda) sem alterar o cliente HTTP nem as rotas.
  */
+export type CredentialKind = 'fine-grained-token' | 'gh-cli';
+
 export interface CredentialProvider {
-  readonly kind: 'fine-grained-token';
+  readonly kind: CredentialKind;
   /** Valor do cabeçalho `Authorization`. Uso exclusivo do cliente HTTP do GitHub. */
   getAuthorizationHeader(): Promise<string>;
+  /**
+   * Descarta a credencial em cache para que a próxima chamada a obtenha novamente. Só existe em
+   * provedores renováveis; o cliente chama no máximo uma vez por requisição, após um HTTP 401.
+   */
+  invalidate?(): void;
 }
 
 export class CredentialError extends Error {
   name = 'CredentialError';
+}
+
+/**
+ * Impede que o provedor (e, portanto, o token guardado no closure) apareça em `JSON.stringify`,
+ * `console.log` ou `util.inspect`.
+ */
+export function sealProvider<T extends CredentialProvider>(provider: T): T {
+  Object.defineProperties(provider, {
+    toJSON: { value: () => ({ kind: provider.kind }), enumerable: false },
+    toString: { value: () => `CredentialProvider<${provider.kind}>`, enumerable: false },
+    [Symbol.for('nodejs.util.inspect.custom')]: {
+      value: () => `CredentialProvider<${provider.kind}>`,
+      enumerable: false,
+    },
+  });
+  return provider;
 }
 
 const FINE_GRAINED_PATTERN = /^github_pat_[A-Za-z0-9_]{20,255}$/;
@@ -25,19 +51,8 @@ export function createFineGrainedTokenProvider(token: string): CredentialProvide
     );
   }
 
-  const provider: CredentialProvider = {
+  return sealProvider<CredentialProvider>({
     kind: 'fine-grained-token',
     getAuthorizationHeader: () => Promise.resolve(`Bearer ${token}`),
-  };
-
-  // O token vive apenas no closure. Evita que apareça em JSON.stringify, console.log ou util.inspect.
-  Object.defineProperties(provider, {
-    toJSON: { value: () => ({ kind: provider.kind }), enumerable: false },
-    [Symbol.for('nodejs.util.inspect.custom')]: {
-      value: () => `CredentialProvider<${provider.kind}>`,
-      enumerable: false,
-    },
   });
-
-  return provider;
 }

@@ -2,7 +2,8 @@
 import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createFineGrainedTokenProvider } from '../auth/credentials.ts';
+import { createFineGrainedTokenProvider, type CredentialProvider } from '../auth/credentials.ts';
+import { createGhCliCredentialProvider } from '../auth/ghCli.ts';
 import { ALLOWED_REPOSITORIES } from '../config.ts';
 import { IntegrationError } from '../github/errors.ts';
 import { createConsoleLogger } from '../logger.ts';
@@ -19,11 +20,12 @@ afterEach(async () => {
 
 interface Options {
   withToken?: boolean;
+  credentials?: CredentialProvider | null;
   snapshots?: SnapshotService | null;
   rateLimitPerMinute?: number;
 }
 
-async function startApp({ withToken = true, snapshots, rateLimitPerMinute = 100 }: Options = {}) {
+async function startApp({ withToken = true, credentials, snapshots, rateLimitPerMinute = 100 }: Options = {}) {
   const logLines: string[] = [];
   server = createServer();
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
@@ -34,7 +36,7 @@ async function startApp({ withToken = true, snapshots, rateLimitPerMinute = 100 
       port,
       allowedRepositories: ALLOWED_REPOSITORIES,
       allowedOrigins: ['http://localhost:5173'],
-      credentials: withToken ? createFineGrainedTokenProvider(CANARY_TOKEN) : null,
+      credentials: credentials !== undefined ? credentials : withToken ? createFineGrainedTokenProvider(CANARY_TOKEN) : null,
       rateLimitPerMinute,
     },
     snapshots: snapshots === undefined ? null : snapshots,
@@ -85,6 +87,27 @@ describe('servidor HTTP somente leitura', () => {
   it('/api/status sem credencial', async () => {
     const { call } = await startApp({ withToken: false });
     expect(JSON.parse((await call('/api/status')).body)).toMatchObject({ configured: false, authMode: 'none' });
+  });
+
+  it('/api/status informa o modo gh-cli sem executar o `gh` nem expor credenciais', async () => {
+    const exec = vi.fn(() => Promise.resolve('gho_' + 'F'.repeat(36)));
+    const { call } = await startApp({ credentials: createGhCliCredentialProvider({ exec, env: {} }) });
+    const res = await call('/api/status');
+    expect(JSON.parse(res.body)).toMatchObject({ configured: true, authMode: 'gh-cli' });
+    expect(res.body).not.toContain('gho_');
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('o motivo interno do erro vai só para o log; a resposta usa a mensagem genérica', async () => {
+    const snapshots = fakeSnapshots(() => Promise.reject(new IntegrationError('forbidden', { reason: 'graphql_not_found' })));
+    const { call, logLines } = await startApp({ snapshots });
+    const res = await call(SNAPSHOT_PATH);
+    expect(res.status).toBe(502);
+    expect(JSON.parse(res.body)).toEqual({
+      error: { code: 'forbidden', message: 'A credencial não tem permissão de leitura para este repositório.' },
+    });
+    expect(res.body).not.toContain('graphql_not_found');
+    expect(logLines.some((line) => line.includes('"reason":"graphql_not_found"'))).toBe(true);
   });
 
   it('snapshot sem credencial responde "missing_credentials"', async () => {

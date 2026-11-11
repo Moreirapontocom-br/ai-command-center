@@ -57,7 +57,8 @@ export function ConnectionPanel({ state, onRetry }: { state: Exclude<GitHubDataS
           <p>
             A integração com o GitHub não está configurada. Defina <code>GITHUB_TOKEN</code> (token
             fine-grained somente leitura) no arquivo <code>.env.local</code> e reinicie{' '}
-            <code>npm run server</code>.
+            <code>npm run server</code>. Em desenvolvimento local, também é possível usar a sessão do
+            GitHub CLI com <code>GITHUB_AUTH=gh-cli</code>.
           </p>
           <p>Nenhum dado do GitHub é exibido. Agentes e tarefas continuam em modo demonstração.</p>
           <RetryButton onClick={onRetry} />

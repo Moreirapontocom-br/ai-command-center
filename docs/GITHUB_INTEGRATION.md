@@ -7,7 +7,7 @@ O relatório de entrega está em [`IMPLEMENTATION_REPORT_002.md`](IMPLEMENTATION
 
 ```
 Navegador (SPA React)  ──GET /api/...──▶  Vite (proxy /api)  ──▶  Servidor Node (127.0.0.1:8787)  ──GraphQL (query fixa)──▶  api.github.com
-       ▲                                                              │  token fine-grained (só aqui)
+       ▲                                                              │  credencial: fine-grained ou gh-cli local (só aqui)
        └──────────── JSON normalizado (shared/contracts.ts) ◀─────────┘  cache em memória · allowlist · limites
 ```
 
@@ -40,9 +40,49 @@ Navegador (SPA React)  ──GET /api/...──▶  Vite (proxy /api)  ──▶
 
 ## Autenticação
 
-- **Agora:** apenas **token fine-grained** (`github_pat_…`). O servidor recusa tokens clássicos (`ghp_`), OAuth (`gho_`) e outros formatos.
-- **Preparado para GitHub App** (sem implementação): o cliente HTTP depende só da interface `CredentialProvider` (`server/auth/credentials.ts`). Um futuro `GitHubAppProvider` gera o JWT e o token de instalação e implementa `getAuthorizationHeader()`, sem mudar o cliente, as rotas ou o frontend.
-- O token vive apenas no closure do provedor. `JSON.stringify`, `console.log` e `util.inspect` do provedor não o revelam (há teste).
+O modo é escolhido **explicitamente** por `GITHUB_AUTH`. Não há detecção automática.
+
+| `GITHUB_AUTH` | Credencial | Uso |
+| --- | --- | --- |
+| ausente, vazio ou `fine-grained` | `GITHUB_TOKEN` fine-grained (`github_pat_…`). Tokens clássicos (`ghp_`), OAuth (`gho_`) e outros formatos são recusados nessa variável. Sem token = modo demonstração. | **Padrão recomendado** |
+| `gh-cli` | Sessão local do GitHub CLI (`gh auth token`) | **Somente desenvolvimento local** |
+
+Regras de configuração (o servidor **não inicia** se forem violadas):
+- `gh-cli` com `GITHUB_TOKEN` preenchido → configuração ambígua.
+- `gh-cli` com `NODE_ENV=production` → recusado.
+- `GITHUB_AUTH` com valor desconhecido → recusado. O valor não é repetido na mensagem.
+- `GH_PATH`, se definido, precisa ser um caminho absoluto e só vale com `gh-cli`.
+
+- **Preparado para GitHub App** (sem implementação): o cliente HTTP depende só da interface `CredentialProvider` (`server/auth/credentials.ts`). Um futuro `GitHubAppProvider` gera o JWT e o token de instalação e implementa `getAuthorizationHeader()` (e, opcionalmente, `invalidate()`), sem mudar o cliente, as rotas ou o frontend.
+- Em ambos os modos, o token vive apenas no closure do provedor. `JSON.stringify`, `String()`, `console.log` e `util.inspect` do provedor não o revelam (há teste).
+
+### Modo `gh-cli` (somente desenvolvimento local)
+
+> ⚠️ **Risco residual.** O token OAuth do GitHub CLI normalmente tem escopos **amplos**, como `repo` e `workflow`. Isso dá **escrita e administração em todos os repositórios da conta**, não só neste. O modo `gh-cli` **não reduz** essas permissões. A garantia de somente leitura vem exclusivamente do código do servidor (abaixo). Uma falha nessas barreiras teria o alcance do token, não da aplicação.
+
+Como funciona (`server/auth/ghCli.ts`):
+- Executa **apenas** `gh auth token --hostname github.com`, com argumentos congelados, via `execFile`, sem shell, com `windowsHide`, **timeout de 5 s** e **saída limitada a 1 KiB**. Nenhum dado de requisição chega a esse módulo.
+- Remove do ambiente do `gh` as variáveis `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` e `GH_HOST`. Assim o token vem sempre da sessão do CLI (keyring).
+- Valida a saída (uma linha, formato `gho_`/`ghu_`/`ghp_`/`github_pat_`). Qualquer falha gera uma **mensagem fixa**: stdout, stderr e a causa original nunca são propagados.
+- Mantém o token em **cache por 10 min**. Chamadas simultâneas compartilham uma única execução. Falhas não ficam em cache.
+- Na inicialização, o servidor confirma que o `gh` entrega um token válido, ou encerra. Depois registra um aviso de que o modo usa credencial ampla.
+- Se o GitHub responder **401**, o cliente chama `invalidate()`, obtém a credencial de novo **uma única vez** e repete a consulta **uma única vez**. Um segundo 401 encerra com `unauthorized`, sem loop. O token fine-grained não é renovável e não repete a consulta.
+
+Barreiras de somente leitura, válidas mesmo com credencial que permite escrita:
+1. O servidor aceita apenas `GET`/`HEAD`.
+2. Allowlist de repositórios no código.
+3. **Allowlist estrita de documentos GraphQL** (`APPROVED_DOCUMENTS` em `server/github/client.ts`): o cliente só envia documentos **idênticos** à `REPO_SNAPSHOT_QUERY`. Qualquer outro documento, inclusive a query aprovada com algo anexado, é recusado **antes** de obter a credencial ou tocar a rede. Ao carregar o módulo, o servidor verifica que todo documento aprovado é uma `query` sem `mutation`/`subscription`.
+4. Endpoint fixo `https://api.github.com/graphql` com `redirect: 'error'`.
+5. O frontend não envia comandos, caminhos de API nem consultas.
+
+Limitações e por que **não** serve para servidor público:
+- **Credencial pessoal:** todas as consultas saem como o dono da sessão do `gh`. O servidor não autentica usuários, então qualquer visitante agiria como essa pessoa, e a auditoria do GitHub registraria o nome dela, não o da aplicação.
+- **Alcance:** o token vale para todos os repositórios da conta, com escrita.
+- **Depende da sessão interativa:** keyring do Windows/macOS, `gh` instalado e login ativo. Um `gh auth logout` derruba a integração (`missing_credentials`). Não funciona como serviço sem usuário logado.
+- **PATH:** sem `GH_PATH`, o executável é resolvido pelo PATH, e um `gh` falso colocado antes seria executado. É aceitável na máquina do próprio desenvolvedor, inaceitável em máquina compartilhada.
+- **Para servidor público:** GitHub App (tokens de instalação curtos, restritos ao repositório e só leitura) com autenticação de usuários. Isso está previsto para a Issue #003.
+
+Para voltar ao fine-grained basta mudar a configuração: remova `GITHUB_AUTH` (ou use `fine-grained`) e preencha `GITHUB_TOKEN`.
 
 ### Permissões do token (Settings → Developer settings → Fine-grained tokens)
 
@@ -66,9 +106,11 @@ Erros seguem `{ error: { code, message, resetAt?, retryAfterSeconds? } }`, sempr
 
 | Código | HTTP | Quando |
 | --- | --- | --- |
-| `missing_credentials` | 503 | `GITHUB_TOKEN` não configurado |
-| `unauthorized` | 502 | GitHub respondeu 401 (token inválido, expirado ou revogado) |
-| `forbidden` | 502 | 403 sem indicação de limite, ou repositório fora do escopo do token (`NOT_FOUND`) |
+| `missing_credentials` | 503 | `GITHUB_TOKEN` não configurado, ou o `gh` não entregou credencial (modo `gh-cli`) |
+| `unauthorized` | 502 | GitHub respondeu 401 (token inválido, expirado ou revogado; no `gh-cli`, mesmo após uma renovação) |
+| `forbidden` | 502 | 403 sem indicação de limite, ou GraphQL `FORBIDDEN`/`NOT_FOUND` (repositório fora do escopo do token) |
+
+Para o navegador, `FORBIDDEN`, `NOT_FOUND` e HTTP 403 têm o mesmo código e a mesma mensagem, para não revelar se o repositório existe. Internamente o erro carrega um `reason` (`graphql_forbidden`, `graphql_not_found`, `http_403`, `credential_unavailable`, `credential_rejected_after_renewal`, `document_not_approved`) que aparece **apenas no log do servidor**.
 | `rate_limited` | 429 | Limite primário ou secundário do GitHub (com `resetAt`/`retryAfterSeconds`) |
 | `too_many_requests` | 429 | Limite local: 60 req/min por cliente |
 | `network` / `timeout` | 502 / 504 | Falha de conexão ou mais de 10 s sem resposta |
@@ -115,12 +157,15 @@ npm run dev
 ```
 
 - **Sem `GITHUB_TOKEN`:** o servidor inicia em modo demonstração e a interface mostra **"Credencial ausente"**.
+- **Com GitHub CLI (só local):** `gh auth status` precisa estar ok. Defina `GITHUB_AUTH=gh-cli` e deixe `GITHUB_TOKEN` vazio no `.env.local`. Para um teste pontual sem editar o arquivo, variáveis do shell têm precedência: em PowerShell, `$env:GITHUB_AUTH='gh-cli'; $env:GITHUB_TOKEN=''; npm run server`.
 - **Sem o servidor:** a interface mostra **"Erro de rede"**. Em ambos os casos agentes e tarefas continuam em modo demonstração, e nenhum dado do GitHub é simulado.
 
 Variáveis (ver [`.env.example`](../.env.example)):
 
 | Variável | Obrigatória | Padrão | Descrição |
 | --- | --- | --- | --- |
-| `GITHUB_TOKEN` | Não (sem ela = modo demonstração) | — | Token fine-grained somente leitura |
+| `GITHUB_AUTH` | Não | `fine-grained` | `fine-grained` ou `gh-cli` (somente desenvolvimento local) |
+| `GITHUB_TOKEN` | Não (sem ela = modo demonstração) | — | Token fine-grained somente leitura. Deve ficar vazio com `gh-cli`. |
+| `GH_PATH` | Não | `gh` no PATH | Caminho absoluto do GitHub CLI (apenas com `gh-cli`) |
 | `API_HOST` | Não | `127.0.0.1` | Apenas loopback |
 | `API_PORT` | Não | `8787` | Porta do servidor. Para mudá-la também no proxy do Vite, exporte a variável no shell: o Vite não lê `.env.local` para `vite.config.ts`. |

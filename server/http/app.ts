@@ -134,6 +134,14 @@ export function createRequestHandler(deps: AppDeps) {
         deps.logger.log('error', 'Erro interno ao processar requisição', {
           path: pathname,
           error: error instanceof Error ? error.name : 'unknown',
+          ...(integrationError.reason ? { reason: integrationError.reason } : {}),
+        });
+      } else if (integrationError.reason) {
+        // Motivo interno (ex.: NOT_FOUND x FORBIDDEN do GraphQL) só no log; a resposta usa o código genérico.
+        deps.logger.log('warn', 'Falha na integração com o GitHub', {
+          path: pathname,
+          code: integrationError.code,
+          reason: integrationError.reason,
         });
       }
       sendError(res, integrationError);

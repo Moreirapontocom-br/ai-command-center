@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { ConfigError, loadConfig } from './config.ts';
 import { CredentialError } from './auth/credentials.ts';
+import { GH_CLI_ERROR_MESSAGE } from './auth/ghCli.ts';
 import { createGraphQLClient } from './github/client.ts';
 import { createRequestHandler } from './http/app.ts';
 import { createConsoleLogger } from './logger.ts';
@@ -40,6 +41,22 @@ const server = createServer((req, res) => {
 });
 server.requestTimeout = 30_000;
 server.headersTimeout = 15_000;
+
+if (config.credentials?.kind === 'gh-cli') {
+  // Falha cedo se o `gh` não estiver instalado/autenticado. O token obtido fica só no cache do
+  // provedor; nada dele é registrado.
+  try {
+    await config.credentials.getAuthorizationHeader();
+  } catch {
+    logger.log('error', GH_CLI_ERROR_MESSAGE);
+    process.exit(1);
+  }
+  logger.log(
+    'warn',
+    'Modo gh-cli (somente desenvolvimento local): o token do GitHub CLI costuma ter permissões amplas, ' +
+      'inclusive de escrita. O servidor continua restrito a leitura, loopback e consultas aprovadas.',
+  );
+}
 
 server.listen(config.port, config.host, () => {
   logger.log('info', 'Servidor somente leitura iniciado', {

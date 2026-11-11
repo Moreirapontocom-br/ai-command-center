@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { inspect } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFineGrainedTokenProvider } from './auth/credentials.ts';
+import type { ExecFileLike } from './auth/ghCli.ts';
 import { ConfigError, loadConfig } from './config.ts';
 import { createConsoleLogger, redact } from './logger.ts';
 import { CANARY_TOKEN } from './test/fixtures.ts';
@@ -46,6 +47,72 @@ describe('configuração', () => {
   it('valida a porta', () => {
     expect(() => loadConfig({ API_PORT: 'abc' })).toThrow(ConfigError);
     expect(loadConfig({ API_PORT: '9000' }).port).toBe(9000);
+  });
+});
+
+describe('seleção da autenticação (GITHUB_AUTH)', () => {
+  const GH_TOKEN_FAKE = 'gho_' + 'E'.repeat(36);
+  const exec = () => vi.fn<ExecFileLike>().mockResolvedValue(GH_TOKEN_FAKE);
+
+  it('sem GITHUB_AUTH, mantém o comportamento fine-grained', () => {
+    expect(loadConfig({ GITHUB_TOKEN: CANARY_TOKEN }).credentials?.kind).toBe('fine-grained-token');
+    expect(loadConfig({ GITHUB_AUTH: '', GITHUB_TOKEN: CANARY_TOKEN }).credentials?.kind).toBe('fine-grained-token');
+    expect(loadConfig({ GITHUB_AUTH: 'fine-grained', GITHUB_TOKEN: CANARY_TOKEN }).credentials?.kind).toBe('fine-grained-token');
+    expect(loadConfig({ GITHUB_AUTH: 'fine-grained' }).credentials).toBeNull();
+  });
+
+  it('GITHUB_AUTH=gh-cli ativa o GitHub CLI sem executar nada ao carregar a configuração', async () => {
+    const run = exec();
+    const config = loadConfig({ GITHUB_AUTH: 'gh-cli' }, { exec: run });
+    expect(config.credentials?.kind).toBe('gh-cli');
+    expect(run).not.toHaveBeenCalled();
+    expect(await config.credentials?.getAuthorizationHeader()).toBe(`Bearer ${GH_TOKEN_FAKE}`);
+    expect(run.mock.calls[0][0]).toBe('gh');
+  });
+
+  it('gh-cli não detecta nada automaticamente: sem GITHUB_AUTH, sem token, é modo demonstração', () => {
+    const run = exec();
+    expect(loadConfig({}, { exec: run }).credentials).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('recusa GITHUB_AUTH=gh-cli junto com GITHUB_TOKEN (configuração ambígua)', () => {
+    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: CANARY_TOKEN })).toThrow(/ambígua/);
+    try {
+      loadConfig({ GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: CANARY_TOKEN });
+    } catch (error) {
+      expect((error as Error).message).not.toContain(CANARY_TOKEN);
+    }
+    // GITHUB_TOKEN vazio não é conflito.
+    expect(loadConfig({ GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: '  ' }).credentials?.kind).toBe('gh-cli');
+  });
+
+  it('recusa valores desconhecidos sem repetir o valor', () => {
+    for (const value of ['GH-CLI', 'github-app', CANARY_TOKEN]) {
+      try {
+        loadConfig({ GITHUB_AUTH: value });
+        throw new Error('esperava falha');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as Error).message).not.toContain(value);
+      }
+    }
+  });
+
+  it('gh-cli é exclusivo para desenvolvimento local', () => {
+    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', NODE_ENV: 'production' })).toThrow(ConfigError);
+    // E continua restrito ao loopback como qualquer outro modo.
+    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', API_HOST: '0.0.0.0' })).toThrow(ConfigError);
+  });
+
+  it('GH_PATH precisa ser absoluto e só vale com gh-cli', async () => {
+    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', GH_PATH: 'gh.exe' })).toThrow(/absoluto/);
+    expect(() => loadConfig({ GITHUB_TOKEN: CANARY_TOKEN, GH_PATH: 'C:\\Tools\\gh.exe' })).toThrow(/GH_PATH/);
+
+    const run = exec();
+    const absolute = process.platform === 'win32' ? 'C:\\Tools\\gh.exe' : '/opt/gh/bin/gh';
+    await loadConfig({ GITHUB_AUTH: 'gh-cli', GH_PATH: absolute }, { exec: run }).credentials?.getAuthorizationHeader();
+    expect(run.mock.calls[0][0]).toBe(absolute);
   });
 });
 

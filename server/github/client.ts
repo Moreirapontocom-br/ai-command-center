@@ -1,8 +1,26 @@
 import type { CredentialProvider } from '../auth/credentials.ts';
 import { IntegrationError } from './errors.ts';
+import { REPO_SNAPSHOT_QUERY } from './queries.ts';
 import type { RawGraphQLError, RawGraphQLResponse } from './raw-types.ts';
 
 export const GITHUB_GRAPHQL_ENDPOINT = 'https://api.github.com/graphql';
+
+/**
+ * Allowlist ESTRITA de documentos GraphQL: o cliente só envia documentos idênticos aos aprovados.
+ * É a barreira que mantém o servidor somente leitura mesmo quando a credencial pode escrever
+ * (ex.: token OAuth do GitHub CLI com escopo `repo`). Incluir um documento exige revisão de PR.
+ */
+export const APPROVED_DOCUMENTS: ReadonlySet<string> = new Set([REPO_SNAPSHOT_QUERY]);
+
+/** Um documento aprovado precisa ser uma única operação `query`, sem `mutation`/`subscription`. */
+export function isReadOnlyDocument(document: string): boolean {
+  return /^\s*query\b/.test(document) && !/\b(?:mutation|subscription)\b/i.test(document);
+}
+
+// Falha ao carregar o módulo se alguém aprovar um documento que não é somente leitura.
+for (const document of APPROVED_DOCUMENTS) {
+  if (!isReadOnlyDocument(document)) throw new Error('Documento GraphQL aprovado não é somente leitura.');
+}
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -48,7 +66,7 @@ function errorFromHttpStatus(response: Response): IntegrationError {
     });
   }
 
-  if (status === 403) return new IntegrationError('forbidden');
+  if (status === 403) return new IntegrationError('forbidden', { reason: 'http_403' });
   return new IntegrationError('upstream_error');
 }
 
@@ -57,33 +75,64 @@ function errorFromGraphQLErrors(errors: RawGraphQLError[], headers: Headers): In
   if (types.has('RATE_LIMITED')) {
     return new IntegrationError('rate_limited', { resetAt: resetAtFromHeaders(headers) });
   }
-  // Para tokens fine-grained, um repositório fora do escopo do token aparece como NOT_FOUND.
-  if (types.has('NOT_FOUND') || types.has('FORBIDDEN')) return new IntegrationError('forbidden');
+  // Para tokens fine-grained, um repositório fora do escopo do token aparece como NOT_FOUND. Para o
+  // navegador os dois casos são `forbidden` (não revela se o repositório existe); o motivo exato
+  // fica só no log do servidor.
+  if (types.has('FORBIDDEN')) return new IntegrationError('forbidden', { reason: 'graphql_forbidden' });
+  if (types.has('NOT_FOUND')) return new IntegrationError('forbidden', { reason: 'graphql_not_found' });
   return new IntegrationError('upstream_invalid');
 }
 
 export function createGraphQLClient(options: GraphQLClientOptions): GraphQLClient {
   const fetchImpl: FetchLike = options.fetchImpl ?? ((input, init) => fetch(input, init));
 
+  async function authorizationHeader(): Promise<string> {
+    try {
+      return await options.credentials.getAuthorizationHeader();
+    } catch {
+      // O erro do provedor nunca é repassado (não carrega saída de processos nem segredos).
+      throw new IntegrationError('missing_credentials', { reason: 'credential_unavailable' });
+    }
+  }
+
+  async function send(query: string, variables: Record<string, string | number>): Promise<Response> {
+    const authorization = await authorizationHeader();
+    try {
+      return await fetchImpl(GITHUB_GRAPHQL_ENDPOINT, {
+        method: 'POST', // GraphQL usa POST mesmo para leitura; a consulta enviada é sempre `query`.
+        headers: {
+          Authorization: authorization,
+          'Content-Type': 'application/json',
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'ai-command-center-readonly',
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: AbortSignal.timeout(options.timeoutMs),
+        redirect: 'error',
+      });
+    } catch (cause) {
+      const isTimeout = cause instanceof Error && cause.name === 'TimeoutError';
+      throw new IntegrationError(isTimeout ? 'timeout' : 'network', { cause });
+    }
+  }
+
   return {
     async query<T>(query: string, variables: Record<string, string | number>) {
-      let response: Response;
-      try {
-        response = await fetchImpl(GITHUB_GRAPHQL_ENDPOINT, {
-          method: 'POST', // GraphQL usa POST mesmo para leitura; a consulta enviada é sempre `query`.
-          headers: {
-            Authorization: await options.credentials.getAuthorizationHeader(),
-            'Content-Type': 'application/json',
-            Accept: 'application/vnd.github+json',
-            'User-Agent': 'ai-command-center-readonly',
-          },
-          body: JSON.stringify({ query, variables }),
-          signal: AbortSignal.timeout(options.timeoutMs),
-          redirect: 'error',
-        });
-      } catch (cause) {
-        const isTimeout = cause instanceof Error && cause.name === 'TimeoutError';
-        throw new IntegrationError(isTimeout ? 'timeout' : 'network', { cause });
+      // Bloqueio antes de obter a credencial ou tocar a rede.
+      if (!APPROVED_DOCUMENTS.has(query)) {
+        throw new IntegrationError('internal', { reason: 'document_not_approved' });
+      }
+
+      let response = await send(query, variables);
+
+      // Credencial renovável (ex.: GitHub CLI) recusada: UMA renovação e UMA nova tentativa.
+      if (response.status === 401 && options.credentials.invalidate) {
+        await response.body?.cancel();
+        options.credentials.invalidate();
+        response = await send(query, variables);
+        if (response.status === 401) {
+          throw new IntegrationError('unauthorized', { reason: 'credential_rejected_after_renewal' });
+        }
       }
 
       if (!response.ok) throw errorFromHttpStatus(response);

@@ -1,6 +1,19 @@
 import type { ApiErrorCode } from '../../shared/contracts.ts';
 
 /**
+ * Motivo interno de um erro, para diagnóstico nos logs do servidor. NUNCA é enviado ao navegador
+ * (a resposta HTTP usa apenas `code` e a mensagem fixa), pois poderia revelar se um repositório
+ * existe ou qual credencial está em uso.
+ */
+export type IntegrationErrorReason =
+  | 'http_403'
+  | 'graphql_forbidden'
+  | 'graphql_not_found'
+  | 'credential_unavailable'
+  | 'credential_rejected_after_renewal'
+  | 'document_not_approved';
+
+/**
  * Erro normalizado da integração. A mensagem é sempre um texto fixo definido aqui — nunca o corpo
  * devolvido pelo GitHub — para não refletir dados inesperados (ou segredos) ao navegador.
  */
@@ -8,16 +21,18 @@ export class IntegrationError extends Error {
   readonly code: ApiErrorCode;
   readonly resetAt: string | undefined;
   readonly retryAfterSeconds: number | undefined;
+  readonly reason: IntegrationErrorReason | undefined;
 
   constructor(
     code: ApiErrorCode,
-    options: { resetAt?: string; retryAfterSeconds?: number; cause?: unknown } = {},
+    options: { resetAt?: string; retryAfterSeconds?: number; cause?: unknown; reason?: IntegrationErrorReason } = {},
   ) {
     super(ERROR_MESSAGES[code], { cause: options.cause });
     this.name = 'IntegrationError';
     this.code = code;
     this.resetAt = options.resetAt;
     this.retryAfterSeconds = options.retryAfterSeconds;
+    this.reason = options.reason;
   }
 }
 

@@ -1,6 +1,6 @@
 # Documentação técnica inicial
 
-Escopo: Issue #001 — Inicializar a aplicação AI Command Center.
+Escopo: Issue #001 — Inicializar a aplicação AI Command Center. A Issue #002 acrescentou a integração GitHub somente leitura; ver [`GITHUB_INTEGRATION.md`](GITHUB_INTEGRATION.md).
 
 ## Visão geral
 
@@ -46,6 +46,13 @@ Os dados fictícios são identificados de três formas:
 
 `.github/workflows/ci.yml` roda em pull requests para a `main` (e manualmente): `npm ci` → `npm test` → `npm run lint` → `npm run build`, em Node 22.x e 24.x (faixa de `engines`). Permissões: `contents: read`; actions fixadas por SHA; `persist-credentials: false`; sem segredos.
 
+## Issue #002 — integração GitHub (resumo)
+
+- Servidor Node local (`server/`) com 2 endpoints `GET` fixos; o token fine-grained fica só nele.
+- Frontend consulta `/api` na própria origem (proxy do Vite) via `src/services/githubApi.ts`; o estado é compartilhado por `GitHubDataProvider`.
+- Novas telas: Issues, Pull Requests e Branches; o Dashboard ganhou a seção "Repositório no GitHub".
+- Dados reais e demonstrativos ficam separados: issues não viram `Task` nem recebem agente.
+
 ## Fora do escopo (não implementado)
 
-Integrações reais com provedores de IA, banco de dados, autenticação, execução automática de agentes e deploy público.
+Integrações com provedores de IA, escrita no GitHub, webhooks, banco de dados, autenticação de usuários, execução automática de agentes e deploy público.

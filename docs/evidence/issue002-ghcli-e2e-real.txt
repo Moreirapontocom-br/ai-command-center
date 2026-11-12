@@ -1,0 +1,44 @@
+# Teste ponta a ponta — servidor real, GITHUB_AUTH=gh-cli (2026-11-11T02:39:13.629Z)
+
+$ GET /api/status
+{"configured":true,"authMode":"gh-cli","repositories":["Moreirapontocom-br/ai-command-center"]}  [HTTP 200]
+
+$ GET /api/repos/Moreirapontocom-br/ai-command-center/snapshot  [HTTP 200]
+freshness: {"stale":false,"staleReason":null}
+repository: {"fullName":"Moreirapontocom-br/ai-command-center","private":true,"defaultBranch":"main"}
+metrics: {"openIssues":23,"closedIssues":0,"openPullRequests":1,"mergedPullRequests":1,"closedUnmergedPullRequests":0,"awaitingReview":{"count":0,"undetermined":1,"complete":true},"branches":3,"ci":{"defaultBranch":"unknown","openPullRequests":{"success":1,"failure":0,"pending":0,"unknown":0}}}
+issues (23):
+  #18 [open] #018 — Piloto operacional e critérios de lançamento
+  #13 [open] #013 — Ciclo de PR, CI e revisão técnica independente
+  #12 [open] #012 — Fila de tarefas, agendamento e recuperação de falhas
+  #10 [open] #010 — Orquestração de ChatGPT e motor de planejamento
+  #8 [open] #008 — Integração supervisionada com Claude Code
+pullRequests (2):
+  #25 [open] Issue #002: Integração GitHub em modo somente leitura — CI: success
+  #1 [merged] Issue #001: Inicializar a aplicação AI Command Center — CI: success
+branches (3):
+  main — CI: unknown
+  feature/002-github-integration — CI: success
+  feature/001-project-setup — CI: success
+truncated: {"openIssues":false,"openPullRequests":false,"branches":false}  warnings: []  fetchedAt: 2026-11-11T02:39:14.562Z
+resposta contém padrão de token? false
+
+# Barreiras de somente leitura no servidor real
+$ POST snapshot → HTTP 405 method_not_allowed
+$ PUT snapshot → HTTP 405 method_not_allowed
+$ PATCH snapshot → HTTP 405 method_not_allowed
+$ DELETE snapshot → HTTP 405 method_not_allowed
+$ GET /api/graphql → HTTP 404 not_found
+$ GET /api/repos/torvalds/linux/snapshot → HTTP 404 not_found
+$ GET /api/repos/Moreirapontocom-br/ai-command-center/snapshot?query=mutation → HTTP 400 bad_request
+$ GET /api/repos/Moreirapontocom-br/ai-command-center/issues → HTTP 404 not_found
+
+# Log do servidor durante o teste (contagens; nenhuma linha de log copiada)
+linhas: 15 · padrões de token/Bearer: 0 · [REDACTED]: 0
+inicialização:
+{"time":"2026-11-11T02:38:39.094Z","level":"warn","message":"Modo gh-cli (somente desenvolvimento local): o token do GitHub CLI costuma ter permissões amplas, inclusive de escrita. O servidor continua restrito a leitura, loopback e consultas aprovadas."}
+{"time":"2026-11-11T02:38:39.110Z","level":"info","message":"Servidor somente leitura iniciado","url":"http://127.0.0.1:8788","credential":"gh-cli","repositories":"Moreirapontocom-br/ai-command-center"}
+
+# Dashboard (Chrome headless via CDP, vite preview :4173 → API :8788)
+HTML renderizado contém padrão de token: false
+capturas: issue002-ghcli-real-{dashboard,issues,pull-requests,branches}-1440.png, issue002-ghcli-real-dashboard-390.png

@@ -1,0 +1,26 @@
+# Issue #002 — Modo gh-cli: verificações (2026-11-11T02:37Z)
+# branch: feature/002-github-integration
+
+$ npx vitest run
+ Test Files  12 passed (12)
+      Tests  139 passed (139)
+
+$ npx tsc -p tsconfig.server.json --noEmit
+(sem erros)
+
+$ npm run lint
+> ai-command-center@0.1.0 lint
+> eslint .
+
+
+$ npm run build
+computing gzip size...
+dist/index.html                   0.47 kB │ gzip:  0.30 kB
+dist/assets/index-H7c_ayxz.css   18.10 kB │ gzip:  4.44 kB
+dist/assets/index-DihPHGRz.js   248.46 kB │ gzip: 76.69 kB
+
+[32m✓ built in 235ms[39m
+
+$ npm run check:secrets
+
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.

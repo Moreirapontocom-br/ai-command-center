@@ -46,3 +46,38 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check build for leaked credentials
+        run: npm run check:secrets
+
+  secret-scan:
+    # Verificação de segredos no repositório inteiro (não só no dist/): arquivos versionados e
+    # linhas adicionadas por cada commit do PR. Nunca imprime o valor encontrado. Sem dependências.
+    name: Secret scan (tracked files & commits)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.x'
+
+      - name: Scan tracked files
+        run: node scripts/check-secrets.mjs tracked
+
+      - name: Scan commits added by the PR
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-secrets.mjs commits "$BASE_SHA..$HEAD_SHA"
+
+      - name: Scan full history (manual run)
+        if: github.event_name != 'pull_request'
+        run: node scripts/check-secrets.mjs history

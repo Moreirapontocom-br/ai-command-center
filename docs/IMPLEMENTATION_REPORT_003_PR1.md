@@ -6,7 +6,7 @@
 | --- | --- |
 | Branch | `feature/003-security-foundation` (criada a partir de `origin/main`) |
 | SHA inicial (base) | `0de3903d9530feb45cc8d25a91fe7f0fbd580ec1` (merge do PR #32), igual à base esperada |
-| Commits | `c65fa35` S1 (governança) · `c360d05` S2 (segurança) · commit deste relatório (head da branch; SHA completo na descrição do PR) |
+| Commits | `c65fa35` S1 (governança) · `c360d05` S2 (segurança) · `13d2c86` relatório (SHA revisado) · correção **R1** (head da branch; ver seção 10) |
 | Escopo | Somente o PR 1. **Nenhuma** autenticação, login, senha ou sessão (PR 2) |
 | Data | 13/11/2026 |
 
@@ -32,7 +32,7 @@
 | Ativação segura de `core.hooksPath` | `scripts/install-git-hooks.mjs` · `npm run hooks:install` / `hooks:check` |
 | CI também em push na `main` | `.github/workflows/ci.yml` |
 | Auditoria informativa da `main` | `.github/workflows/main-audit.yml`, `scripts/audit-main.mjs`, `scripts/main-audit-lib.mjs` · `npm run audit:main` |
-| Testes | `scripts/pre-push-hook.test.mjs` (17), `scripts/main-audit.test.mjs` (21) |
+| Testes | `scripts/pre-push-hook.test.mjs` (17), `scripts/main-audit.test.mjs` (33, sendo 12 da correção R1) |
 
 **Hook pre-push.** Recusa qualquer ref remota `refs/heads/main` (sem diferenciar maiúsculas), em qualquer remoto ou URL; indica se seria atualização, atualização forçada ou exclusão. Com vários refspecs, o push inteiro é recusado e nada é enviado. Testado com o Git real em repositórios temporários (configuração global isolada): `main`, `HEAD:main`, `feature:refs/heads/main`, remoto `upstream`, URL direta, `Main`, `:main`, `--delete`, `--force`, `+refspec`, `--force-with-lease`, `--all`, `--mirror`, múltiplos refspecs; permitidos: branch de feature, `feature/main-fix`, `mainline`, `main2` e tags. Um teste **documenta a limitação**: `--no-verify` ignora o hook. Também verificado no clone real com `git push --dry-run origin HEAD:main` (bloqueado; nada enviado).
 
@@ -105,6 +105,7 @@ A proteção **no servidor** (branch protection/rulesets) é indisponível: HTTP
 | `docs/evidence/issue003-pr1-checks.txt` | Testes, lint, build, verificações de segredos (dist, versionados, commits, histórico) e CSP, hook no clone real |
 | `docs/evidence/issue003-pr1-csp-browser.txt` | CSP efetiva e comportamento no Chrome (preview, preview com labels, dev) |
 | `docs/evidence/issue003-pr1-csp-preview-tarefas-1440.png` | Captura do preview sob a CSP de produção |
+| `docs/evidence/issue003-pr1-r1-audit-budget.txt` | Correção R1: testes com relógio simulado, auditoria real e eventos simulados |
 | `docs/evidence/issue003-pr1-dependencies.txt` | `npm audit` (omit=dev e completo), `npm ls minimatch`, versões publicadas, alertas do Dependabot |
 
 **CI do PR:** resultado registrado na descrição/comentários do PR. O workflow `Main audit` e o gatilho de push da CI só podem executar depois que estes arquivos estiverem na `main` (o GitHub lê workflows de push/dispatch da branch padrão). Portanto, **não foram executados no GitHub** neste PR, só localmente.
@@ -114,7 +115,7 @@ A proteção **no servidor** (branch protection/rulesets) é indisponível: HTTP
 1. **Proteção no servidor indisponível** (Free + privado). Opções, que são decisão do PO: tornar o repositório público ou contratar o GitHub Pro. Até lá, valem processo, hook e auditoria.
 2. **Hooks são locais e opcionais**: cada clone precisa de `npm run hooks:install`; `--no-verify` contorna.
 3. **Primeira execução real** da auditoria e da CI em push na `main` só ocorrerá no merge deste PR. Recomenda-se conferir o run após o merge. O commit de merge deve aparecer como `ok` (PR #N).
-4. **Auditoria limitada** a 2048 commits por evento (limite do payload, sinalizado no relatório) e à consistência eventual da API.
+4. **Auditoria limitada** a 2048 commits por evento (limite do payload, sinalizado no relatório), à consistência eventual da API e ao orçamento de 3 min (seção 10). Commits não examinados a tempo aparecem como inconclusivos.
 5. **RISK-001** (`minimatch`) aberto até 13/12/2026; existe atualização parcial do ESLint disponível (seção 4).
 6. **Mudança de configuração para gh-cli**: `.env.local` existentes precisam de `ACC_DEPLOYMENT=local`.
 7. A CSP vale onde o Vite serve o frontend (dev e preview). Uma hospedagem futura precisa reproduzir `appSecurityHeaders('production')`.
@@ -128,3 +129,36 @@ A proteção **no servidor** (branch protection/rulesets) é indisponível: HTTP
 - Primeiras rotas POST (login/logout) com proteção CSRF: `Origin` obrigatório e igual à origem, além de `SameSite`. Atualizar o teste que exige somente GET/HEAD de forma explícita, sem afrouxar as rotas de negócio.
 - Em `ACC_DEPLOYMENT=production`: exigir HTTPS, HSTS e host/origens configuráveis com allowlist, e continuar recusando gh-cli.
 - Manter `shared/securityHeaders.ts` como fonte única e estender `hardening.test.ts`.
+
+## 10. Correção R1 — orçamento de tempo da auditoria (revisão independente do SHA `13d2c86`)
+
+**Problema apontado:** o job tem timeout de 5 min, mas `auditCommits` fazia até 3 novas tentativas com 5 s de espera **para cada** commit não confirmado. Um lote grande sem PR associado poderia estourar o timeout: cerca de 15 s × N commits, mais as consultas.
+
+**Correção** (`scripts/main-audit-lib.mjs`, `scripts/audit-main.mjs`, `.github/workflows/main-audit.yml`):
+
+| Item | Como foi resolvido |
+| --- | --- |
+| Orçamento global | `budgetMs` em `auditCommits`. No workflow, `AUDIT_BUDGET_MS=180000` (3 min) contra o timeout de 5 min do job, deixando ≥ 2 min para checkout e setup. A CLI recusa valores fora de 10–240 s. Um teste garante que `orçamento + 90 s ≤ timeout` |
+| Retries preservados, sem espera excessiva | Retries por **rodada**: a rodada 0 consulta todos os commits; as rodadas 1–3 consultam de novo só os não confirmados, após **uma** espera de 5 s compartilhada. A espera total cai para no máximo 15 s, qualquer que seja o tamanho do lote |
+| Consultas limitadas | Nenhuma consulta começa com menos de 1 s restante. Cada uma recebe `timeoutMs = min(10 s, tempo restante)`, aplicado na CLI com `AbortSignal.timeout` (cobre também a leitura do corpo). Nenhuma espera começa sem tempo para ela e para mais uma consulta |
+| Esgotamento | Commits nunca consultados viram `inconclusive` ("não examinado: orçamento de tempo da auditoria esgotado"); os já consultados mantêm o último resultado (`attention`/`inconclusive`). **Nada é aprovado sem confirmação.** O relatório inclui uma nota com a quantidade de commits não examinados |
+| Alertas confirmados | `forced`/`deleted` vêm do evento e não dependem da API nem do orçamento. A anotação `::error` agora é emitida **antes** das consultas: mesmo que o job fosse interrompido, o alerta já estaria no log. O status continua `alert` (saída 1) |
+| Natureza informativa | Inalterada: só `alert` falha o job; `attention`/`inconclusive` geram avisos |
+
+**Testes novos (12, relógio simulado, sem esperas reais):**
+- lote de 50 commits sem PR: 200 consultas e só 3 esperas;
+- 2048 commits com orçamento esgotado: os examinados ficam `ok` e os demais `inconclusive`, sem nenhuma espera;
+- espera de retry não iniciada sem tempo suficiente;
+- falhas da API: `inconclusive` e número de consultas limitado;
+- `timeoutMs` limitado pelo tempo restante;
+- PR que aparece na 2ª rodada é confirmado;
+- alerta de push forçado sobrevive ao esgotamento;
+- CLI sem rede: `::error` antes do relatório com saída 1, inconclusivo sem credencial, e recusa de `AUDIT_BUDGET_MS` inválido (3 casos).
+
+**Validação:**
+- `npm test`: **274/274** (178 preexistentes + 96 novos);
+- lint, build, `check:secrets` (dist), `check:csp` e varredura de arquivos versionados: OK;
+- auditoria real da `main`: OK;
+- evento simulado do merge do PR #32 na API real: OK; o mesmo evento com `forced=true`: alerta, saída 1.
+
+Evidência: `docs/evidence/issue003-pr1-r1-audit-budget.txt`.

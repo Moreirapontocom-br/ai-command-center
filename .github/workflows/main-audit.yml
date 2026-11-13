@@ -26,6 +26,7 @@ jobs:
   audit:
     name: Main integrity audit (informative)
     runs-on: ubuntu-latest
+    # O script tem orçamento próprio (AUDIT_BUDGET_MS = 3 min) com margem para checkout e setup.
     timeout-minutes: 5
     steps:
       - name: Checkout (full history)
@@ -43,4 +44,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AUDIT_DEPTH: ${{ inputs.depth || '20' }}
+          AUDIT_BUDGET_MS: '180000'
         run: node scripts/audit-main.mjs

@@ -47,27 +47,93 @@ export function classifyCommit(sha, pulls, { branch = 'main', isRoot = false } =
   return { sha, status: STATUS.ATTENTION, detail: `nenhum PR mesclado na ${branch} associado: revisar manualmente` };
 }
 
+/** Padrões do orçamento (ver scripts/audit-main.mjs e .github/workflows/main-audit.yml). */
+export const AUDIT_DEFAULTS = Object.freeze({
+  retries: 3,
+  delayMs: 5000,
+  /** Tempo máximo de uma consulta à API (aplicado pelo `fetchPulls` via `timeoutMs`). */
+  requestTimeoutMs: 10_000,
+  /** Não inicia uma consulta com menos tempo restante do que isto. */
+  minRequestMs: 1000,
+});
+
+const isSettled = (result) => result?.status === STATUS.OK || result?.status === STATUS.INFO;
+
 /**
- * Consulta os PRs de cada commit. Um commit sem PR mesclado é consultado novamente (consistência
- * eventual); falha da API resulta em `inconclusive`, nunca em violação.
+ * Consulta os PRs de cada commit dentro de um ORÇAMENTO GLOBAL de tempo (`budgetMs`).
+ *
+ * - Rodada 0: cada commit é consultado uma vez, em ordem.
+ * - Rodadas 1..`retries`: só os commits ainda não confirmados (sem PR mesclado ou com falha da API)
+ *   são consultados de novo, após UMA espera de `delayMs` por rodada — compartilhada por todos —
+ *   para cobrir o atraso de indexação da API. A espera total fica limitada a `retries × delayMs`,
+ *   qualquer que seja o tamanho do lote.
+ * - Nenhuma consulta começa com menos de `minRequestMs` restantes; cada uma recebe
+ *   `timeoutMs = min(requestTimeoutMs, tempo restante)`, que o `fetchPulls` deve respeitar.
+ * - Nenhuma espera começa se não sobrar tempo para ela e para mais uma consulta.
+ * - Esgotado o orçamento: commits nunca consultados viram `inconclusive`; os já consultados mantêm
+ *   o último resultado (`attention`/`inconclusive`). Nenhum commit é aprovado sem confirmação.
+ *
+ * `now` e `sleep` são injetáveis (relógio simulado nos testes).
  */
-export async function auditCommits({ shas, branch = 'main', fetchPulls, isRoot = () => false, retries = 3, delayMs = 5000, sleep }) {
+export async function auditCommits({
+  shas,
+  branch = 'main',
+  fetchPulls,
+  isRoot = () => false,
+  retries = AUDIT_DEFAULTS.retries,
+  delayMs = AUDIT_DEFAULTS.delayMs,
+  budgetMs = Number.POSITIVE_INFINITY,
+  requestTimeoutMs = AUDIT_DEFAULTS.requestTimeoutMs,
+  minRequestMs = AUDIT_DEFAULTS.minRequestMs,
+  now = Date.now,
+  sleep,
+}) {
   const wait = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const results = [];
-  for (const sha of shas) {
-    let result;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        result = classifyCommit(sha, await fetchPulls(sha), { branch, isRoot: isRoot(sha) });
-      } catch (error) {
-        result = { sha, status: STATUS.INCONCLUSIVE, detail: `consulta à API falhou (${safeMessage(error)})` };
+  const deadline = now() + budgetMs;
+  const remaining = () => deadline - now();
+  const results = new Map();
+  let budgetExhausted = false;
+  let requests = 0;
+
+  async function examine(sha) {
+    requests++;
+    try {
+      const timeoutMs = Math.min(requestTimeoutMs, remaining());
+      return classifyCommit(sha, await fetchPulls(sha, { timeoutMs }), { branch, isRoot: isRoot(sha) });
+    } catch (error) {
+      return { sha, status: STATUS.INCONCLUSIVE, detail: `consulta à API falhou (${safeMessage(error)})` };
+    }
+  }
+
+  for (let round = 0; round <= retries && !budgetExhausted; round++) {
+    const queue = round === 0 ? shas : shas.filter((sha) => results.has(sha) && !isSettled(results.get(sha)));
+    if (queue.length === 0) break;
+    if (round > 0) {
+      if (remaining() < delayMs + minRequestMs) {
+        budgetExhausted = true;
+        break;
       }
-      if (result.status === STATUS.OK || isRoot(sha) || attempt === retries) break;
       await wait(delayMs);
     }
-    results.push(result);
+    for (const sha of queue) {
+      if (remaining() < minRequestMs) {
+        budgetExhausted = true;
+        break;
+      }
+      results.set(sha, await examine(sha));
+    }
   }
-  return results;
+
+  const ordered = shas.map(
+    (sha) =>
+      results.get(sha) ?? {
+        sha,
+        status: STATUS.INCONCLUSIVE,
+        detail: 'não examinado: orçamento de tempo da auditoria esgotado',
+      },
+  );
+  const unexamined = shas.length - results.size;
+  return { results: ordered, budgetExhausted, unexamined, requests };
 }
 
 /** Só a primeira linha e sem nada que pareça credencial. */

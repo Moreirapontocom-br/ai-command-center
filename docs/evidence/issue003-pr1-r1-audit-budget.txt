@@ -1,0 +1,70 @@
+# Issue #003 PR 1 — Correção R1 (orçamento de tempo da auditoria) — 2026-11-13T22:16:14Z
+# Base da correção: 13d2c86. Nenhum token registrado.
+
+## Testes da auditoria (relógio simulado, sem esperas reais)
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > merge commit (o próprio commit de merge) → ok 1ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > commit da branch trazido por merge commit → ok 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > squash merge → ok 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > rebase merge (commit reescrito associado ao PR) → ok 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > PR mesclado em outra base não conta para a main 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > commit sem PR → atenção (não afirma violação) 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > commit ligado a PR ainda aberto → atenção específica 1ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: classificação de commits > commit raiz sem PR é identificado como criação do repositório 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: consultas à API > repete a consulta quando o PR ainda não aparece (consistência eventual) 1ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: consultas à API > falha da API → inconclusivo, sem vazar credenciais na mensagem 1ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: consultas à API > commit raiz não é consultado repetidamente 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: orçamento de tempo (R1) > lote grande sem PR: espera por RODADA (não por commit) e respeita o orçamento 1ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: orçamento de tempo (R1) > orçamento esgotado na 1ª rodada: commits não consultados ficam inconclusivos, nunca aprovados 4ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: orçamento de tempo (R1) > não inicia espera de retry sem tempo para ela e para mais uma consulta 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: orçamento de tempo (R1) > falhas da API: inconclusivo, retries limitados pelo orçamento, consultas limitadas 1ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: orçamento de tempo (R1) > cada consulta recebe timeoutMs limitado pelo tempo restante e pelo teto por requisição 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: orçamento de tempo (R1) > atraso de indexação continua coberto: PR que aparece na 2ª rodada é confirmado 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: orçamento de tempo (R1) > alerta de push forçado sobrevive ao esgotamento do orçamento 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: CLI (sem rede) > push forçado: anotação de erro emitida antes do relatório e saída 1 1008ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: CLI (sem rede) > push normal sem credencial: inconclusivo, saída 0 1038ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: CLI (sem rede) > recusa AUDIT_BUDGET_MS fora da faixa segura (5000) 927ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: CLI (sem rede) > recusa AUDIT_BUDGET_MS fora da faixa segura (999999) 950ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: CLI (sem rede) > recusa AUDIT_BUDGET_MS fora da faixa segura (abc) 982ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: evento push > merge normal via PR: sem alertas, audita commits enviados e o head 1ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: evento push > push forçado reportado pelo GitHub → alerta 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: evento push > exclusão da main → alerta, sem auditar o SHA zerado 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: evento push > push em outra branch é ignorado 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: evento push > ignora SHAs malformados e não ecoa caracteres de controle do pusher 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: resultado e relatório > o pior resultado define o status geral 0ms
+ ✓ scripts/main-audit.test.mjs > auditoria da main: resultado e relatório > o relatório se declara detectivo e não afirma violação 0ms
+ ✓ scripts/main-audit.test.mjs > workflows de CI > CI dispara em pull_request, workflow_dispatch e push na main 0ms
+ ✓ scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura 0ms
+ ✓ scripts/main-audit.test.mjs > workflows de CI > nenhum workflow concede escrita nem usa pull_request_target 0ms
+      Tests  33 passed (33)
+   Duration  6.10s (tests 97%, setup 3%)
+
+## Suíte completa
+ Test Files  17 passed (17)
+      Tests  274 passed (274)
+   Start at  19:14:43
+   Duration  54.35s (tests 62%, setup 13%, import 9%, transform 8%, environment 8%)
+
+
+## Auditoria real (somente leitura) — últimos 20 commits de origin/main
+  **Resultado:** ✅ OK — nenhum commit auditado exige revisão (PR mesclado ou commit raiz)
+  _Controle DETECTIVO: roda depois que a main já mudou e não impede nada. Ausência de PR associado é sinal para revisão, não prova de alteração indevida. Ver docs/BRANCH_POLICY.md._
+
+## Evento push simulado do merge do PR #32 (API real): saída 0
+  ## Auditoria informativa da main
+  
+  **Resultado:** ✅ OK — nenhum commit auditado exige revisão (PR mesclado ou commit raiz)
+  
+  Evento: push em `refs/heads/main` (90f1849 → 0de3903).
+  
+  | Commit | Resultado | Detalhe |
+  | --- | --- | --- |
+  | `ab6b26f` | ok | introduzido pelo PR #32 (mesclado) |
+  | `0de3903` | ok | introduzido pelo PR #32 (mesclado) |
+  
+  _Controle DETECTIVO: roda depois que a main já mudou e não impede nada. Ausência de PR associado é sinal para revisão, não prova de alteração indevida. Ver docs/BRANCH_POLICY.md._
+
+## Mesmo evento com forced=true e GITHUB_ACTIONS=true: saída 1; ::error emitido antes do relatório
+  ::error title=Auditoria da main::o GitHub reportou push FORÇADO (não fast-forward) na main: 90f1849 → 0de3903 (pusher: Moreirapontocom-br). Histórico anterior pode ter sido reescrito.
+  ## Auditoria informativa da main
+  
+  **Resultado:** 🚨 ALERTA — o GitHub reportou um fato que exige revisão imediata

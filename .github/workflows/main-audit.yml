@@ -1,0 +1,46 @@
+name: Main audit
+
+# Auditoria INFORMATIVA (detectiva) da main: roda depois que a main mudou e não impede nada.
+# Verifica se cada commit chegou por PR mesclado e se o GitHub reportou push forçado/exclusão.
+# Ver docs/BRANCH_POLICY.md e scripts/main-audit-lib.mjs.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      depth:
+        description: 'Quantidade de commits recentes da main a auditar (1-999)'
+        required: false
+        default: '20'
+
+# Somente leitura: código e PRs. Nenhum segredo além do GITHUB_TOKEN efêmero do próprio workflow.
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: main-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Main integrity audit (informative)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.x'
+
+      - name: Audit main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AUDIT_DEPTH: ${{ inputs.depth || '20' }}
+        run: node scripts/audit-main.mjs

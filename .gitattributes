@@ -1,0 +1,2 @@
+# Hooks executados pelo sh do Git: sempre LF, inclusive em checkouts no Windows.
+.githooks/* text eol=lf

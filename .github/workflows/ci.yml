@@ -3,6 +3,10 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Também valida a main depois de cada merge (Issue #003). Push direto na main é proibido pela
+  # política (docs/BRANCH_POLICY.md); este gatilho só torna visível o estado da main.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Somente leitura do código; o workflow não grava no repositório nem usa segredos.

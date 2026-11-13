@@ -1,0 +1,46 @@
+# Issue #003 PR 1 — saída das verificações locais (2026-11-13T21:58:08Z)
+# Branch feature/003-security-foundation @ c360d051d6354f2ac5be33e6b9077d35786b4ae4; base origin/main 0de3903d9530feb45cc8d25a91fe7f0fbd580ec1
+# Node v24.18.1, Windows 11. Nenhum segredo nesta saída.
+
+## npm test (vitest)
+
+ Test Files  17 passed (17)
+      Tests  262 passed (262)
+   Start at  18:56:10
+   Duration  56.83s (tests 54%, transform 25%, setup 8%, environment 7%, import 6%)
+
+
+Distribuição: 178 testes preexistentes + 84 novos = 262
+  scripts/pre-push-hook.test.mjs  17 (Git real, repositórios temporários)
+  scripts/main-audit.test.mjs     21
+  server/hardening.test.ts        40
+  server/config.test.ts           +6 (gh-cli x ACC_DEPLOYMENT)
+
+## npm run lint
+OK (sem erros)
+
+## npm run build
+dist/index.html                   0.47 kB │ gzip:  0.30 kB
+dist/assets/index-BHBrrxtK.css   18.15 kB │ gzip:  4.45 kB
+dist/assets/index-UVm7LvyH.js   248.46 kB │ gzip: 76.69 kB
+
+✓ built in 156ms
+
+## npm run check:secrets (dist)
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+## npm run check:csp
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+## check-secrets tracked
+Nenhuma credencial encontrada (109 arquivo(s) versionado(s)).
+## check-secrets commits origin/main..HEAD
+Nenhuma credencial encontrada (2 commit(s) em origin/main..HEAD).
+## check-secrets history
+Nenhuma credencial encontrada (12 commit(s) do histórico de HEAD).
+## pre-commit (staged) — executado automaticamente nos commits S1 (12 arquivos) e S2 (18 arquivos): nenhuma credencial
+
+## Hook pre-push no clone real (git push --dry-run, nada é enviado)
+pre-push: bloqueado — atualização de 'refs/heads/main' no remoto 'origin' (origem local: HEAD).
+pre-push: a branch main não recebe push direto. Publique uma branch de feature e abra um PR
+          (docs/BRANCH_POLICY.md). Nenhuma ref foi enviada neste push.
+error: failed to push some refs to 'https://github.com/Moreirapontocom-br/ai-command-center.git'
+(saída 1)

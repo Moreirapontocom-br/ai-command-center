@@ -61,7 +61,7 @@ if (config.credentials?.kind === 'gh-cli') {
 server.listen(config.port, config.host, () => {
   logger.log('info', 'Servidor somente leitura iniciado', {
     url: `http://${config.host}:${config.port}`,
-    credential: config.credentials ? config.credentials.kind : 'nenhuma (modo demonstração)',
+    authMode: config.credentials ? config.credentials.kind : 'nenhuma (modo demonstração)',
     repositories: config.allowedRepositories.join(', '),
   });
 });

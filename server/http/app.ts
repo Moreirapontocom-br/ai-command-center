@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ApiErrorBody, ApiErrorCode, StatusResponse } from '../../shared/contracts.ts';
+import { API_SECURITY_HEADERS } from '../../shared/securityHeaders.ts';
 import type { ServerConfig } from '../config.ts';
 import { ERROR_HTTP_STATUS, IntegrationError } from '../github/errors.ts';
 import type { Logger } from '../logger.ts';
@@ -26,8 +27,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown, extraHeade
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
     'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'no-referrer',
+    // CSP `default-src 'none'`, frame-ancestors/X-Frame-Options, nosniff e no-referrer.
+    ...API_SECURITY_HEADERS,
     // Sem cabeçalhos CORS: o navegador só acessa a API pela mesma origem (proxy do Vite).
     ...extraHeaders,
   });

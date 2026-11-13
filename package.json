@@ -12,6 +12,7 @@
     "dev:server": "node --experimental-strip-types --disable-warning=ExperimentalWarning --watch server/index.ts",
     "build": "tsc -b && vite build",
     "check:secrets": "node scripts/check-dist-secrets.mjs",
+    "check:csp": "node scripts/check-dist-csp.mjs",
     "check:secrets:repo": "node scripts/check-secrets.mjs tracked",
     "check:secrets:history": "node scripts/check-secrets.mjs history",
     "hooks:install": "node scripts/install-git-hooks.mjs",

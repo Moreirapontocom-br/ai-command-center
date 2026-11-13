@@ -54,6 +54,9 @@ jobs:
       - name: Check build for leaked credentials
         run: npm run check:secrets
 
+      - name: Check build compatibility with the production CSP
+        run: npm run check:csp
+
   secret-scan:
     # Verificação de segredos no repositório inteiro (não só no dist/): arquivos versionados e
     # linhas adicionadas por cada commit do PR. Nunca imprime o valor encontrado. Sem dependências.

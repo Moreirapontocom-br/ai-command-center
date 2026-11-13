@@ -27,7 +27,9 @@ cp .env.example .env.local   # opcional: GITHUB_TOKEN fine-grained somente leitu
 
 Rode em dois terminais: `npm run server` (API local em `127.0.0.1:8787`) e `npm run dev` (frontend com proxy `/api`).
 Sem token, ou sem o servidor, a interface continua funcionando em modo demonstração e indica o motivo.
-Em desenvolvimento local também é possível usar a sessão do GitHub CLI (`GITHUB_AUTH=gh-cli`). Esse token costuma ter permissões amplas: veja os riscos antes de usar.
+Em desenvolvimento local também é possível usar a sessão do GitHub CLI (`GITHUB_AUTH=gh-cli`, que exige `ACC_DEPLOYMENT=local`). Esse token costuma ter permissões amplas: veja os riscos antes de usar.
+
+Governança: nenhuma alteração direta na `main` — veja [docs/BRANCH_POLICY.md](docs/BRANCH_POLICY.md) e ative os hooks locais com `npm run hooks:install`.
 Detalhes, permissões do token e segurança: [`docs/GITHUB_INTEGRATION.md`](docs/GITHUB_INTEGRATION.md).
 
 ## Scripts

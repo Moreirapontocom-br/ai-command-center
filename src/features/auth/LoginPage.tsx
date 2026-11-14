@@ -52,7 +52,7 @@ export function LoginPage({ authConfigured, sessionExpired }: { authConfigured: 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4 rounded-xl border border-slate-200 bg-white p-6 shadow-sm" noValidate>
           {sessionExpired && !error && (
             <p role="status" className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              Sua sessão expirou ou foi encerrada. Entre novamente.
+              Sua sessão expirou ou foi encerrada (por exemplo, por um login em outro navegador). Entre novamente.
             </p>
           )}
           {!authConfigured && (

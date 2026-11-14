@@ -7,6 +7,10 @@ import { createSessionStore, type Session, type SessionStore, type SessionStoreO
  * Autenticação do ACC: um único administrador (e-mail + hash scrypt da senha, configurados no
  * servidor), sessões no servidor e cookie `HttpOnly; SameSite=Strict`.
  *
+ * Política de sessão: **uma única sessão administrativa ativa**. Todo login bem-sucedido revoga
+ * qualquer sessão anterior, inclusive de outro navegador ou dispositivo. Login malsucedido não
+ * afeta a sessão existente.
+ *
  * Isto autentica PESSOAS perante o ACC. Não tem relação com a credencial do GitHub (token
  * fine-grained ou gh-cli), que continua exclusiva do servidor.
  */
@@ -47,7 +51,8 @@ export interface AuthService {
 }
 
 export const DEFAULT_AUTH_LIMITS = {
-  sessions: { idleTimeoutMs: 30 * 60_000, absoluteTimeoutMs: 8 * 60 * 60_000, maxSessions: 10 },
+  // `maxSessions: 1` é defesa em profundidade: o login já revoga todas as sessões anteriores.
+  sessions: { idleTimeoutMs: 30 * 60_000, absoluteTimeoutMs: 8 * 60 * 60_000, maxSessions: 1 },
   throttle: { windowMs: 15 * 60_000, lockMs: 15 * 60_000, perClientLimit: 5, globalLimit: 20 },
   maxConcurrentVerifications: 2,
 } as const;
@@ -111,6 +116,8 @@ export function createAuthService(options: AuthOptions): AuthService {
         return { ok: false, reason: 'invalid_credentials' };
       }
       throttle.recordSuccess(client);
+      // Sessão administrativa única: o novo login encerra todas as anteriores (qualquer navegador).
+      store.revokeAll();
       const { token, session } = store.create({ email: options.admin.email, scope: options.scope });
       return { ok: true, token, session };
     },

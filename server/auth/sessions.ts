@@ -21,6 +21,8 @@ export interface SessionStore {
   /** Valida o token e renova a janela de inatividade. `null` se ausente, expirado ou revogado. */
   touch(token: string): Session | null;
   revoke(token: string): void;
+  /** Revoga todas as sessões (usado no login: sessão administrativa única). */
+  revokeAll(): void;
   size(): number;
 }
 
@@ -86,6 +88,10 @@ export function createSessionStore(options: SessionStoreOptions): SessionStore {
 
     revoke(token) {
       if (TOKEN_PATTERN.test(token)) sessions.delete(keyOf(token));
+    },
+
+    revokeAll() {
+      sessions.clear();
     },
 
     size() {

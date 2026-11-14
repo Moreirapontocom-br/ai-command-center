@@ -138,10 +138,46 @@ describe('login', () => {
     expect((await post('/api/auth/login', body)).status).toBe(400);
   });
 
-  it('corpo acima de 4 KiB → 413', async () => {
+  it('corpo acima de 4 KiB → 413 e a conexão é encerrada (login e logout)', async () => {
     const { post } = await startApp();
-    const res = await post('/api/auth/login', { email: TEST_ADMIN_EMAIL, password: 'x'.repeat(5000) });
+    for (const path of ['/api/auth/login', '/api/auth/logout']) {
+      const res = await post(path, { email: TEST_ADMIN_EMAIL, password: 'x'.repeat(5000) });
+      expect(res.status, path).toBe(413);
+      expect(res.headers.connection, path).toBe('close');
+    }
+  });
+
+  it('Content-Length acima do limite é recusado antes da leitura', async () => {
+    const { call } = await startApp();
+    const res = await call('/api/auth/login', {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json', 'content-length': '100000' },
+      body: '{}',
+    });
     expect(res.status).toBe(413);
+  });
+
+  it('__proto__/constructor no corpo não poluem objetos: 400', async () => {
+    const { post } = await startApp();
+    for (const body of [
+      `{"email":"${TEST_ADMIN_EMAIL}","password":"x","__proto__":{"admin":true}}`,
+      `{"email":"${TEST_ADMIN_EMAIL}","password":"x","constructor":{"prototype":{"admin":true}}}`,
+    ]) {
+      expect((await post('/api/auth/login', body)).status).toBe(400);
+    }
+    expect(({} as Record<string, unknown>).admin).toBeUndefined();
+  });
+
+  it('Content-Type JSON com charset é aceito; logout exige objeto JSON', async () => {
+    const { post, login } = await startApp();
+    const ok = await post('/api/auth/login', { email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD }, {
+      'content-type': 'application/json; charset=utf-8',
+    });
+    expect(ok.status).toBe(200);
+    const { cookie } = await login();
+    for (const body of ['', 'nao-json', '[]', 'null', '"x"']) {
+      expect((await post('/api/auth/logout', body, { cookie })).status, body).toBe(400);
+    }
   });
 
   it('sem administrador configurado: login 503 e sessão informa authConfigured=false', async () => {
@@ -153,13 +189,73 @@ describe('login', () => {
     expect((await call('/api/status')).status).toBe(401);
   });
 
-  it('rotaciona a sessão: um novo login revoga o cookie anterior enviado pelo navegador', async () => {
+  it('rotaciona a sessão no mesmo navegador: o novo login revoga o cookie anterior', async () => {
     const { login, call } = await startApp();
     const first = await login();
     const second = await login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD, { cookie: first.cookie });
     expect(second.cookie).not.toBe(first.cookie);
     expect((await call('/api/status', { headers: { cookie: first.cookie } })).status).toBe(401);
     expect((await call('/api/status', { headers: { cookie: second.cookie } })).status).toBe(200);
+  });
+});
+
+describe('sessão administrativa única (revogação entre navegadores)', () => {
+  it('login no navegador B encerra a sessão do navegador A, que nunca enviou o cookie de B', async () => {
+    const { login, call } = await startApp();
+    const browserA = await login();
+    expect((await call('/api/status', { headers: { cookie: browserA.cookie } })).status).toBe(200);
+
+    const browserB = await login(); // sem cookie: outro navegador/dispositivo
+    expect(browserB.res.status).toBe(200);
+    expect(browserB.cookie).not.toBe(browserA.cookie);
+
+    const revoked = await call('/api/status', { headers: { cookie: browserA.cookie } });
+    expect(revoked.status).toBe(401);
+    expect(revoked.json().error.code).toBe('unauthenticated');
+    expect(String(revoked.headers['set-cookie'])).toMatch(/^acc_session=; .*Max-Age=0$/);
+    expect((await call(SNAPSHOT_PATH, { headers: { cookie: browserA.cookie } })).status).toBe(401);
+    expect((await call('/api/auth/session', { headers: { cookie: browserA.cookie } })).json()).toEqual({
+      authenticated: false,
+      authConfigured: true,
+    });
+    expect((await call('/api/status', { headers: { cookie: browserB.cookie } })).status).toBe(200);
+  });
+
+  it('login malsucedido em outro navegador NÃO derruba a sessão ativa', async () => {
+    const { login, call } = await startApp();
+    const browserA = await login();
+    expect((await login(TEST_ADMIN_EMAIL, 'senha-errada-qualquer')).res.status).toBe(401);
+    expect((await login('intruso@example.test', TEST_ADMIN_PASSWORD)).res.status).toBe(401);
+    expect((await call('/api/status', { headers: { cookie: browserA.cookie } })).status).toBe(200);
+  });
+
+  it('logout do navegador revogado não afeta a sessão ativa; logout da ativa encerra tudo', async () => {
+    const { login, post, call } = await startApp();
+    const browserA = await login();
+    const browserB = await login();
+    expect((await post('/api/auth/logout', {}, { cookie: browserA.cookie })).status).toBe(200);
+    expect((await call('/api/status', { headers: { cookie: browserB.cookie } })).status).toBe(200);
+
+    expect((await post('/api/auth/logout', {}, { cookie: browserB.cookie })).status).toBe(200);
+    for (const cookie of [browserA.cookie, browserB.cookie]) {
+      expect((await call('/api/status', { headers: { cookie } })).status).toBe(401);
+    }
+    const again = await login(); // novo login continua possível
+    expect((await call('/api/status', { headers: { cookie: again.cookie } })).status).toBe(200);
+  });
+
+  it('a sessão ativa continua expirando por inatividade e por tempo absoluto', async () => {
+    const { login, call, advance } = await startApp();
+    await login(); // navegador A, revogado a seguir
+    const browserB = await login();
+    advance(31 * 60_000);
+    expect((await call('/api/status', { headers: { cookie: browserB.cookie } })).status).toBe(401);
+    const browserC = await login();
+    for (let elapsed = 0; elapsed < 8 * 60; elapsed += 25) {
+      expect((await call('/api/status', { headers: { cookie: browserC.cookie } })).status).toBe(200);
+      advance(25 * 60_000);
+    }
+    expect((await call('/api/status', { headers: { cookie: browserC.cookie } })).status).toBe(401);
   });
 });
 
@@ -181,7 +277,7 @@ describe('tentativas excessivas de login', () => {
 });
 
 describe('acesso sem autenticação', () => {
-  it('rotas privadas respondem 401 antes de qualquer validação, sem consultar o GitHub', async () => {
+  it('rotas privadas respondem 401 antes das validações específicas da rota, sem consultar o GitHub', async () => {
     const { call, snapshots } = await startApp();
     for (const path of [
       '/api/status',
@@ -198,6 +294,23 @@ describe('acesso sem autenticação', () => {
       expect(res.body).not.toContain('Moreirapontocom-br');
     }
     expect(snapshots.getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('ordem: método (405), origem (403) e rate limit (429) antes da autenticação; validações da rota depois', async () => {
+    const { call, login } = await startApp({ rateLimitPerMinute: 4 });
+    // Visitante sem sessão:
+    expect((await call('/api/status', { method: 'POST', headers: { origin: ORIGIN } })).status).toBe(405);
+    expect((await call('/api/status', { headers: { host: 'evil.example:80' } })).status).toBe(403);
+    expect((await call('/api/status', { headers: { origin: 'https://evil.example' } })).status).toBe(403);
+    expect((await call('/api/repos/-bad/x/snapshot')).status).toBe(401); // 400 só depois da autenticação
+    // Com sessão, as validações específicas da rota passam a responder:
+    const { cookie } = await login();
+    expect((await call('/api/repos/-bad/x/snapshot', { headers: { cookie } })).status).toBe(400);
+    expect((await call('/api/repos/torvalds/linux/snapshot', { headers: { cookie } })).status).toBe(404);
+    // 405 e 403 respondem antes do limitador; as 4 requisições seguintes esgotam o limite (4/min):
+    const limited = await call('/api/status');
+    expect(limited.status).toBe(429);
+    expect(limited.json().error.code).toBe('too_many_requests');
   });
 
   it('/api/auth/session é público e não expõe configuração nem repositórios', async () => {
@@ -276,6 +389,8 @@ describe('CSRF nas rotas POST', () => {
       [{ origin: 'http://localhost:3000', 'content-type': 'application/json' }, 403],
       [{ origin: ORIGIN, 'sec-fetch-site': 'same-site', 'content-type': 'application/json' }, 403],
       [{ origin: ORIGIN, 'sec-fetch-site': 'cross-site', 'content-type': 'application/json' }, 403],
+      [{ origin: ORIGIN, 'sec-fetch-site': 'none', 'content-type': 'application/json' }, 403],
+      [{ origin: 'null', 'content-type': 'application/json' }, 403], // iframe sandbox / arquivo local
       [{ origin: ORIGIN, 'content-type': 'text/plain' }, 415],
       [{ origin: ORIGIN, 'content-type': 'application/x-www-form-urlencoded' }, 415],
       [{ origin: ORIGIN }, 415],
@@ -326,6 +441,22 @@ describe('escopo autorizado', () => {
 });
 
 describe('não exposição de segredos', () => {
+  it('corpos recusados (malformados, grandes, CSRF) não aparecem em logs nem em respostas', async () => {
+    const { post, call, logLines } = await startApp();
+    const secret = `${TEST_ADMIN_PASSWORD}-recusada`;
+    const replies = [
+      await post('/api/auth/login', `{"email":"${TEST_ADMIN_EMAIL}","password":"${secret}"`), // JSON quebrado
+      await post('/api/auth/login', { email: TEST_ADMIN_EMAIL, password: secret, extra: 1 }),
+      await post('/api/auth/login', { email: TEST_ADMIN_EMAIL, password: `${secret}${'y'.repeat(5000)}` }),
+      await post('/api/auth/login', { email: TEST_ADMIN_EMAIL, password: secret }, { 'content-type': 'text/plain' }),
+      await post('/api/auth/login', { email: TEST_ADMIN_EMAIL, password: secret }, { origin: 'https://evil.example' }),
+      await call(`/api/auth/login?password=${secret}`, { method: 'POST' }),
+    ];
+    const text = replies.map((r) => r.body).join('\n') + logLines.join('\n');
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain(TEST_ADMIN_EMAIL);
+  });
+
   it('senha, cookie de sessão e token do GitHub nunca aparecem em respostas nem em logs', async () => {
     const { login, post, call, logLines } = await startApp();
     await login(TEST_ADMIN_EMAIL, `${TEST_ADMIN_PASSWORD}-errada`);
@@ -344,6 +475,8 @@ describe('não exposição de segredos', () => {
       expect(logs).not.toContain(secret);
     }
     expect(responses + logs).not.toMatch(/scrypt:/);
+    // Logs só com metadados: nenhum corpo de requisição nem cabeçalho Cookie/Set-Cookie.
+    expect(logs).not.toMatch(/acc_session=|set-cookie|"cookie"|"password"|"email"/i);
     // O e-mail do administrador não é registrado nos eventos de login.
     expect(logs).not.toContain(TEST_ADMIN_EMAIL);
   });

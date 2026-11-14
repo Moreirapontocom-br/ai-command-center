@@ -51,3 +51,24 @@ Capturas: docs/evidence/issue003-pr2-login-1440.png, docs/evidence/issue003-pr2-
 ## Defeito encontrado e corrigido durante a validação
 auth:hash-password com entrada redirecionada: rl.close() emitia 'close' de forma síncrona antes de resolve(line),
 e a senha lida virava ''. Corrigido (resolve antes de close) e coberto por teste em server/auth/auth.test.ts.
+
+## Rodada final (revisão do PR #35) — 2026-11-14T01:52:49Z
+### Checks locais
+ Test Files  21 passed (21)
+      Tests  350 passed (350)
+LINT: ok
+BUILD: ok
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+Nenhuma credencial encontrada (129 arquivo(s) versionado(s)).
+### Servidor real: sessão administrativa única entre dois navegadores (cookie jars separados), corpo grande e logs
+navegador A login: 200
+navegador A /api/status: 200
+navegador B login (outro jar, sem cookie de A): 200
+navegador A /api/status após login de B: 401
+navegador B /api/status: 200
+login errado (C) não derruba B: 401 → B: 200
+logout de A (revogado) não afeta B: 200 → B: 200
+logout de B: 200 → B: 401
+corpo de 100 KB no login: 413
+vazamentos no log: senha=0 cookie=0 email=0

@@ -90,7 +90,7 @@ describe('sessão e logout', () => {
       snapshot: [apiError('unauthenticated', 401)],
     });
     render(<App />);
-    expect(await screen.findByText('Sua sessão expirou ou foi encerrada. Entre novamente.')).toBeInTheDocument();
+    expect(await screen.findByText('Sua sessão expirou ou foi encerrada (por exemplo, por um login em outro navegador). Entre novamente.')).toBeInTheDocument();
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
   });
 

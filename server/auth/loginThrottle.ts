@@ -1,13 +1,20 @@
 /**
- * Proteção contra tentativas repetidas de login (memória do processo).
+ * Proteção contra tentativas repetidas de login (memória do processo). **Válida apenas para o MVP
+ * local** (servidor restrito a loopback); deve ser revista antes de qualquer exposição à rede.
  *
  * Duas camadas, verificadas ANTES de calcular o hash da senha:
  * - por cliente (endereço do socket): `perClientLimit` falhas na janela → bloqueio de `lockMs`;
  * - global (qualquer origem): `globalLimit` falhas na janela → bloqueio de `lockMs` para todos.
- *   Limita ataques distribuídos contra a conta única de administrador, ao custo de permitir que
- *   um atacante bloqueie o login temporariamente (aceito no MVP; ver limitações).
  *
- * `X-Forwarded-For` não é considerado: sem proxy confiável configurado ele é controlado pelo cliente.
+ * RISCO DE NEGAÇÃO DE SERVIÇO (aceito no MVP local): quem alcança a porta pode provocar falhas de
+ * propósito e bloquear o login do administrador por `lockMs`, inclusive pelo limite global. A
+ * sessão já ativa NÃO é afetada (falhas não revogam sessões). O bloqueio não é persistido:
+ * reiniciar o servidor o encerra.
+ *
+ * ATRÁS DE PROXY: o "cliente" é o endereço do socket. Pelo proxy do Vite (dev/preview), todo
+ * tráfego chega de 127.0.0.1, então o limite por cliente passa a valer para todos os navegadores
+ * locais juntos. `X-Forwarded-For` não é considerado: sem proxy confiável configurado, ele é
+ * controlado pelo cliente e permitiria contornar o limite.
  */
 
 export interface LoginThrottleOptions {

@@ -105,6 +105,10 @@ function assertSafePost(req: IncomingMessage, deps: AppDeps) {
   if (type !== 'application/json') fail('unsupported_media_type');
 }
 
+/**
+ * Lê o corpo JSON com limite de 4 KiB (declarado em `Content-Length` ou contado durante a leitura).
+ * O conteúdo nunca é registrado em log nem repetido na resposta. Corpo vazio ou inválido → 400.
+ */
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const declared = Number(req.headers['content-length'] ?? '0');
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) fail('payload_too_large');
@@ -207,8 +211,7 @@ export function createRequestHandler(deps: AppDeps) {
           deps.logger.log('warn', 'Login temporariamente bloqueado', { event: `login_${result.reason}` });
           fail('too_many_requests', { retryAfterSeconds: result.retryAfterSeconds });
         }
-        // Rotação: uma sessão anterior enviada por este navegador é revogada.
-        auth.logout(cookieHeader);
+        // `auth.login` já revogou TODAS as sessões anteriores (sessão administrativa única).
         deps.logger.log('info', 'Login do administrador', { event: 'login_success' });
         sendJson(res, 200, sessionBody(result.session), { 'Set-Cookie': auth.sessionCookie(result.token) });
         return;
@@ -217,6 +220,9 @@ export function createRequestHandler(deps: AppDeps) {
       if (pathname === '/api/auth/logout') {
         assertOnlyParams(url, []);
         assertSafePost(req, deps);
+        // O corpo não é usado, mas é validado com o mesmo limite (objeto JSON, normalmente `{}`).
+        const logoutBody = await readJsonBody(req);
+        if (typeof logoutBody !== 'object' || logoutBody === null || Array.isArray(logoutBody)) fail('bad_request');
         auth.logout(cookieHeader);
         deps.logger.log('info', 'Logout', { event: 'logout' });
         const body: SessionResponse = { authenticated: false, authConfigured: auth.configured };
@@ -224,8 +230,10 @@ export function createRequestHandler(deps: AppDeps) {
         return;
       }
 
-      // Daqui em diante, toda rota exige sessão válida, ANTES de qualquer validação específica:
-      // visitantes não distinguem rotas, parâmetros nem repositórios autorizados.
+      // Rotas protegidas. Já foram verificados, nesta ordem e para qualquer visitante: método (405),
+      // Host/Origin/Sec-Fetch-Site (403) e rate limit (429). Agora vem a autenticação (401) e, só
+      // depois dela, as validações específicas da rota (parâmetros 400, allowlist/escopo 404, rota
+      // inexistente 404): um visitante não distingue rotas, parâmetros nem repositórios.
       const current = auth.authenticate(cookieHeader);
       if (!current) {
         if (presentedCookie) errorHeaders['Set-Cookie'] = auth.clearedCookie();
@@ -276,6 +284,8 @@ export function createRequestHandler(deps: AppDeps) {
           reason: integrationError.reason,
         });
       }
+      // Corpo grande demais: o restante não é lido; a conexão é encerrada após a resposta.
+      if (integrationError.code === 'payload_too_large') errorHeaders.Connection = 'close';
       sendError(res, integrationError, errorHeaders);
     } finally {
       deps.logger.log('info', 'request', {

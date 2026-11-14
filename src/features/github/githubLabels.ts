@@ -77,6 +77,11 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
   bad_request: { title: 'Requisição inválida', description: 'Os parâmetros enviados são inválidos.' },
   method_not_allowed: { title: 'Operação não permitida', description: 'O servidor aceita apenas leitura.' },
   forbidden_origin: { title: 'Origem não autorizada', description: 'Acesse o painel pelo endereço local.' },
+  unauthenticated: { title: 'Sessão encerrada', description: 'Sua sessão expirou ou foi encerrada. Entre novamente.' },
+  invalid_credentials: { title: 'Acesso negado', description: 'E-mail ou senha inválidos.' },
+  auth_not_configured: { title: 'Administrador não configurado', description: 'Configure o administrador no servidor.' },
+  unsupported_media_type: { title: 'Requisição inválida', description: 'Formato de dados não suportado.' },
+  payload_too_large: { title: 'Requisição inválida', description: 'Dados enviados muito grandes.' },
   internal: { title: 'Erro inesperado', description: 'Ocorreu um erro interno no servidor.' },
 };
 

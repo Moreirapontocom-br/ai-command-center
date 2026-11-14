@@ -48,8 +48,13 @@ export const ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   upstream_invalid: 'A API do GitHub devolveu dados em formato inesperado.',
   upstream_error: 'A API do GitHub está indisponível no momento.',
   bad_request: 'Parâmetros inválidos.',
-  method_not_allowed: 'Este servidor aceita apenas operações de leitura (GET).',
+  method_not_allowed: 'Método não permitido para este recurso.',
   forbidden_origin: 'Origem da requisição não autorizada.',
+  unauthenticated: 'Sessão ausente, expirada ou encerrada. Faça login.',
+  invalid_credentials: 'E-mail ou senha inválidos.',
+  auth_not_configured: 'Nenhum administrador está configurado neste servidor.',
+  unsupported_media_type: 'Envie os dados como application/json.',
+  payload_too_large: 'Corpo da requisição muito grande.',
   internal: 'Erro interno do servidor.',
 };
 
@@ -67,5 +72,10 @@ export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
   bad_request: 400,
   method_not_allowed: 405,
   forbidden_origin: 403,
+  unauthenticated: 401,
+  invalid_credentials: 401,
+  auth_not_configured: 503,
+  unsupported_media_type: 415,
+  payload_too_large: 413,
   internal: 500,
 };

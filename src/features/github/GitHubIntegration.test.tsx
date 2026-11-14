@@ -11,12 +11,9 @@ import {
   snapshotReply,
 } from '../../test/githubFixtures';
 
-function nav() {
-  return screen.getByRole('navigation', { name: 'Navegação principal' });
-}
-
 async function goTo(name: string) {
-  await userEvent.setup().click(within(nav()).getByRole('button', { name }));
+  const navigation = await screen.findByRole('navigation', { name: 'Navegação principal' });
+  await userEvent.setup().click(within(navigation).getByRole('button', { name }));
 }
 
 describe('integração GitHub na interface', () => {
@@ -24,7 +21,8 @@ describe('integração GitHub na interface', () => {
     mockApi({ status: [json(configuredStatus)], snapshot: [snapshotReply()] });
     render(<App />);
 
-    expect(screen.getByRole('status')).toHaveTextContent('Carregando dados do GitHub');
+    // Primeiro a sessão é verificada; nada do GitHub é pedido antes disso.
+    expect(screen.getByRole('status')).toHaveTextContent('Verificando sessão');
     expect(await screen.findByText('Dados reais do GitHub')).toBeInTheDocument();
     expect(screen.getByText('GitHub conectado')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Moreirapontocom-br/ai-command-center' })).toHaveAttribute(
@@ -64,7 +62,7 @@ describe('integração GitHub na interface', () => {
 
     await userEvent.setup().click(within(alert).getByRole('button', { name: 'Tentar novamente' }));
     expect(await screen.findByText('Dados reais do GitHub')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4); // sessão + status (falha) + status + snapshot
   });
 
   it.each([

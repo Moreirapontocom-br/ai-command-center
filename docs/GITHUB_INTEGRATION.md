@@ -72,7 +72,7 @@ Como funciona (`server/auth/ghCli.ts`):
 - Se o GitHub responder **401**, o cliente chama `invalidate()`, obtém a credencial de novo **uma única vez** e repete a consulta **uma única vez**. Um segundo 401 encerra com `unauthorized`, sem loop. O token fine-grained não é renovável e não repete a consulta.
 
 Barreiras de somente leitura, válidas mesmo com credencial que permite escrita:
-1. O servidor aceita apenas `GET`/`HEAD`.
+1. As rotas de dados aceitam apenas `GET`/`HEAD` e exigem sessão do administrador (Issue #003, PR 2). `POST` existe só em `/api/auth/login` e `/api/auth/logout`, que não chegam ao GitHub.
 2. Allowlist de repositórios no código.
 3. **Allowlist estrita de documentos GraphQL** (`APPROVED_DOCUMENTS` em `server/github/client.ts`): o cliente só envia documentos **idênticos** à `REPO_SNAPSHOT_QUERY`. Qualquer outro documento, inclusive a query aprovada com algo anexado, é recusado **antes** de obter a credencial ou tocar a rede. Ao carregar o módulo, o servidor verifica que todo documento aprovado é uma `query` sem `mutation`/`subscription`.
 4. Endpoint fixo `https://api.github.com/graphql` com `redirect: 'error'`.
@@ -122,7 +122,7 @@ Para o navegador, `FORBIDDEN`, `NOT_FOUND` e HTTP 403 têm o mesmo código e a m
 
 ## Proteções contra uso indevido
 
-1. **Bind só em loopback.** O servidor não inicia com `API_HOST` fora de `127.0.0.1`, `localhost` ou `::1`. Ele não tem autenticação de usuários e por isso não pode ficar exposto à rede.
+1. **Bind só em loopback.** O servidor não inicia com `API_HOST` fora de `127.0.0.1`, `localhost` ou `::1`. Mesmo com o login de administrador (Issue #003, PR 2), a exposição à rede exige HTTPS, Host/origens configuráveis e proxy confiável, ainda não implementados.
 2. **Allowlist de repositórios** (comparação sem diferenciar maiúsculas). Fora dela, a resposta é 404 e o GitHub não é consultado.
 3. **Validação de parâmetros** com regex em `owner` e `repo`, e query string restrita a `refresh=1`.
 4. **`Host` obrigatório de loopback**, contra DNS rebinding. **`Origin` desconhecida** e **`Sec-Fetch-Site: cross-site`** são recusadas. Não há cabeçalhos CORS.

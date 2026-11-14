@@ -2,7 +2,7 @@
 
 Aplicação web para gerenciar o fluxo de trabalho entre diferentes agentes de inteligência artificial (ChatGPT, Claude Code e Gemini).
 
-> **Estado atual (Issue #004):** gerenciamento de **projetos** (nome, descrição, objetivo, estado, projeto ativo), com GitHub **opcional**: cada projeto pode vincular repositórios da allowlist do servidor e mostra apenas os dados deles, em modo **somente leitura**. Acesso com login de administrador único (Issue #003). Agentes e tarefas continuam **fictícios** (modo demonstração). Não há integração com provedores de IA nem operações de escrita no GitHub.
+> **Estado atual (Issue #005):** **tarefas** por projeto (status interno, prioridade, responsável pessoa ou agente, dependências sem ciclos, referências a issue/PR/branch e histórico) e gerenciamento de **projetos** (nome, descrição, objetivo, estado, projeto ativo), com GitHub **opcional**: cada projeto pode vincular repositórios da allowlist do servidor e mostra apenas os dados deles, em modo **somente leitura**. Acesso com login de administrador único (Issue #003). Agentes e o resumo de tarefas do dashboard continuam **fictícios** (modo demonstração). Não há integração com provedores de IA nem operações de escrita no GitHub.
 
 ## Stack
 
@@ -43,6 +43,10 @@ Em desenvolvimento local também é possível usar a sessão do GitHub CLI (`GIT
 
 Na página **Projetos** é possível criar, editar e selecionar projetos; o seletor do cabeçalho troca o projeto ativo. Os dados ficam no servidor, em `data/projects.json` (pasta configurável por `ACC_DATA_DIR`, ignorada pelo Git), e a seleção ativa também é gravada lá, nunca no navegador. Um projeto pode não ter repositório. Se tiver, o painel mostra o primeiro repositório vinculado, e só se ele estiver na allowlist do servidor. Faça backup copiando o arquivo com o servidor parado.
 
+### Tarefas (Issue #005)
+
+A página **Tarefas** lista as tarefas do projeto ativo, com filtros por status, prioridade e responsável, e permite criar e editar tarefas e mudar o status. Os dados ficam em `data/tasks.json`. O status é interno ao ACC e nunca é inferido do GitHub. Atribuir uma tarefa a um agente **não** inicia nenhuma execução, e uma tarefa de agente só pode ser concluída com um PR ou branch como evidência, com a confirmação registrada pela pessoa logada. Regras em `docs/IMPLEMENTATION_REPORT_005.md`.
+
 Governança: nenhuma alteração direta na `main` — veja [docs/BRANCH_POLICY.md](docs/BRANCH_POLICY.md) e ative os hooks locais com `npm run hooks:install`.
 Detalhes, permissões do token e segurança: [`docs/GITHUB_INTEGRATION.md`](docs/GITHUB_INTEGRATION.md).
 
@@ -70,7 +74,9 @@ server/                # Servidor intermediário somente leitura (token só aqui
 ├── auth/              # CredentialProvider: token fine-grained ou GitHub CLI local (preparado para GitHub App)
 ├── github/            # Cliente GraphQL, consulta fixa, tipos crus e normalização
 ├── http/              # Rotas, validação, proteções e limite de requisições
-├── projects/          # Projetos: validação e armazenamento local atômico, isolado por dono
+├── projects/          # Projetos: validação e armazenamento local, isolado por dono
+├── tasks/             # Tarefas: validação, regras de status/dependências/evidência e armazenamento
+├── storage/           # Motor comum de arquivo JSON atômico (projetos e tarefas)
 └── snapshotService.ts # Cache, fallback desatualizado e respeito aos limites da API
 shared/contracts.ts    # Tipos internos compartilhados servidor ↔ frontend
 scripts/               # check-dist-secrets.mjs
@@ -84,7 +90,7 @@ src/
 │   ├── github/        # Dados do GitHub do projeto ativo: provider, issues, PRs, branches, estados
 │   ├── projects/      # Projetos: provider, página, formulário e seletor do projeto ativo
 │   ├── agents/        # Cartões/lista de agentes e utilitários
-│   └── tasks/         # Lista de tarefas, utilitários e testes
+│   └── tasks/         # Tarefas reais do projeto ativo (página, formulário, cartão) e demonstração do dashboard
 ├── data/mockData.ts   # Dados FICTÍCIOS de demonstração
 ├── types/             # Tipos de domínio (Agent, Task, ViewId)
 ├── test/setup.ts      # Configuração do Vitest / jest-dom
@@ -98,7 +104,7 @@ Mais detalhes em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) e [`docs/GITHUB_
 
 - Nenhuma credencial ou chave de API faz parte do código. O token do GitHub fica apenas no servidor local (`.env.local`), nunca no navegador nem em variáveis `VITE_*`.
 - Arquivos `.env*` estão no `.gitignore` (exceto `.env.example`, sem valores). A CI recusa credenciais em arquivos versionados e nos commits do PR (`scripts/check-secrets.mjs`); localmente, ative o hook opcional com `git config core.hooksPath .githooks`.
-- O servidor só escuta em loopback e consulta somente repositórios da allowlist. Rotas de dados exigem sessão válida. `POST` existe só em login/logout e nas rotas de projetos (`/api/projects`, `/api/projects/:id`, `/api/projects/active`), sempre com `Origin` obrigatório, `Sec-Fetch-Site` same-origin e corpo JSON (CSRF), verificados antes da autenticação. Não há `PUT`/`PATCH`/`DELETE`, e nenhuma escrita chega ao GitHub.
+- O servidor só escuta em loopback e consulta somente repositórios da allowlist. Rotas de dados exigem sessão válida. `POST` existe só em login/logout e nas rotas de projetos e tarefas (`/api/projects`, `/api/projects/:id`, `/api/projects/active`, `/api/projects/:id/tasks`, `/api/projects/:id/tasks/:taskId`), sempre com `Origin` obrigatório, `Sec-Fetch-Site` same-origin e corpo JSON (CSRF), verificados antes da autenticação. Não há `PUT`/`PATCH`/`DELETE`, e nenhuma escrita chega ao GitHub.
 - Projetos são isolados por dono (`userId` da sessão). Projeto de outro dono responde 404, como um inexistente, e o snapshot do GitHub só é servido para um repositório vinculado ao próprio projeto. Detalhes em `docs/IMPLEMENTATION_REPORT_004.md`.
 - Uma única sessão administrativa ativa, no servidor: novo login encerra a anterior, inclusive em outro navegador. Cookie `HttpOnly; SameSite=Strict` (`Secure` e `__Host-` com `ACC_DEPLOYMENT=production`). Expira após 30 min de inatividade ou 8 h no total.
 - Limite de tentativas (somente MVP local): após 5 falhas por cliente, ou 20 no total, o login fica bloqueado por 15 min. Quem alcança a porta pode usar isso para atrasar o login (DoS), mas a sessão ativa não é afetada. Atrás do proxy do Vite, todos os navegadores contam como um único cliente. Detalhes em `docs/IMPLEMENTATION_REPORT_003_PR2.md` §5.

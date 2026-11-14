@@ -37,7 +37,9 @@ Regras do serviço:
 - **Entradas externas:** referências a issues, PRs e tarefas são sempre marcadas `untrusted`. Elas não alteram política, branch, rede nem limites, e texto livre não é aceito como referência.
 - **Prazos e falhas:**
   - a solicitação expira se não for autorizada em 1 h, e a execução expira no tempo limite;
-  - `authorize()` e `start()` verificam o prazo antes de avançar, sem depender de `expireOverdue()`: o que venceu passa a `expired` (com descarte, se houver workspace), a operação é recusada com `expired` e a aprovação não é consumida. `start()` verifica de novo após o preparo, antes de iniciar;
+  - `authorize()` e `start()` verificam o prazo antes de avançar, sem depender de `expireOverdue()`: o que venceu passa a `expired` (com descarte, se houver workspace), a operação é recusada com `expired` e a aprovação não é consumida. `start()` verifica de novo após o preparo e outra vez após `provider.start()`, antes de passar a `running`. Se a autorização venceu durante essa chamada, o registro passa a `expired`, o provedor é parado e o workspace é descartado, sem renovar o prazo;
+  - `report()` verifica o tempo limite de execução antes de aceitar o resultado. Se ele venceu (inclusive no instante exato), o registro passa a `expired` com motivo `timeout`, o provedor é parado, o workspace é descartado e o resultado é recusado com `expired`. Resultado atrasado nunca sobrescreve um estado terminal;
+  - **limitação:** a camada não interrompe uma chamada pendente ao provedor (`prepare`/`start`). A verificação ocorre quando a chamada retorna, e `cancel`/`expireOverdue` sobre o mesmo registro aguardam na fila até lá. Um provedor que nunca responda manteria o registro bloqueado. Tempo limite por chamada e interrupção forçada dependem do provedor real (#031) e não são garantidos aqui;
   - operações sobre o mesmo registro são serializadas (fila por id), então expiração, autorização, início, resultado e cancelamento não se intercalam durante chamadas ao provedor;
   - cancelar ou expirar para a execução e descarta o workspace;
   - falha do provedor leva a `failed`, com o código salvo apenas como token;
@@ -89,7 +91,7 @@ Regras do serviço:
 
 ## 5. Testes
 
-- `server/sandbox/sandbox.test.ts`, 76 testes:
+- `server/sandbox/sandbox.test.ts`, 87 testes:
   - execução desabilitada: catálogo real dá `UNAVAILABLE` e o provedor nunca é chamado; provedor que executa código é recusado;
   - política da #020: aprovação exata, uso único e aprovações inválidas (SHA, tarefa, agente, autoaprovação, expirada); agente não atribuído; tarefa inativa;
   - isolamento entre donos e projetos e repositório não vinculado;
@@ -98,7 +100,8 @@ Regras do serviço:
   - branches protegidas e workspaces inválidos;
   - matriz de estados, fluxo completo, transições proibidas, cancelamento, expiração, falhas do provedor e descarte pendente;
   - ausência de segredos e cópias defensivas.
-  - prazos (R1): `authorize`/`start` vencidos e no limite (1 ms antes), prazo da aprovação menor que a janela, prazo que vence durante o preparo, e concorrência (dois `start`, `cancel` durante o preparo, `expireOverdue` contra `start`/`authorize`, `authorize` × `cancel`).
+  - prazos (R1): `authorize`/`start` vencidos e no limite (1 ms antes), prazo da aprovação menor que a janela, prazo que vence durante o preparo, e concorrência (dois `start`, `cancel` durante o preparo, `expireOverdue` contra `start`/`authorize`, `authorize` × `cancel`);
+  - rodada final: `report` 1 ms antes, no instante e depois do vencimento (`completed` e `failed`), resultado atrasado após `expireOverdue`, `report` × `expireOverdue` × `cancel`; vencimento durante `provider.start()` (sem renovar o prazo), retorno 1 ms antes do prazo, e `cancel`/`expireOverdue` concorrentes durante `provider.start()`.
 - `server/security.test.ts`: `server/sandbox` não usa `child_process`, `fs`, rede, `vm`, `worker_threads`, `eval` nem `Function`. Nenhum código fora do módulo usa o serviço, e não há rota de execução.
 
 ## 6. Decisões que precisam do Product Owner

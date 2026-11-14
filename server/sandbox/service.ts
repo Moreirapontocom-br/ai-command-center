@@ -28,7 +28,7 @@ import { assertWorkBranch, assertWorkspaceId, parseSandboxRequest, workBranchFor
  *   operar com outro dono/projeto é indistinguível de inexistente.
  * - Workspace, branch e prazos são DERIVADOS aqui; o chamador não escolhe caminhos nem branch.
  * - Registros em memória (não há execução a retomar); persistência e quotas ficam para #012/#022.
- * - Prazos são verificados em toda operação que avança o ciclo de vida (`authorize`, `start`), sem
+ * - Prazos são verificados em toda operação que avança o ciclo de vida (`authorize`, `start`, `report`), sem
  *   depender de `expireOverdue()` ter rodado: o que venceu passa a `expired` e a operação é recusada.
  * - Operações sobre o MESMO registro são serializadas (fila por id): expiração, autorização, início,
  *   resultado e cancelamento nunca se intercalam durante as chamadas assíncronas ao provedor.
@@ -269,6 +269,15 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
           await teardown(record, false);
           return structuredClone(record);
         }
+        // A autorização pode ter vencido durante `provider.start()`. Não se renova o prazo com a
+        // transição para `running`: expira, para o que o provedor tenha iniciado e descarta o workspace.
+        // Limitação: a chamada pendente ao provedor não é interrompida; esta verificação ocorre quando
+        // ela retorna (e operações concorrentes sobre o registro aguardam na fila até lá).
+        if (isOverdue(record)) {
+          transition(record, 'expired', 'not_started_in_time');
+          await teardown(record, true);
+          throw new SandboxError('expired');
+        }
         transition(record, 'running', null, now() + record.spec.limits.timeoutSeconds * 1000);
         return structuredClone(record);
       });
@@ -277,7 +286,10 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     report(ownerId, projectId, id, outcome, reason) {
       return serialized(id, async () => {
         const record = find(ownerId, projectId, id);
+        // Estado terminal (inclusive `expired`): resultado atrasado nunca o sobrescreve.
         if (record.state !== 'running') throw new SandboxError('invalid_transition');
+        // Tempo limite de execução vencido: expira (`timeout`), para e descarta; o resultado é recusado.
+        if (await expireIfOverdue(record)) throw new SandboxError('expired');
         transition(record, outcome, outcome === 'failed' ? (reason ?? 'provider_error') : null);
         await teardown(record, false);
         return structuredClone(record);

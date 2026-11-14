@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { POLICY_ACTIONS, type ApprovalGrant, type Project, type Task } from '../../shared/contracts.ts';
 import { createConsoleLogger } from '../logger.ts';
 import { CANARY_TOKEN } from '../test/fixtures.ts';
-import { SANDBOX_STATES, SANDBOX_TRANSITIONS, REAL_EXECUTION_ENABLED, type SandboxRecord } from './contracts.ts';
+import { SANDBOX_STATES, SANDBOX_TRANSITIONS, REAL_EXECUTION_ENABLED, type SandboxRecord, type SandboxSpec } from './contracts.ts';
 import type { SandboxProvider } from './provider.ts';
 import { createSandboxService, SandboxError } from './service.ts';
 import { createSimulatedProvider } from './simulatedProvider.ts';
@@ -340,8 +340,8 @@ describe('ausência de segredos', () => {
 describe('prazos vencidos sem depender de expireOverdue (R1)', () => {
   const HOUR = 60 * 60 * 1000;
 
-  /** Provedor simulado cujo `prepare` fica pendente até `release()` — para intercalar chamadas. */
-  function gatedProvider() {
+  /** Provedor simulado cuja operação `op` fica pendente até `release()` — para intercalar chamadas. */
+  function gatedProvider(op: 'prepare' | 'start' = 'prepare') {
     const sim = createSimulatedProvider();
     let release!: () => void;
     let entered!: () => void;
@@ -349,10 +349,10 @@ describe('prazos vencidos sem depender de expireOverdue (R1)', () => {
     const preparing = new Promise<void>((resolve) => (entered = resolve));
     const provider: SandboxProvider = {
       ...sim,
-      async prepare(spec) {
+      async [op](spec: SandboxSpec) {
         entered();
         await gate;
-        await sim.prepare(spec);
+        await sim[op](spec);
       },
     };
     return { provider, sim, release, preparing };
@@ -505,5 +505,138 @@ describe('prazos vencidos sem depender de expireOverdue (R1)', () => {
     expect(swept).toMatchObject({ status: 'fulfilled', value: [expect.objectContaining({ id: record.id, state: 'expired' })] });
     expect(auth).toMatchObject({ status: 'rejected', reason: { code: 'invalid_transition' } });
     expect(service.get('admin', P1, record.id)!.history.filter((h) => h.to === 'expired')).toHaveLength(1);
+  });
+
+  // --- Rodada final R1: report() com prazo de execução vencido ---
+
+  async function runningCtx() {
+    const ctx = setup();
+    const record = await authorized(ctx);
+    const started = await ctx.service.start('admin', P1, record.id);
+    return { ...ctx, record: started, sim: ctx.provider as ReturnType<typeof createSimulatedProvider> };
+  }
+  const TIMEOUT_MS = 600 * 1000;
+
+  it('report antes do vencimento (1 ms antes) é aceito', async () => {
+    const { service, record, advance } = await runningCtx();
+    advance(TIMEOUT_MS - 1);
+    await expect(service.report('admin', P1, record.id, 'completed')).resolves.toMatchObject({ state: 'completed', cleanup: 'done' });
+  });
+
+  it.each(['completed', 'failed'] as const)('report exatamente no instante do vencimento (%s): expira com timeout, para e descarta', async (outcome) => {
+    const { service, record, advance, sim } = await runningCtx();
+    advance(TIMEOUT_MS);
+    await expect(service.report('admin', P1, record.id, outcome)).rejects.toMatchObject({ code: 'expired' });
+    expect(service.get('admin', P1, record.id)).toMatchObject({ state: 'expired', reason: 'timeout', cleanup: 'done' });
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('report depois do vencimento: recusado; nova tentativa não sobrescreve o estado terminal', async () => {
+    const { service, record, advance } = await runningCtx();
+    advance(TIMEOUT_MS + 5_000);
+    await expect(service.report('admin', P1, record.id, 'completed')).rejects.toMatchObject({ code: 'expired' });
+    await expect(service.report('admin', P1, record.id, 'completed')).rejects.toMatchObject({ code: 'invalid_transition' });
+    const final = service.get('admin', P1, record.id)!;
+    expect(final).toMatchObject({ state: 'expired', reason: 'timeout' });
+    expect(final.history.map((h) => h.to)).toEqual(['requested', 'authorized', 'running', 'expired']);
+  });
+
+  it('resultado atrasado depois de expireOverdue não sobrescreve "expired"', async () => {
+    const { service, record, advance } = await runningCtx();
+    advance(TIMEOUT_MS);
+    expect(await service.expireOverdue()).toHaveLength(1);
+    await expect(service.report('admin', P1, record.id, 'completed')).rejects.toMatchObject({ code: 'invalid_transition' });
+    expect(service.get('admin', P1, record.id)).toMatchObject({ state: 'expired', reason: 'timeout' });
+  });
+
+  it('report vencido concorrente com expireOverdue e cancel: um só "expired", descarte uma vez', async () => {
+    const { service, record, advance, sim } = await runningCtx();
+    advance(TIMEOUT_MS);
+    const [reported, swept, cancelled] = await Promise.allSettled([
+      service.report('admin', P1, record.id, 'completed'),
+      service.expireOverdue(),
+      service.cancel('admin', P1, record.id),
+    ]);
+    expect(reported).toMatchObject({ status: 'rejected', reason: { code: 'expired' } });
+    expect(swept).toMatchObject({ status: 'fulfilled', value: [] });
+    expect(cancelled).toMatchObject({ status: 'rejected', reason: { code: 'invalid_transition' } });
+    expect(service.get('admin', P1, record.id)!.history.filter((h) => h.to === 'expired')).toHaveLength(1);
+    expect(sim.calls.filter((c) => c.op === 'destroy')).toHaveLength(1);
+  });
+
+  // --- Rodada final R2: prazo verificado após provider.start() ---
+
+  it('autorização vence durante provider.start(): expira, para, descarta e não renova o prazo', async () => {
+    const { provider, sim, release, preparing } = gatedProvider('start');
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    ctx.advance(HOUR);
+    release();
+    await expect(starting).rejects.toMatchObject({ code: 'expired' });
+    const final = ctx.service.get('admin', P1, record.id)!;
+    expect(final).toMatchObject({ state: 'expired', reason: 'not_started_in_time', cleanup: 'done', deadline: record.deadline });
+    expect(final.history.map((h) => h.to)).toEqual(['requested', 'authorized', 'expired']);
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('provider.start() que retorna ainda dentro do prazo (1 ms antes): running', async () => {
+    const { provider, release, preparing } = gatedProvider('start');
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    ctx.advance(HOUR - 1);
+    release();
+    await expect(starting).resolves.toMatchObject({ state: 'running' });
+  });
+
+  it('cancel concorrente com vencimento durante provider.start(): expira uma vez; cancel recusado', async () => {
+    const { provider, sim, release, preparing } = gatedProvider('start');
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    const cancelling = ctx.service.cancel('admin', P1, record.id);
+    ctx.advance(HOUR);
+    release();
+    await expect(starting).rejects.toMatchObject({ code: 'expired' });
+    await expect(cancelling).rejects.toMatchObject({ code: 'invalid_transition' });
+    expect(ctx.service.get('admin', P1, record.id)).toMatchObject({ state: 'expired', cleanup: 'done' });
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('cancel durante provider.start() ainda no prazo: aguarda, então para e descarta', async () => {
+    const { provider, sim, release, preparing } = gatedProvider('start');
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    const cancelling = ctx.service.cancel('admin', P1, record.id);
+    release();
+    await expect(starting).resolves.toMatchObject({ state: 'running' });
+    await expect(cancelling).resolves.toMatchObject({ state: 'cancelled', cleanup: 'done' });
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('expireOverdue concorrente com vencimento durante provider.start(): expira uma única vez', async () => {
+    const { provider, sim, release, preparing } = gatedProvider('start');
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    ctx.advance(HOUR);
+    const sweeping = ctx.service.expireOverdue();
+    release();
+    await expect(starting).rejects.toMatchObject({ code: 'expired' });
+    expect(await sweeping).toEqual([]);
+    expect(ctx.service.get('admin', P1, record.id)!.history.filter((h) => h.to === 'expired')).toHaveLength(1);
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
   });
 });

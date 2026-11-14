@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFineGrainedTokenProvider } from '../auth/credentials.ts';
 import { ALLOWED_REPOSITORIES } from '../config.ts';
 import { createConsoleLogger } from '../logger.ts';
-import { openProjectStore, STORE_FORMAT, STORE_VERSION } from '../projects/projectStore.ts';
+import { openProjectStore, STORE_FORMAT } from '../projects/projectStore.ts';
 import type { SnapshotService } from '../snapshotService.ts';
 import { openTaskStore } from '../tasks/taskStore.ts';
 import { createTestAuth, sessionCookieFor, TEST_ADMIN_EMAIL } from '../test/authFixtures.ts';
@@ -51,7 +51,7 @@ async function dataDir() {
     join(dir, 'projects.json'),
     JSON.stringify({
       format: STORE_FORMAT,
-      version: STORE_VERSION,
+      version: 1, // formato v1 (Issue #004): exercita a migração para v2
       projects: [project(MY_PROJECT, 'admin', [REPO]), project(MY_OTHER_PROJECT, 'admin'), project(THEIR_PROJECT, 'user-b', [REPO])],
       activeProjects: [],
     }),

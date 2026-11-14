@@ -13,6 +13,15 @@ import {
   type TaskOrigin,
   type TaskReference,
 } from '../../shared/contracts.ts';
+import {
+  applyRetention,
+  createAuditSequence,
+  makeEvent,
+  validateEventLog,
+  type AuditEventInput,
+  type AuditSequence,
+  type EventLog,
+} from '../audit/events.ts';
 import { IntegrationError } from '../github/errors.ts';
 import { parseText } from '../projects/validation.ts';
 import { DataFileError, isIsoDate, openJsonFile, type WriteFile } from '../storage/jsonFile.ts';
@@ -35,15 +44,19 @@ import { parseDependencies, parseReferences, TASK_ID_PATTERN, type TaskFields, t
  */
 
 export const TASKS_FORMAT = 'acc-tasks';
-export const TASKS_VERSION = 1;
-const MAX_FILE_BYTES = 32 * 1024 * 1024;
+/** v2 (Issue #006): o documento passa a conter os eventos de auditoria das tarefas. */
+export const TASKS_VERSION = 2;
+const MAX_FILE_BYTES = 40 * 1024 * 1024;
+/** Retenção (MVP): últimos eventos de tarefas mantidos neste arquivo. */
+export const TASK_EVENTS_MAX = 20000;
 const USER_PATTERN = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
 const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
 
 interface TaskRecord extends Task {
   ownerId: string;
 }
-interface TaskData {
+/** Tarefas e seus eventos de auditoria no MESMO documento (gravação atômica conjunta). */
+interface TaskData extends EventLog {
   tasks: TaskRecord[];
 }
 
@@ -53,6 +66,8 @@ export interface TaskStore {
   create(ownerId: string, projectId: string, fields: TaskFields, options: { actor: string; origin?: TaskOrigin }): Promise<Task>;
   /** `null` se a tarefa não existir neste projeto deste dono. */
   update(ownerId: string, projectId: string, taskId: string, patch: TaskPatch, actor: string): Promise<Task | null>;
+  /** Eventos de auditoria deste arquivo (somente leitura, ordem crescente de `seq`). */
+  auditLog(): Readonly<EventLog>;
 }
 
 export interface TaskStoreOptions {
@@ -60,6 +75,7 @@ export interface TaskStoreOptions {
   now?: () => number;
   generateId?: () => string;
   writeFile?: WriteFile;
+  sequence?: AuditSequence;
 }
 
 const fail = (code: ConstructorParameters<typeof IntegrationError>[0]): never => {
@@ -195,8 +211,9 @@ function validateRecord(raw: unknown, index: number, corrupt: (detail: string) =
   }
 }
 
-function validateData(raw: Record<string, unknown>, corrupt: (detail: string) => never): TaskData {
-  if (Object.keys(raw).length !== 1 || !Array.isArray(raw.tasks)) corrupt('estrutura');
+function validateData(raw: Record<string, unknown>, corrupt: (detail: string) => never, sequence: AuditSequence): TaskData {
+  if (Object.keys(raw).length !== 3 || !Array.isArray(raw.tasks)) corrupt('estrutura');
+  const log = validateEventLog(raw.events, raw.droppedEvents, sequence, corrupt);
   const tasks = (raw.tasks as unknown[]).map((t, i) => validateRecord(t, i, corrupt));
   if (new Set(tasks.map((t) => t.id)).size !== tasks.length) corrupt('ids duplicados');
   const byId = new Map(tasks.map((t) => [t.id, t]));
@@ -209,7 +226,7 @@ function validateData(raw: Record<string, unknown>, corrupt: (detail: string) =>
     }
     if (hasCycle(task.id, byId)) corrupt(`dependência circular na tarefa ${index}`);
   }
-  return { tasks };
+  return { tasks, ...log };
 }
 
 // ---------------------------------------------------------------- store
@@ -217,16 +234,38 @@ function validateData(raw: Record<string, unknown>, corrupt: (detail: string) =>
 export async function openTaskStore(options: TaskStoreOptions): Promise<TaskStore> {
   const now = options.now ?? Date.now;
   const generateId = options.generateId ?? randomUUID;
+  const sequence = options.sequence ?? createAuditSequence();
   const file = await openJsonFile<TaskData>({
     filePath: options.filePath,
     label: 'tarefas',
     format: TASKS_FORMAT,
     version: TASKS_VERSION,
     maxBytes: MAX_FILE_BYTES,
-    empty: () => ({ tasks: [] }),
-    validate: validateData,
+    empty: () => ({ tasks: [], events: [], droppedEvents: 0 }),
+    validate: (raw, corrupt) => validateData(raw, corrupt, sequence),
+    upgrades: { 1: (raw) => ({ ...raw, events: [], droppedEvents: 0 }) },
     writeFile: options.writeFile,
   });
+
+  /** Registra um evento de tarefa no mesmo rascunho que será gravado. */
+  function audit(draft: TaskData, at: string, task: TaskRecord, actor: string, action: AuditEventInput['action'], context: AuditEventInput['context']) {
+    draft.events.push(
+      makeEvent(
+        {
+          action,
+          actor: { kind: 'human', id: actor },
+          ownerId: task.ownerId,
+          projectId: task.projectId,
+          resource: { type: 'task', id: task.id },
+          outcome: 'success',
+          context,
+        },
+        sequence.next(),
+        at,
+      ),
+    );
+    applyRetention(draft, TASK_EVENTS_MAX);
+  }
 
   // `ownerId` nunca sai do servidor; o resto é cópia para não expor o estado interno.
   const toTask = ({ ownerId: _ownerId, ...task }: TaskRecord): Task => structuredClone(task); // eslint-disable-line @typescript-eslint/no-unused-vars
@@ -235,6 +274,10 @@ export async function openTaskStore(options: TaskStoreOptions): Promise<TaskStor
   const iso = () => new Date(now()).toISOString();
 
   return {
+    auditLog() {
+      return file.data;
+    },
+
     list(ownerId, projectId) {
       return inProject(file.data.tasks, ownerId, projectId).map(toTask);
     },
@@ -265,6 +308,7 @@ export async function openTaskStore(options: TaskStoreOptions): Promise<TaskStor
         };
         enforceRules(record, null, new Set(['dependsOn']), siblings);
         draft.tasks.push(record);
+        audit(draft, at, record, actor, 'task.created', { status: record.status, priority: record.priority, origin });
         return toTask(record);
       });
     },
@@ -293,6 +337,14 @@ export async function openTaskStore(options: TaskStoreOptions): Promise<TaskStor
 
         if (record.status !== previous.status) {
           pushHistory(record, { at, actor, action: 'status_changed', from: previous.status, to: record.status });
+          audit(draft, at, record, actor, 'task.status_changed', { from: previous.status, to: record.status });
+        }
+        if (record.status === 'done' && previous.status !== 'done') {
+          // Confirmação HUMANA (a pessoa da sessão); a evidência é o tipo das referências, sem texto livre.
+          audit(draft, at, record, actor, 'task.completion_confirmed', {
+            evidence: [...new Set(record.references.map((r) => r.kind))].sort(),
+            ...(record.assignee ? { to: assigneeLabel(record.assignee) } : {}),
+          });
         }
         if (assigneeLabel(record.assignee) !== assigneeLabel(previous.assignee)) {
           pushHistory(record, {
@@ -302,9 +354,16 @@ export async function openTaskStore(options: TaskStoreOptions): Promise<TaskStor
             from: assigneeLabel(previous.assignee),
             to: assigneeLabel(record.assignee),
           });
+          audit(draft, at, record, actor, 'task.assignee_changed', {
+            from: assigneeLabel(previous.assignee),
+            to: assigneeLabel(record.assignee),
+          });
         }
         const edited = [...changed].filter((key) => !['status', 'assignee'].includes(key));
-        if (edited.length > 0) pushHistory(record, { at, actor, action: 'updated', fields: edited.sort() });
+        if (edited.length > 0) {
+          pushHistory(record, { at, actor, action: 'updated', fields: edited.sort() });
+          audit(draft, at, record, actor, 'task.updated', { fields: edited });
+        }
         record.updatedAt = at;
         return toTask(record);
       });

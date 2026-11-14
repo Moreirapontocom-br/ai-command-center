@@ -64,6 +64,7 @@ describe('superfície de escrita do servidor', () => {
       '/api/repos/a/b/snapshot',
       `/api/projects/${id}/repositories/a/b/snapshot`,
       '/api/auth/session',
+      '/api/audit',
       '/api/qualquer',
     ]) {
       expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);
@@ -80,9 +81,19 @@ describe('superfície de escrita do servidor', () => {
     expect(app.match(/['"]POST['"]/g)).toHaveLength(1);
   });
 
+  it('auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006)', () => {
+    expect(POST_ROUTES.some((route) => route.startsWith('/api/audit'))).toBe(false);
+    for (const path of ['/api/audit', '/api/audit/x']) expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);
+    const auditLog = server.find((f) => f.path === 'server/audit/auditLog.ts')!.code;
+    // O registro só expõe adição e leitura.
+    expect(auditLog).not.toMatch(/\b(?:remove|delete|update|edit|clear)\w*\s*\(/i);
+  });
+
   it('projetos e tarefas gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issues #004/#005)', () => {
-    const projectFiles = server.filter((f) => /^server\/(?:projects|tasks|storage)\//.test(f.path));
+    const projectFiles = server.filter((f) => /^server\/(?:projects|tasks|storage|audit)\//.test(f.path));
     expect(projectFiles.map((f) => f.path).sort()).toEqual([
+      'server/audit/auditLog.ts',
+      'server/audit/events.ts',
       'server/projects/projectStore.ts',
       'server/projects/validation.ts',
       'server/storage/jsonFile.ts',

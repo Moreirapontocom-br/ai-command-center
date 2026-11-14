@@ -80,7 +80,7 @@ describe('AppLayout — menu mobile', () => {
     const user = await openMenu();
     const drawer = getDrawer();
     const closeButton = within(drawer).getByRole('button', { name: 'Fechar menu' });
-    const lastNavItem = within(drawer).getByRole('button', { name: 'Tarefas' });
+    const lastNavItem = within(drawer).getByRole('button', { name: 'Auditoria' });
 
     await user.tab({ shift: true });
     expect(lastNavItem).toHaveFocus();

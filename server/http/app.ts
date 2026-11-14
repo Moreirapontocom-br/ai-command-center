@@ -8,9 +8,12 @@ import type {
   TaskListResponse,
   StatusResponse,
 } from '../../shared/contracts.ts';
-import { AGENT_IDS } from '../../shared/contracts.ts';
+import { AGENT_IDS, AUDIT_ACTIONS, AUDIT_OUTCOMES, AUDIT_QUERY_LIMITS } from '../../shared/contracts.ts';
+import type { AuditAction, AuditActor, AuditListResponse, AuditOutcome } from '../../shared/contracts.ts';
+import { queryAudit, type AuditLog } from '../audit/auditLog.ts';
+import type { AuditEventInput } from '../audit/events.ts';
 import { API_SECURITY_HEADERS } from '../../shared/securityHeaders.ts';
-import { readCookie, type AuthService } from '../auth/adminAuth.ts';
+import { ADMIN_USER_ID, readCookie, type AuthService } from '../auth/adminAuth.ts';
 import type { Session } from '../auth/sessions.ts';
 import type { ServerConfig } from '../config.ts';
 import { ERROR_HTTP_STATUS, IntegrationError } from '../github/errors.ts';
@@ -34,6 +37,12 @@ export interface AppDeps {
   projects?: ProjectStore | null;
   /** Tarefas por projeto (Issue #005). Ausente: as rotas de tarefas respondem erro interno. */
   tasks?: TaskStore | null;
+  /**
+   * Registro de auditoria avulso (Issue #006). Em produção é sempre fornecido (`server/index.ts`).
+   * Ausente (apenas em testes antigos): login/logout e recusas não são auditados. Os eventos das
+   * alterações de projetos e tarefas ficam nos próprios arquivos delas, independentemente disto.
+   */
+  audit?: AuditLog | null;
   logger: Logger;
   now?: () => number;
 }
@@ -48,6 +57,8 @@ const ACTIVE_PROJECT_ROUTE = '/api/projects/active';
 const PROJECT_ITEM_ROUTE = /^\/api\/projects\/([^/]+)$/;
 const TASKS_ROUTE = /^\/api\/projects\/([^/]+)\/tasks$/;
 const TASK_ITEM_ROUTE = /^\/api\/projects\/([^/]+)\/tasks\/([^/]+)$/;
+const AUDIT_ROUTE = '/api/audit';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PROJECT_SNAPSHOT_ROUTE = /^\/api\/projects\/([^/]+)\/repositories\/([^/]+)\/([^/]+)\/snapshot$/;
 
 /**
@@ -208,6 +219,125 @@ function assertOnlyParams(url: URL, allowed: string[]) {
 }
 
 export function createRequestHandler(deps: AppDeps) {
+  /** O autor é sempre o da sessão: o navegador nunca escolhe quem fez a ação. */
+  const actorOf = (session: Session): AuditActor => ({ kind: 'human', id: session.userId });
+  const ANONYMOUS: AuditActor = { kind: 'system', id: 'anonymous' };
+
+  /** Nome estável da rota para o contexto da auditoria (nunca o caminho cru, que vem de fora). */
+  function routeName(pathname: string): string {
+    if (pathname === PROJECTS_ROUTE) return 'projects';
+    if (pathname === ACTIVE_PROJECT_ROUTE) return 'projects.active';
+    if (PROJECT_ITEM_ROUTE.test(pathname)) return 'projects.item';
+    if (TASKS_ROUTE.test(pathname)) return 'tasks';
+    if (TASK_ITEM_ROUTE.test(pathname)) return 'tasks.item';
+    if (PROJECT_SNAPSHOT_ROUTE.test(pathname) || SNAPSHOT_ROUTE.test(pathname)) return 'snapshot';
+    if (pathname === AUDIT_ROUTE) return 'audit';
+    if (pathname.startsWith('/api/auth/')) return 'auth';
+    if (pathname === '/api/status') return 'status';
+    return 'other';
+  }
+
+  /** Recusas por regra de negócio = `blocked`; entrada inválida e erros internos = `failure`. */
+  const BLOCKED_CODES = new Set<ApiErrorCode>([
+    'invalid_status_transition',
+    'dependencies_unresolved',
+    'dependency_cycle',
+    'evidence_required',
+    'task_limit_reached',
+    'project_limit_reached',
+    'repository_not_allowed',
+  ]);
+  const WRITE_ACTIONS: Record<string, AuditAction> = {
+    projects: 'project.created',
+    'projects.item': 'project.updated',
+    'projects.active': 'project.activated',
+    tasks: 'task.created',
+    'tasks.item': 'task.updated',
+  };
+
+  /**
+   * Evento para uma requisição recusada ou que falhou, ou `null` se ela não é auditada (ex.: GET
+   * anônimo, limite de requisições). Só usa valores do servidor: código do erro, nome da rota,
+   * método e ids que passaram pela validação de formato.
+   */
+  function refusalEvent(req: IncomingMessage, pathname: string, code: ApiErrorCode, session: Session | null): AuditEventInput | null {
+    if (code === 'audit_unavailable' || (code === 'too_many_requests' && pathname !== '/api/auth/login')) return null;
+    const route = routeName(pathname);
+    const isWrite = req.method === WRITE_METHOD;
+    const owner = session?.userId ?? null;
+    const actor = session ? actorOf(session) : ANONYMOUS;
+    const ids = pathname.split('/').filter((part) => UUID.test(part));
+    const projectId = session && ids[0] && deps.projects?.get(session.userId, ids[0]) ? ids[0] : null;
+
+    if (pathname === '/api/auth/login') {
+      return {
+        action: 'auth.login_rejected',
+        actor: ANONYMOUS,
+        ownerId: null,
+        projectId: null,
+        resource: { type: 'session', id: null },
+        outcome: code === 'too_many_requests' ? 'blocked' : 'failure',
+        context: { reason: code },
+      };
+    }
+    const denied = (outcomeOwner: string | null): AuditEventInput => ({
+      action: 'access.denied',
+      actor,
+      ownerId: outcomeOwner,
+      projectId,
+      resource: { type: 'route', id: route },
+      outcome: 'blocked',
+      context: { reason: code, route, method: isWrite ? WRITE_METHOD : 'GET' },
+    });
+    if (isWrite && ['forbidden_origin', 'unsupported_media_type', 'unauthenticated'].includes(code)) return denied(owner);
+    if (session && code === 'not_found' && route !== 'other') return denied(owner);
+    if (session && isWrite && WRITE_ACTIONS[route]) {
+      const taskId = route === 'tasks.item' ? (ids[1] ?? null) : null;
+      return {
+        action: WRITE_ACTIONS[route],
+        actor,
+        ownerId: owner,
+        projectId,
+        resource: route.startsWith('tasks') ? { type: 'task', id: taskId } : { type: 'project', id: projectId },
+        outcome: BLOCKED_CODES.has(code) ? 'blocked' : 'failure',
+        context: { reason: code },
+      };
+    }
+    if (pathname === '/api/auth/logout') {
+      return { action: 'auth.logout', actor, ownerId: owner, projectId: null, resource: { type: 'session', id: null }, outcome: 'failure', context: { reason: code } };
+    }
+    return null;
+  }
+
+  function parseAuditQuery(url: URL) {
+    assertOnlyParams(url, ['projectId', 'action', 'outcome', 'before', 'limit']);
+    const get = (key: string) => {
+      const values = url.searchParams.getAll(key);
+      if (values.length > 1) fail('bad_request');
+      return values[0];
+    };
+    const integer = (value: string | undefined, min: number, max: number) => {
+      if (value === undefined) return undefined;
+      if (!/^\d{1,15}$/.test(value)) fail('bad_request');
+      const n = Number(value);
+      if (n < min || n > max) fail('bad_request');
+      return n;
+    };
+    const projectId = get('projectId');
+    if (projectId !== undefined && !UUID.test(projectId)) fail('bad_request');
+    const action = get('action');
+    if (action !== undefined && !(AUDIT_ACTIONS as readonly string[]).includes(action)) fail('bad_request');
+    const outcome = get('outcome');
+    if (outcome !== undefined && !(AUDIT_OUTCOMES as readonly string[]).includes(outcome)) fail('bad_request');
+    return {
+      projectId,
+      action: action as AuditAction | undefined,
+      outcome: outcome as AuditOutcome | undefined,
+      before: integer(get('before'), 1, Number.MAX_SAFE_INTEGER),
+      limit: integer(get('limit'), 1, AUDIT_QUERY_LIMITS.maxLimit),
+    };
+  }
+
   const linkableRepositories = (session: Session) =>
     deps.config.allowedRepositories.filter((name) => session.scope.includes(name));
 
@@ -226,7 +356,7 @@ export function createRequestHandler(deps: AppDeps) {
       assertOnlyParams(url, []);
       if (isWrite) {
         const fields = parseProjectCreate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), linkableRepositories(session));
-        const project = await store.create(ownerId, fields);
+        const project = await store.create(ownerId, fields, actorOf(session));
         deps.logger.log('info', 'Projeto criado', { event: 'project_created', projectId: project.id });
         sendJson(res, 201, project);
         return;
@@ -239,7 +369,7 @@ export function createRequestHandler(deps: AppDeps) {
     if (pathname === ACTIVE_PROJECT_ROUTE) {
       assertOnlyParams(url, []);
       const projectId = parseActiveProject(await readJsonBody(req, MAX_PROJECT_BODY_BYTES));
-      if (!(await store.setActive(ownerId, projectId))) fail('not_found');
+      if (!(await store.setActive(ownerId, projectId, actorOf(session)))) fail('not_found');
       const body: ActiveProjectResponse = { activeProjectId: projectId };
       sendJson(res, 200, body);
       return;
@@ -252,7 +382,7 @@ export function createRequestHandler(deps: AppDeps) {
       if (!PROJECT_ID_PATTERN.test(projectId)) fail('not_found');
       if (isWrite) {
         const patch = parseProjectUpdate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), linkableRepositories(session));
-        const updated = (await store.update(ownerId, projectId, patch)) ?? fail('not_found');
+        const updated = (await store.update(ownerId, projectId, patch, actorOf(session))) ?? fail('not_found');
         deps.logger.log('info', 'Projeto atualizado', { event: 'project_updated', projectId });
         sendJson(res, 200, updated);
         return;
@@ -328,6 +458,8 @@ export function createRequestHandler(deps: AppDeps) {
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const started = Date.now();
     let pathname = '';
+    let authenticated: Session | null = null;
+    let rateLimited = false;
     // Cabeçalhos adicionais também em respostas de erro (Allow, Set-Cookie de limpeza).
     const errorHeaders: Record<string, string> = {};
     try {
@@ -343,7 +475,11 @@ export function createRequestHandler(deps: AppDeps) {
 
       const client = req.socket.remoteAddress ?? 'unknown';
       const verdict = limiter.hit(client);
-      if (!verdict.allowed) fail('too_many_requests', { retryAfterSeconds: verdict.retryAfterSeconds });
+      if (!verdict.allowed) {
+        // Requisições barradas pelo limite global não geram escrita em disco (evita amplificação).
+        rateLimited = true;
+        fail('too_many_requests', { retryAfterSeconds: verdict.retryAfterSeconds });
+      }
 
       if (req.method === WRITE_METHOD) assertSafePost(req, deps);
 
@@ -377,6 +513,22 @@ export function createRequestHandler(deps: AppDeps) {
           fail('too_many_requests', { retryAfterSeconds: result.retryAfterSeconds });
         }
         // `auth.login` já revogou TODAS as sessões anteriores (sessão administrativa única).
+        if (deps.audit) {
+          try {
+            await deps.audit.append({
+              action: 'auth.login',
+              actor: actorOf(result.session),
+              ownerId: result.session.userId,
+              projectId: null,
+              resource: { type: 'session', id: null },
+              outcome: 'success',
+            });
+          } catch {
+            // Sem registro, não há login: a sessão recém-criada é revogada (falha fechada).
+            auth.logout(`${auth.cookieName}=${result.token}`);
+            fail('audit_unavailable');
+          }
+        }
         deps.logger.log('info', 'Login do administrador', { event: 'login_success' });
         sendJson(res, 200, sessionBody(result.session), { 'Set-Cookie': auth.sessionCookie(result.token) });
         return;
@@ -387,7 +539,26 @@ export function createRequestHandler(deps: AppDeps) {
         // O corpo não é usado, mas é validado com o mesmo limite (objeto JSON, normalmente `{}`).
         const logoutBody = await readJsonBody(req);
         if (typeof logoutBody !== 'object' || logoutBody === null || Array.isArray(logoutBody)) fail('bad_request');
+        const leaving = auth.authenticate(cookieHeader)?.session ?? null;
+        // A sessão é encerrada mesmo que a auditoria falhe (encerrar é a ação segura); nesse caso
+        // a resposta é erro, nunca um sucesso sem registro.
         auth.logout(cookieHeader);
+        errorHeaders['Set-Cookie'] = auth.clearedCookie();
+        if (deps.audit) {
+          try {
+            await deps.audit.append({
+              action: 'auth.logout',
+              actor: leaving ? actorOf(leaving) : ANONYMOUS,
+              ownerId: leaving?.userId ?? null,
+              projectId: null,
+              resource: { type: 'session', id: null },
+              outcome: 'success',
+              context: { hadSession: leaving !== null },
+            });
+          } catch {
+            fail('audit_unavailable');
+          }
+        }
         deps.logger.log('info', 'Logout', { event: 'logout' });
         const body: SessionResponse = { authenticated: false, authConfigured: auth.configured };
         sendJson(res, 200, body, { 'Set-Cookie': auth.clearedCookie() });
@@ -405,6 +576,27 @@ export function createRequestHandler(deps: AppDeps) {
         fail('unauthenticated');
       }
       const { session } = current;
+      authenticated = session;
+
+      if (pathname === AUDIT_ROUTE) {
+        const query = parseAuditQuery(url);
+        // Filtro por projeto: o projeto precisa ser do usuário (o mesmo 404 de sempre, se não for).
+        if (query.projectId !== undefined && !deps.projects?.get(session.userId, query.projectId)) fail('not_found');
+        const sources = [deps.projects?.auditLog(), deps.tasks?.auditLog(), deps.audit?.log()].filter((x) => x !== undefined);
+        const result = queryAudit(sources, {
+          ...query,
+          ownerId: session.userId,
+          // Eventos sem dono (logins recusados, acessos anônimos negados) só para o administrador.
+          includeInstanceEvents: session.userId === ADMIN_USER_ID,
+        });
+        const body: AuditListResponse = {
+          events: result.events,
+          nextBefore: result.nextBefore,
+          retention: { droppedEvents: result.droppedEvents },
+        };
+        sendJson(res, 200, body);
+        return;
+      }
 
       if (pathname === '/api/status') {
         assertOnlyParams(url, []);
@@ -456,6 +648,15 @@ export function createRequestHandler(deps: AppDeps) {
       }
       // Corpo grande demais: o restante não é lido; a conexão é encerrada após a resposta.
       if (integrationError.code === 'payload_too_large') errorHeaders.Connection = 'close';
+      const refusal = deps.audit && !rateLimited ? refusalEvent(req, pathname, integrationError.code, authenticated) : null;
+      if (refusal && deps.audit) {
+        try {
+          await deps.audit.append(refusal);
+        } catch {
+          // A resposta já é de erro (nada foi alterado); a falha da auditoria vai para o log do servidor.
+          deps.logger.log('error', 'Falha ao gravar evento de auditoria', { event: 'audit_write_failed', action: refusal.action });
+        }
+      }
       sendError(res, integrationError, errorHeaders);
     } finally {
       deps.logger.log('info', 'request', {

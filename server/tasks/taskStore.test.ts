@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TASK_LIMITS, TASK_STATUSES, TASK_TRANSITIONS, type TaskStatus } from '../../shared/contracts.ts';
 import { DataFileError } from '../storage/jsonFile.ts';
-import { openTaskStore, TASKS_FORMAT, TASKS_VERSION } from './taskStore.ts';
+import { openTaskStore, TASKS_FORMAT } from './taskStore.ts';
 import { parseTaskCreate, parseTaskUpdate, type TaskInputContext } from './validation.ts';
 
 const REPO = 'Moreirapontocom-br/ai-command-center';
@@ -302,10 +302,10 @@ describe('regras de tarefas', () => {
       status: 'pending', priority: 'medium', assignee: null, dependsOn: [], references: [], origin: 'manual',
       blockedReason: '', completion: null, history: [], createdAt: '2026-11-13T12:00:00.000Z', updatedAt: '2026-11-13T12:00:00.000Z',
     };
-    const wrap = (tasks: unknown[]) => JSON.stringify({ format: TASKS_FORMAT, version: TASKS_VERSION, tasks });
+    const wrap = (tasks: unknown[]) => JSON.stringify({ format: TASKS_FORMAT, version: 1, tasks });
     it.each([
       ['JSON ilegível', '{'],
-      ['versão futura', JSON.stringify({ format: TASKS_FORMAT, version: 2, tasks: [] })],
+      ['versão futura', JSON.stringify({ format: TASKS_FORMAT, version: 99, tasks: [] })],
       ['campo extra', wrap([{ ...base, executedBy: 'agent' }])],
       ['concluída sem confirmação', wrap([{ ...base, status: 'done' }])],
       ['confirmação sem estar concluída', wrap([{ ...base, completion: { confirmedBy: 'admin', confirmedAt: base.createdAt } }])],

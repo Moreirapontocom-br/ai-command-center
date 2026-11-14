@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { PROJECT_LIMITS, PROJECT_STATUSES, type Project } from '../../shared/contracts.ts';
+import { PROJECT_LIMITS, PROJECT_STATUSES, type AuditActor, type Project } from '../../shared/contracts.ts';
+import {
+  applyRetention,
+  createAuditSequence,
+  makeEvent,
+  validateEventLog,
+  type AuditEventInput,
+  type AuditSequence,
+  type EventLog,
+  type StoredAuditEvent,
+} from '../audit/events.ts';
 import { IntegrationError } from '../github/errors.ts';
 import { DataFileError, isIsoDate, openJsonFile, type WriteFile } from '../storage/jsonFile.ts';
 import { PROJECT_ID_PATTERN, parseRepositories, parseText, type ProjectFields } from './validation.ts';
@@ -19,15 +29,22 @@ export { DataFileError as ProjectStoreError };
  */
 
 export const STORE_FORMAT = 'acc-projects';
-export const STORE_VERSION = 1;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** v2 (Issue #006): o documento passa a conter os eventos de auditoria dos projetos. */
+export const STORE_VERSION = 2;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
+/** Retenção (MVP): últimos eventos de projetos mantidos neste arquivo. */
+export const PROJECT_EVENTS_MAX = 5000;
 const OWNER_PATTERN = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
 
 interface ProjectRecord extends Project {
   ownerId: string;
 }
 
-interface StoreData {
+/**
+ * Os eventos de auditoria dos projetos ficam NO MESMO documento: a alteração e o seu evento são
+ * gravados pelo mesmo `rename` atômico — ou os dois existem, ou nenhum (Issue #006).
+ */
+interface StoreData extends EventLog {
   projects: ProjectRecord[];
   /** Projeto ativo por dono. Lista (e não objeto) para não usar ids externos como chaves. */
   activeProjects: Array<{ ownerId: string; projectId: string }>;
@@ -36,11 +53,13 @@ interface StoreData {
 export interface ProjectStore {
   list(ownerId: string): { projects: Project[]; activeProjectId: string | null };
   get(ownerId: string, projectId: string): Project | null;
-  create(ownerId: string, fields: ProjectFields): Promise<Project>;
+  create(ownerId: string, fields: ProjectFields, actor?: AuditActor): Promise<Project>;
   /** `null` se o projeto não existir para este dono. */
-  update(ownerId: string, projectId: string, patch: Partial<ProjectFields>): Promise<Project | null>;
+  update(ownerId: string, projectId: string, patch: Partial<ProjectFields>, actor?: AuditActor): Promise<Project | null>;
   /** `false` se o projeto não existir para este dono. `null` limpa a seleção. */
-  setActive(ownerId: string, projectId: string | null): Promise<boolean>;
+  setActive(ownerId: string, projectId: string | null, actor?: AuditActor): Promise<boolean>;
+  /** Eventos de auditoria deste arquivo (somente leitura, ordem crescente de `seq`). */
+  auditLog(): Readonly<EventLog>;
 }
 
 export interface ProjectStoreOptions {
@@ -51,6 +70,8 @@ export interface ProjectStoreOptions {
   generateId?: () => string;
   /** Apenas para testes: substitui a gravação atômica. */
   writeFile?: WriteFile;
+  /** Sequência global de auditoria compartilhada entre os arquivos. */
+  sequence?: AuditSequence;
 }
 
 function corrupt(detail: string): never {
@@ -96,8 +117,9 @@ function validateRecord(raw: unknown, index: number): ProjectRecord {
   }
 }
 
-function validateData(r: Record<string, unknown>): StoreData {
-  if (Object.keys(r).length !== 2) corrupt('estrutura');
+function validateData(r: Record<string, unknown>, sequence: AuditSequence): StoreData {
+  if (Object.keys(r).length !== 4) corrupt('estrutura');
+  const log = validateEventLog(r.events, r.droppedEvents, sequence, corrupt);
   if (!Array.isArray(r.projects) || !Array.isArray(r.activeProjects)) corrupt('estrutura');
   const projects = r.projects.map(validateRecord);
   if (new Set(projects.map((p) => p.id)).size !== projects.length) corrupt('ids duplicados');
@@ -111,22 +133,30 @@ function validateData(r: Record<string, unknown>): StoreData {
     return { ownerId: e.ownerId, projectId: e.projectId };
   });
   if (new Set(activeProjects.map((a) => a.ownerId)).size !== activeProjects.length) corrupt('projeto ativo duplicado');
-  return { projects, activeProjects };
+  return { projects, activeProjects, ...log };
 }
 
 export async function openProjectStore(options: ProjectStoreOptions): Promise<ProjectStore> {
   const now = options.now ?? Date.now;
   const generateId = options.generateId ?? randomUUID;
+  const sequence = options.sequence ?? createAuditSequence();
   const file = await openJsonFile<StoreData>({
     filePath: options.filePath,
     label: 'projetos',
     format: STORE_FORMAT,
     version: STORE_VERSION,
     maxBytes: MAX_FILE_BYTES,
-    empty: () => ({ projects: [], activeProjects: [] }),
-    validate: validateData,
+    empty: () => ({ projects: [], activeProjects: [], events: [], droppedEvents: 0 }),
+    validate: (raw) => validateData(raw, sequence),
+    upgrades: { 1: (raw) => ({ ...raw, events: [], droppedEvents: 0 }) },
     writeFile: options.writeFile,
   });
+  // Autor padrão: o próprio dono (único usuário humano do MVP). A API sempre informa o da sessão.
+  const actorOf = (ownerId: string, actor?: AuditActor): AuditActor => actor ?? { kind: 'human', id: ownerId };
+  function record(draft: StoreData, input: AuditEventInput) {
+    draft.events.push(makeEvent(input, sequence.next(), new Date(now()).toISOString()));
+    applyRetention(draft, PROJECT_EVENTS_MAX);
+  }
   const mutate = file.mutate.bind(file);
 
   // `ownerId` nunca sai do servidor.
@@ -143,7 +173,30 @@ export async function openProjectStore(options: ProjectStoreOptions): Promise<Pr
   const find = (ownerId: string, projectId: string) =>
     file.data.projects.find((p) => p.ownerId === ownerId && p.id === projectId);
 
+  function record_(
+    draft: StoreData,
+    ownerId: string,
+    actor: AuditActor | undefined,
+    action: 'project.created' | 'project.updated' | 'project.activated',
+    projectId: string | null,
+    context: StoredAuditEvent['context'],
+  ) {
+    record(draft, {
+      action,
+      actor: actorOf(ownerId, actor),
+      ownerId,
+      projectId,
+      resource: { type: 'project', id: projectId },
+      outcome: 'success',
+      context,
+    });
+  }
+
   return {
+    auditLog() {
+      return file.data;
+    },
+
     list(ownerId) {
       const projects = file.data.projects.filter((p) => p.ownerId === ownerId).map(toProject);
       const active = file.data.activeProjects.find((a) => a.ownerId === ownerId)?.projectId ?? null;
@@ -155,7 +208,7 @@ export async function openProjectStore(options: ProjectStoreOptions): Promise<Pr
       return record ? toProject(record) : null;
     },
 
-    create(ownerId, fields) {
+    create(ownerId, fields, actor) {
       return mutate((draft) => {
         if (draft.projects.filter((p) => p.ownerId === ownerId).length >= PROJECT_LIMITS.projectsPerOwnerMax) {
           throw new IntegrationError('project_limit_reached');
@@ -165,27 +218,37 @@ export async function openProjectStore(options: ProjectStoreOptions): Promise<Pr
         const at = new Date(now()).toISOString();
         const record: ProjectRecord = { id, ownerId, ...fields, repositories: [...fields.repositories], createdAt: at, updatedAt: at };
         draft.projects.push(record);
+        record_(draft, ownerId, actor, 'project.created', id, { status: fields.status });
         return toProject(record);
       });
     },
 
-    update(ownerId, projectId, patch) {
+    update(ownerId, projectId, patch, actor) {
       if (!find(ownerId, projectId)) return Promise.resolve(null);
       return mutate((draft) => {
         const record = draft.projects.find((p) => p.ownerId === ownerId && p.id === projectId);
         if (!record) return null;
+        const before = structuredClone(record);
         Object.assign(record, patch, { updatedAt: new Date(now()).toISOString() });
         if (patch.repositories) record.repositories = [...patch.repositories];
+        const fields = Object.keys(patch)
+          .filter((key) => JSON.stringify(before[key as keyof ProjectRecord]) !== JSON.stringify(record[key as keyof ProjectRecord]))
+          .sort();
+        record_(draft, ownerId, actor, 'project.updated', projectId, {
+          fields,
+          ...(fields.includes('status') ? { from: before.status, to: record.status } : {}),
+        });
         return toProject(record);
       });
     },
 
-    setActive(ownerId, projectId) {
+    setActive(ownerId, projectId, actor) {
       if (projectId !== null && !find(ownerId, projectId)) return Promise.resolve(false);
       return mutate((draft) => {
         if (projectId !== null && !draft.projects.some((p) => p.ownerId === ownerId && p.id === projectId)) return false;
         draft.activeProjects = draft.activeProjects.filter((a) => a.ownerId !== ownerId);
         if (projectId !== null) draft.activeProjects.push({ ownerId, projectId });
+        record_(draft, ownerId, actor, 'project.activated', projectId, { cleared: projectId === null });
         return true;
       });
     },

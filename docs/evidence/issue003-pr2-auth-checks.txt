@@ -1,0 +1,53 @@
+# Issue #003 PR 2 — autenticação do administrador: verificações
+# Gerado em 2026-11-14T01:37:02Z. Senha de teste descartável, gerada aleatoriamente e nunca registrada; nenhum token ou cookie é registrado.
+
+## Checks locais
+ Test Files  20 passed (20)
+      Tests  336 passed (336)
+LINT: ok
+BUILD: ok
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+Nenhuma credencial encontrada (113 arquivo(s) versionado(s)).
+found 0 vulnerabilities
+
+## Ponta a ponta: servidor real (gh-cli, ACC_DEPLOYMENT=local, porta 8788) + vite preview (CSP de produção) via proxy /api
+1 sessão anônima: {"authenticated":false,"authConfigured":true}
+2 /api/status sem sessão: 401
+3 snapshot sem sessão: 401
+4 login senha errada: {"error":{"code":"invalid_credentials","message":"E-mail ou senha inválidos."}}
+5 login sem Origin: 403
+6 login Origin externa: 403
+7 login text/plain: 415
+8 login válido: {"authenticated":true,"user":{"email":"admin@example.test"},"expiresAt":"…"}
+   Set-Cookie: set-cookie: acc_session=<omitido>; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800
+9 /api/status com sessão: {"configured":true,"authMode":"gh-cli","repositories":["Moreirapontocom-br/ai-command-center"]}
+10 snapshot real (gh-cli) com sessão: HTTP 200 repo=Moreirapontocom-br/ai-command-center PRs=5 branches=5
+11 logout: {"authenticated":false,"authConfigured":true}
+12 /api/status após logout (cookie antigo): 401
+13 reuso explícito do token revogado: 401
+14 cabeçalhos da página (CSP prod): Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+15 vazamentos no log do servidor: senha=0 token=0 hash=0 email=0
+16 eventos de auth no log:       1 "event":"login_failure"       1 "event":"login_success"       1 "event":"logout" 
+17 após falhas excessivas, login com senha certa: HTTP 429 Retry-After=900
+
+## Navegador real (Chrome headless, DevTools Protocol) sob a CSP de produção
+login visível: true
+painel oculto antes do login: true
+erro de login exibido: true
+painel com dados reais após login: true
+e-mail no cabeçalho: true
+cookie legível pelo JavaScript (esperado vazio, HttpOnly): ""
+localStorage/sessionStorage vazios: true
+cookie de sessão: httpOnly=true sameSite=Strict path=/
+login de volta após logout: true
+dados reais removidos: true
+cookie removido após logout: true
+API após logout: 401
+exceções/erros de console (exceto 401 esperados): 0
+violações de CSP: 0
+Capturas: docs/evidence/issue003-pr2-login-1440.png, docs/evidence/issue003-pr2-dashboard-1440.png
+
+## Defeito encontrado e corrigido durante a validação
+auth:hash-password com entrada redirecionada: rl.close() emitia 'close' de forma síncrona antes de resolve(line),
+e a senha lida virava ''. Corrigido (resolve antes de close) e coberto por teste em server/auth/auth.test.ts.

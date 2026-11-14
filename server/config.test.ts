@@ -63,7 +63,7 @@ describe('seleção da autenticação (GITHUB_AUTH)', () => {
 
   it('GITHUB_AUTH=gh-cli ativa o GitHub CLI sem executar nada ao carregar a configuração', async () => {
     const run = exec();
-    const config = loadConfig({ GITHUB_AUTH: 'gh-cli' }, { exec: run });
+    const config = loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli' }, { exec: run });
     expect(config.credentials?.kind).toBe('gh-cli');
     expect(run).not.toHaveBeenCalled();
     expect(await config.credentials?.getAuthorizationHeader()).toBe(`Bearer ${GH_TOKEN_FAKE}`);
@@ -77,14 +77,14 @@ describe('seleção da autenticação (GITHUB_AUTH)', () => {
   });
 
   it('recusa GITHUB_AUTH=gh-cli junto com GITHUB_TOKEN (configuração ambígua)', () => {
-    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: CANARY_TOKEN })).toThrow(/ambígua/);
+    expect(() => loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: CANARY_TOKEN })).toThrow(/ambígua/);
     try {
-      loadConfig({ GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: CANARY_TOKEN });
+      loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: CANARY_TOKEN });
     } catch (error) {
       expect((error as Error).message).not.toContain(CANARY_TOKEN);
     }
     // GITHUB_TOKEN vazio não é conflito.
-    expect(loadConfig({ GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: '  ' }).credentials?.kind).toBe('gh-cli');
+    expect(loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli', GITHUB_TOKEN: '  ' }).credentials?.kind).toBe('gh-cli');
   });
 
   it('recusa valores desconhecidos sem repetir o valor', () => {
@@ -100,19 +100,69 @@ describe('seleção da autenticação (GITHUB_AUTH)', () => {
   });
 
   it('gh-cli é exclusivo para desenvolvimento local', () => {
-    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', NODE_ENV: 'production' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli', NODE_ENV: 'production' })).toThrow(ConfigError);
     // E continua restrito ao loopback como qualquer outro modo.
-    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', API_HOST: '0.0.0.0' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli', API_HOST: '0.0.0.0' })).toThrow(ConfigError);
   });
 
   it('GH_PATH precisa ser absoluto e só vale com gh-cli', async () => {
-    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', GH_PATH: 'gh.exe' })).toThrow(/absoluto/);
+    expect(() => loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli', GH_PATH: 'gh.exe' })).toThrow(/absoluto/);
     expect(() => loadConfig({ GITHUB_TOKEN: CANARY_TOKEN, GH_PATH: 'C:\\Tools\\gh.exe' })).toThrow(/GH_PATH/);
 
     const run = exec();
     const absolute = process.platform === 'win32' ? 'C:\\Tools\\gh.exe' : '/opt/gh/bin/gh';
-    await loadConfig({ GITHUB_AUTH: 'gh-cli', GH_PATH: absolute }, { exec: run }).credentials?.getAuthorizationHeader();
+    await loadConfig({ ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli', GH_PATH: absolute }, { exec: run }).credentials?.getAuthorizationHeader();
     expect(run.mock.calls[0][0]).toBe(absolute);
+  });
+});
+
+describe('gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003)', () => {
+  const exec = () => vi.fn<ExecFileLike>().mockResolvedValue('gho_' + 'E'.repeat(36));
+
+  it('recusa gh-cli sem ACC_DEPLOYMENT, sem executar o gh', () => {
+    const run = exec();
+    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli' }, { exec: run })).toThrow(/ACC_DEPLOYMENT=local/);
+    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', ACC_DEPLOYMENT: '' }, { exec: run })).toThrow(ConfigError);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('recusa gh-cli com ACC_DEPLOYMENT=production', () => {
+    expect(() => loadConfig({ GITHUB_AUTH: 'gh-cli', ACC_DEPLOYMENT: 'production' })).toThrow(/ACC_DEPLOYMENT=local/);
+  });
+
+  it('recusa valores desconhecidos de ACC_DEPLOYMENT sem repetir o valor (inclusive variações de "local")', () => {
+    for (const value of ['LOCAL', 'Local', 'dev', 'localhost', 'local,production', CANARY_TOKEN]) {
+      try {
+        loadConfig({ GITHUB_AUTH: 'gh-cli', ACC_DEPLOYMENT: value });
+        throw new Error('esperava falha');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError);
+        expect((error as Error).message).not.toContain(value);
+      }
+    }
+    // Valor inválido é recusado mesmo no modo fine-grained (configuração incoerente não passa).
+    expect(() => loadConfig({ GITHUB_TOKEN: CANARY_TOKEN, ACC_DEPLOYMENT: 'prod' })).toThrow(ConfigError);
+  });
+
+  it('aceita gh-cli com ACC_DEPLOYMENT=local (espaços nas pontas ignorados) e registra o ambiente', () => {
+    const config = loadConfig({ GITHUB_AUTH: 'gh-cli', ACC_DEPLOYMENT: ' local ' }, { exec: exec() });
+    expect(config.credentials?.kind).toBe('gh-cli');
+    expect(config.deployment).toBe('local');
+  });
+
+  it('ACC_DEPLOYMENT=local não relaxa as demais restrições do gh-cli', () => {
+    const local = { ACC_DEPLOYMENT: 'local', GITHUB_AUTH: 'gh-cli' };
+    expect(() => loadConfig({ ...local, NODE_ENV: 'production' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...local, GITHUB_TOKEN: CANARY_TOKEN })).toThrow(/ambígua/);
+    expect(() => loadConfig({ ...local, API_HOST: '0.0.0.0' })).toThrow(/loopback/);
+    expect(() => loadConfig({ ...local, API_HOST: '::' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...local, GH_PATH: 'gh' })).toThrow(/absoluto/);
+  });
+
+  it('fine-grained continua funcionando com ou sem ACC_DEPLOYMENT', () => {
+    expect(loadConfig({ GITHUB_TOKEN: CANARY_TOKEN }).deployment).toBeNull();
+    expect(loadConfig({ GITHUB_TOKEN: CANARY_TOKEN, ACC_DEPLOYMENT: 'production' }).credentials?.kind).toBe('fine-grained-token');
+    expect(loadConfig({ ACC_DEPLOYMENT: 'local' }).credentials).toBeNull();
   });
 });
 

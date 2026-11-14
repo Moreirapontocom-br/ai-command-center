@@ -1,0 +1,78 @@
+# Issue #003 PR 1 — evidências de governança (S1)
+# Gerado em 2026-11-13T21:43:14Z. Nenhum token é registrado.
+
+## Fase 0
+origin/main: 0de3903d9530feb45cc8d25a91fe7f0fbd580ec1
+PR #32: MERGED merge=0de3903d9530feb45cc8d25a91fe7f0fbd580ec1
+PR #25: CLOSED mergedAt=null
+Runs de CI anteriores: todos com evento pull_request (nenhum run na main):
+  pull_request feature/002-github-integration-v2 success
+  pull_request feature/002-github-integration failure
+  pull_request feature/002-github-integration success
+  pull_request feature/002-github-integration success
+  pull_request feature/002-github-integration success
+  pull_request feature/001-project-setup success
+
+## Proteção no servidor (GitHub Free, repositório privado)
+visibility: private
+GET branches/main/protection: {"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"403"}gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)
+
+GET rulesets: {"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","documentation_url":"https://docs.github.com/rest/repos/rules#get-all-repository-rulesets","status":"403"}gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)
+
+Nenhuma regra de proteção foi criada ou alterada.
+
+## Dependabot
+Antes:  GET vulnerability-alerts -> HTTP 404 (desativado)
+Ação:   PUT vulnerability-alerts -> HTTP 204 (autorizado pelo PO)
+Depois: GET vulnerability-alerts -> HTTP/2.0 204 No Content
+automated-security-fixes: {"enabled":false,"paused":false}  (NÃO ativado: fora do escopo)
+Nenhum dependabot.yml, automerge ou recurso pago foi configurado.
+
+## core.hooksPath
+Antes: não definido (local/global/sistema)
+Depois (npm run hooks:check): Hooks ativos: core.hooksPath local = ".githooks".
+
+## Auditoria da main — execução local contra a main real (somente leitura, --depth 20)
+  ## Auditoria informativa da main
+  
+  **Resultado:** ✅ OK — nenhum commit auditado exige revisão (PR mesclado ou commit raiz)
+  
+  Evento: local — últimos 10 commit(s) de `origin/main`.
+  
+  | Commit | Resultado | Detalhe |
+  | --- | --- | --- |
+  | `0de3903` | ok | introduzido pelo PR #32 (mesclado) |
+  | `ab6b26f` | ok | introduzido pelo PR #32 (mesclado) |
+  | `90f1849` | ok | introduzido pelo PR #1 (mesclado) |
+  | `0e17cc2` | ok | introduzido pelo PR #1 (mesclado) |
+  | `224a24f` | ok | introduzido pelo PR #1 (mesclado) |
+  | `990e169` | ok | introduzido pelo PR #1 (mesclado) |
+  | `90d86a7` | ok | introduzido pelo PR #1 (mesclado) |
+  | `085fdbf` | ok | introduzido pelo PR #1 (mesclado) |
+  | `28a5970` | ok | introduzido pelo PR #1 (mesclado) |
+  | `e706359` | info | commit raiz (criação do repositório), anterior ao fluxo de PR |
+  
+  _Controle DETECTIVO: roda depois que a main já mudou e não impede nada. Ausência de PR associado é sinal para revisão, não prova de alteração indevida. Ver docs/BRANCH_POLICY.md._
+
+## Auditoria — evento push simulado do merge do PR #32 (sem falso positivo)
+  ## Auditoria informativa da main
+  
+  **Resultado:** ✅ OK — todos os commits auditados vieram de PR mesclado
+  
+  Evento: push em `refs/heads/main` (90f1849 → 0de3903).
+  
+  | Commit | Resultado | Detalhe |
+  | --- | --- | --- |
+  | `ab6b26f` | ok | introduzido pelo PR #32 (mesclado) |
+  | `0de3903` | ok | introduzido pelo PR #32 (mesclado) |
+  
+  _Controle DETECTIVO: roda depois que a main já mudou e não impede nada. Ausência de PR associado é sinal para revisão, não prova de alteração indevida. Ver docs/BRANCH_POLICY.md._
+
+## Auditoria — mesmo evento com forced=true (saída 1 esperada; saída obtida: 1)
+  ## Auditoria informativa da main
+  
+  **Resultado:** 🚨 ALERTA — o GitHub reportou um fato que exige revisão imediata
+  
+  Evento: push em `refs/heads/main` (90f1849 → 0de3903).
+  
+  - 🚨 o GitHub reportou push FORÇADO (não fast-forward) na main: 90f1849 → 0de3903 (pusher: Moreirapontocom-br). Histórico anterior pode ter sido reescrito.

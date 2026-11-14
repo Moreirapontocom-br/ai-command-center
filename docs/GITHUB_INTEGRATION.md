@@ -49,7 +49,10 @@ O modo é escolhido **explicitamente** por `GITHUB_AUTH`. Não há detecção au
 
 Regras de configuração (o servidor **não inicia** se forem violadas):
 - `gh-cli` com `GITHUB_TOKEN` preenchido → configuração ambígua.
+- `gh-cli` sem `ACC_DEPLOYMENT=local` declarado explicitamente → recusado (Issue #003).
 - `gh-cli` com `NODE_ENV=production` → recusado.
+- `ACC_DEPLOYMENT` com valor diferente de `local`/`production` → recusado, em qualquer modo.
+- O `gh-cli` autentica o **desenvolvedor** perante o GitHub; ele **não** autentica usuários desta aplicação.
 - `GITHUB_AUTH` com valor desconhecido → recusado. O valor não é repetido na mensagem.
 - `GH_PATH`, se definido, precisa ser um caminho absoluto e só vale com `gh-cli`.
 
@@ -163,14 +166,15 @@ npm run dev
 ```
 
 - **Sem `GITHUB_TOKEN`:** o servidor inicia em modo demonstração e a interface mostra **"Credencial ausente"**.
-- **Com GitHub CLI (só local):** `gh auth status` precisa estar ok. Defina `GITHUB_AUTH=gh-cli` e deixe `GITHUB_TOKEN` vazio no `.env.local`. Para um teste pontual sem editar o arquivo, variáveis do shell têm precedência: em PowerShell, `$env:GITHUB_AUTH='gh-cli'; $env:GITHUB_TOKEN=''; npm run server`.
+- **Com GitHub CLI (só local):** `gh auth status` precisa estar ok. Defina `ACC_DEPLOYMENT=local`, `GITHUB_AUTH=gh-cli` e deixe `GITHUB_TOKEN` vazio no `.env.local`. Para um teste pontual sem editar o arquivo, variáveis do shell têm precedência: em PowerShell, `$env:ACC_DEPLOYMENT='local'; $env:GITHUB_AUTH='gh-cli'; $env:GITHUB_TOKEN=''; npm run server`.
 - **Sem o servidor:** a interface mostra **"Erro de rede"**. Em ambos os casos agentes e tarefas continuam em modo demonstração, e nenhum dado do GitHub é simulado.
 
 Variáveis (ver [`.env.example`](../.env.example)):
 
 | Variável | Obrigatória | Padrão | Descrição |
 | --- | --- | --- | --- |
-| `GITHUB_AUTH` | Não | `fine-grained` | `fine-grained` ou `gh-cli` (somente desenvolvimento local) |
+| `ACC_DEPLOYMENT` | Só com `gh-cli` | — (não declarado) | `local` (máquina do desenvolvedor; única opção que aceita `gh-cli`) ou `production` |
+| `GITHUB_AUTH` | Não | `fine-grained` | `fine-grained` ou `gh-cli` (somente desenvolvimento local, exige `ACC_DEPLOYMENT=local`) |
 | `GITHUB_TOKEN` | Não (sem ela = modo demonstração) | — | Token fine-grained somente leitura. Deve ficar vazio com `gh-cli`. |
 | `GH_PATH` | Não | `gh` (`gh.exe` no Windows) na primeira entrada absoluta do PATH | Caminho absoluto do GitHub CLI (apenas com `gh-cli`) |
 | `API_HOST` | Não | `127.0.0.1` | Apenas loopback |

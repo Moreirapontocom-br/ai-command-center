@@ -10,7 +10,18 @@ export const ALLOWED_REPOSITORIES: readonly string[] = ['Moreirapontocom-br/ai-c
 
 export const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'] as const;
 
+/**
+ * Ambiente de implantação declarado em `ACC_DEPLOYMENT`. Sem detecção automática:
+ * - `local`: máquina do desenvolvedor — único ambiente em que `GITHUB_AUTH=gh-cli` é aceito;
+ * - `production`: qualquer ambiente que não seja a máquina do desenvolvedor;
+ * - ausente: não declarado — `gh-cli` é recusado (é preciso optar explicitamente por `local`).
+ */
+export const DEPLOYMENT_MODES = ['local', 'production'] as const;
+export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
+
 export interface ServerConfig {
+  /** `null` quando `ACC_DEPLOYMENT` não foi definido. */
+  deployment: DeploymentMode | null;
   host: string;
   port: number;
   allowedRepositories: readonly string[];
@@ -45,11 +56,24 @@ export const AUTH_MODES = ['fine-grained', 'gh-cli'] as const;
  * Seleciona o provedor de credencial. Regras:
  * - `GITHUB_AUTH` ausente/vazio ou `fine-grained` → token fine-grained em `GITHUB_TOKEN` (ou demonstração);
  * - `GITHUB_AUTH=gh-cli` → sessão local do GitHub CLI (somente desenvolvimento local). Exige
- *   `GITHUB_TOKEN` vazio (configuração ambígua é recusada) e é recusado com `NODE_ENV=production`;
+ *   `ACC_DEPLOYMENT=local` explícito e `GITHUB_TOKEN` vazio (configuração ambígua é recusada), e é
+ *   recusado com `NODE_ENV=production`. O `gh-cli` identifica o DESENVOLVEDOR perante o GitHub; ele
+ *   não autentica usuários desta aplicação (o servidor não tem login nesta versão);
  * - qualquer outro valor → erro. Nunca há detecção automática.
  */
+function parseDeployment(value: string | undefined): DeploymentMode | null {
+  const mode = value?.trim() ?? '';
+  if (mode === '') return null;
+  if (!(DEPLOYMENT_MODES as readonly string[]).includes(mode)) {
+    // O valor não é repetido na mensagem.
+    throw new ConfigError(`ACC_DEPLOYMENT inválido. Valores aceitos: ${DEPLOYMENT_MODES.join(', ')}.`);
+  }
+  return mode as DeploymentMode;
+}
+
 function resolveCredentials(
   env: Record<string, string | undefined>,
+  deployment: DeploymentMode | null,
   ghCliOverrides: Pick<GhCliProviderOptions, 'exec' | 'now'>,
 ): CredentialProvider | null {
   const mode = env.GITHUB_AUTH?.trim() || 'fine-grained';
@@ -68,6 +92,11 @@ function resolveCredentials(
   if (token !== '') {
     throw new ConfigError(
       'Configuração ambígua: GITHUB_AUTH=gh-cli não pode ser usado junto com GITHUB_TOKEN. Remova um dos dois.',
+    );
+  }
+  if (deployment !== 'local') {
+    throw new ConfigError(
+      'GITHUB_AUTH=gh-cli é exclusivo para desenvolvimento local e exige ACC_DEPLOYMENT=local declarado explicitamente.',
     );
   }
   if (env.NODE_ENV === 'production') {
@@ -108,9 +137,11 @@ export function loadConfig(
   }
 
   const port = parsePort(env.API_PORT, 8787);
-  const credentials = resolveCredentials(env, ghCliOverrides);
+  const deployment = parseDeployment(env.ACC_DEPLOYMENT);
+  const credentials = resolveCredentials(env, deployment, ghCliOverrides);
 
   return {
+    deployment,
     host,
     port,
     allowedRepositories: ALLOWED_REPOSITORIES,

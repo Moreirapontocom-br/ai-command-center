@@ -1,0 +1,71 @@
+# Issue #003 PR 1 — validação da CSP no navegador (Chrome headless via DevTools Protocol)
+# 2026-11-13T21:53:24Z. Servidor real em GITHUB_AUTH=gh-cli + ACC_DEPLOYMENT=local (porta 8788, loopback).
+# Sondas intencionais: fetch a https://api.github.com e <script> inline injetado — as violações registradas são delas.
+# eval(): o Chrome isenta código executado pelo DevTools da CSP, então não é testável por este método.
+
+### PREVIEW (política de produção, dados reais via gh-cli) — http://127.0.0.1:4173/
+CSP efetiva (cabeçalho do documento): default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+X-Frame-Options: DENY | X-Content-Type-Options: nosniff | Referrer-Policy: no-referrer
+- Dashboard: clicado=true raiz=1 texto=1265ch título="Repositório no GitHub" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Issues: clicado=true raiz=1 texto=4788ch título="Issues abertas (29)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Pull Requests: clicado=true raiz=1 texto=872ch título="Pull Requests abertos (0)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Branches: clicado=true raiz=1 texto=488ch título="Branches (4)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Agentes: clicado=true raiz=1 texto=374ch título="" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Tarefas: clicado=true raiz=1 texto=744ch título="" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+GET /api/status pela página (connect-src 'self'): 200 {"configured":true,"authMode":"gh-cli","repositories":["Moreirapontocom-br/ai-command-center"]}
+fetch direto a https://api.github.com pela página: bloqueado (TypeError)
+script inline injetado: bloqueado
+eval(): não testável por CDP (o Chrome isenta código do DevTools da CSP); a política não contém 'unsafe-eval' e o check:csp verifica os bundles
+Violações de CSP registradas: ["connect-src https://api.github.com/zen","script-src-elem inline"]
+Exceções JS: []
+Console (error/warning): []
+Log do navegador (error/warning): ["security: Connecting to 'https://api.github.com/zen' violates the following Content Security Policy directive: \"connect-src 'self'\". The action has been blocked.","javascript: Fetch API cannot load https://api.github.com/zen. Refused to connect because it violates the document's Content Security Policy.","security: Executing inline script violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-JAMsCKG/cA6Dg3ML5FIEVvJcoY/ECqmFecLAqdoitzQ='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked."]
+
+### PREVIEW com labels coloridas (política de produção, API simulada) — http://127.0.0.1:4174/
+CSP efetiva (cabeçalho do documento): default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+X-Frame-Options: DENY | X-Content-Type-Options: nosniff | Referrer-Policy: no-referrer
+- Dashboard: clicado=true raiz=1 texto=1265ch título="Repositório no GitHub" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Issues: clicado=true raiz=1 texto=4813ch título="Issues abertas (29)" folhas=1 labelsColoridas=3 (cor computada da 1ª: rgb(215, 58, 74)) fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Pull Requests: clicado=true raiz=1 texto=872ch título="Pull Requests abertos (0)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Branches: clicado=true raiz=1 texto=488ch título="Branches (4)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Agentes: clicado=true raiz=1 texto=374ch título="" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Tarefas: clicado=true raiz=1 texto=744ch título="" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+GET /api/status pela página (connect-src 'self'): 200 {"configured":true,"authMode":"gh-cli","repositories":["Moreirapontocom-br/ai-command-center"]}
+fetch direto a https://api.github.com pela página: bloqueado (TypeError)
+script inline injetado: bloqueado
+eval(): não testável por CDP (o Chrome isenta código do DevTools da CSP); a política não contém 'unsafe-eval' e o check:csp verifica os bundles
+Violações de CSP registradas: ["connect-src https://api.github.com/zen","script-src-elem inline"]
+Exceções JS: []
+Console (error/warning): []
+Log do navegador (error/warning): ["security: Connecting to 'https://api.github.com/zen' violates the following Content Security Policy directive: \"connect-src 'self'\". The action has been blocked.","javascript: Fetch API cannot load https://api.github.com/zen. Refused to connect because it violates the document's Content Security Policy.","security: Executing inline script violates the following Content Security Policy directive 'script-src 'self''. Either the 'unsafe-inline' keyword, a hash ('sha256-JAMsCKG/cA6Dg3ML5FIEVvJcoY/ECqmFecLAqdoitzQ='), or a nonce ('nonce-...') is required to enable inline execution. The action has been blocked."]
+(API simulada local na porta 8789: snapshot real com 3 labels coloridas injetadas, pois nenhuma issue real tem label;
+ valida que style={{backgroundColor}} do React — aplicado via CSSOM — funciona sem 'unsafe-inline'.)
+
+### DEV SERVER (política de desenvolvimento) — http://127.0.0.1:5173/
+CSP efetiva (cabeçalho do documento): default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+X-Frame-Options: DENY | X-Content-Type-Options: nosniff | Referrer-Policy: no-referrer
+- Dashboard: clicado=true raiz=1 texto=1265ch título="Repositório no GitHub" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Issues: clicado=true raiz=1 texto=4788ch título="Issues abertas (29)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Pull Requests: clicado=true raiz=1 texto=872ch título="Pull Requests abertos (0)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Branches: clicado=true raiz=1 texto=488ch título="Branches (4)" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Agentes: clicado=true raiz=1 texto=374ch título="" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+- Tarefas: clicado=true raiz=1 texto=744ch título="" folhas=1 labelsColoridas=0 fonte=Inter, ui-sans-serif, system-ui, sans-se
+GET /api/status pela página (connect-src 'self'): 200 {"configured":true,"authMode":"gh-cli","repositories":["Moreirapontocom-br/ai-command-center"]}
+fetch direto a https://api.github.com pela página: bloqueado (TypeError)
+script inline injetado: EXECUTOU
+eval(): não testável por CDP (o Chrome isenta código do DevTools da CSP); a política não contém 'unsafe-eval' e o check:csp verifica os bundles
+Violações de CSP registradas: ["connect-src https://api.github.com/zen"]
+Exceções JS: []
+Console (error/warning): []
+Log do navegador (error/warning): ["security: Connecting to 'https://api.github.com/zen' violates the following Content Security Policy directive: \"connect-src 'self' ws://localhost:* ws://127.0.0.1:*\". The action has been blocked.","javascript: Fetch API cannot load https://api.github.com/zen. Refused to connect because it violates the document's Content Security Policy."]
+
+## Diferenças necessárias dev x preview/produção
+- script-src/style-src 'unsafe-inline' apenas no dev server (preâmbulo inline do React Refresh e CSS injetado em <style> pelo Vite).
+- connect-src ws://localhost:* ws://127.0.0.1:* apenas no dev server (HMR). ws://[::1]:* foi removido: o Chrome o rejeita como fonte inválida.
+- Demais diretivas e cabeçalhos idênticos.
+
+## Verificação estática do build
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+
+## Captura
+- issue003-pr1-csp-preview-tarefas-1440.png: preview com a política de produção, última página visitada (Tarefas); Tailwind aplicado, sem erros.

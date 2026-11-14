@@ -1,0 +1,72 @@
+# Issue #003 PR 1 — dependências (2026-11-13T21:55:23Z)
+# Nenhuma dependência foi alterada nesta issue (package-lock.json intacto).
+
+## npm audit --omit=dev
+found 0 vulnerabilities
+
+## npm audit (completo)
+# npm audit report
+
+minimatch  7.0.0 - 11.0.0
+Severity: moderate
+minimatch has potential denial of service via globparts amplification - https://github.com/advisories/GHSA-g3hv-75wg-m249
+fix available via `npm audit fix --force`
+Will install typescript-eslint@8.36.0, which is a breaking change
+node_modules/minimatch
+  @eslint/config-array  0.23.0 - 0.23.5
+  Depends on vulnerable versions of minimatch
+  node_modules/@eslint/config-array
+  @typescript-eslint/typescript-estree  6.16.0 - 8.72.2
+  Depends on vulnerable versions of minimatch
+  node_modules/@typescript-eslint/typescript-estree
+    @typescript-eslint/parser  6.16.0 - 8.72.2
+    Depends on vulnerable versions of @typescript-eslint/typescript-estree
+    node_modules/@typescript-eslint/parser
+      typescript-eslint  <=8.72.2
+      Depends on vulnerable versions of @typescript-eslint/eslint-plugin
+      Depends on vulnerable versions of @typescript-eslint/parser
+      Depends on vulnerable versions of @typescript-eslint/typescript-estree
+      Depends on vulnerable versions of @typescript-eslint/utils
+      node_modules/typescript-eslint
+    @typescript-eslint/type-utils  6.16.0 - 8.72.2
+    Depends on vulnerable versions of @typescript-eslint/typescript-estree
+    Depends on vulnerable versions of @typescript-eslint/utils
+    node_modules/@typescript-eslint/type-utils
+      @typescript-eslint/eslint-plugin  6.16.0 - 8.72.2
+      Depends on vulnerable versions of @typescript-eslint/type-utils
+      Depends on vulnerable versions of @typescript-eslint/utils
+      node_modules/@typescript-eslint/eslint-plugin
+    @typescript-eslint/utils  6.16.0 - 8.72.2
+    Depends on vulnerable versions of @typescript-eslint/typescript-estree
+    node_modules/@typescript-eslint/utils
+  eslint  10.0.0-alpha.0 - 10.14.0
+  Depends on vulnerable versions of minimatch
+  node_modules/eslint
+
+9 moderate severity vulnerabilities
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+## npm ls minimatch
+ai-command-center@0.1.0 C:\Users\rmmo0\OneDrive\Desktop\Pasta pontocom-br\AI Command Center
++-- eslint@10.14.0
+| +-- @eslint/config-array@0.23.5
+| | `-- minimatch@10.2.6 deduped
+| `-- minimatch@10.2.6
+`-- typescript-eslint@8.72.2
+  `-- @typescript-eslint/typescript-estree@8.72.2
+    `-- minimatch@10.2.6 deduped
+
+
+## Versões publicadas (consulta ao registro)
+eslint latest: 10.15.0 (dependencies.minimatch: ^11.0.5)
+typescript-eslint latest: 8.72.2
+@typescript-eslint/typescript-estree latest minimatch: ^10.2.2
+minimatch latest: 11.0.8
+
+## Dependabot alerts abertos (API)
+[{"ghsa":"GHSA-g3hv-75wg-m249","n":1,"pkg":"minimatch","scope":"development","sev":"medium"}]

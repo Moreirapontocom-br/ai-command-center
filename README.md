@@ -2,7 +2,7 @@
 
 Aplicação web para gerenciar o fluxo de trabalho entre diferentes agentes de inteligência artificial (ChatGPT, Claude Code e Gemini).
 
-> **Estado atual (Issue #006):** **auditoria** somente de adição (projetos, tarefas, login/logout, recusas e acessos negados), consultável na página Auditoria; **tarefas** **tarefas** por projeto (status interno, prioridade, responsável pessoa ou agente, dependências sem ciclos, referências a issue/PR/branch e histórico) e gerenciamento de **projetos** (nome, descrição, objetivo, estado, projeto ativo), com GitHub **opcional**: cada projeto pode vincular repositórios da allowlist do servidor e mostra apenas os dados deles, em modo **somente leitura**. Acesso com login de administrador único (Issue #003). Agentes e o resumo de tarefas do dashboard continuam **fictícios** (modo demonstração). Não há integração com provedores de IA nem operações de escrita no GitHub.
+> **Estado atual (Issue #020):** **políticas de autonomia** semiautomática, negadas por padrão e avaliadas no servidor antes de cada ação (página Políticas, somente leitura); **auditoria** **auditoria** somente de adição (projetos, tarefas, login/logout, recusas e acessos negados), consultável na página Auditoria; **tarefas** **tarefas** por projeto (status interno, prioridade, responsável pessoa ou agente, dependências sem ciclos, referências a issue/PR/branch e histórico) e gerenciamento de **projetos** (nome, descrição, objetivo, estado, projeto ativo), com GitHub **opcional**: cada projeto pode vincular repositórios da allowlist do servidor e mostra apenas os dados deles, em modo **somente leitura**. Acesso com login de administrador único (Issue #003). Agentes e o resumo de tarefas do dashboard continuam **fictícios** (modo demonstração). Não há integração com provedores de IA nem operações de escrita no GitHub.
 
 ## Stack
 
@@ -47,6 +47,10 @@ Na página **Projetos** é possível criar, editar e selecionar projetos; o sele
 
 A página **Tarefas** lista as tarefas do projeto ativo, com filtros por status, prioridade e responsável, e permite criar e editar tarefas e mudar o status. Os dados ficam em `data/tasks.json`. O status é interno ao ACC e nunca é inferido do GitHub. Atribuir uma tarefa a um agente **não** inicia nenhuma execução, e uma tarefa de agente só pode ser concluída com um PR ou branch como evidência, com a confirmação registrada pela pessoa logada. Regras em `docs/IMPLEMENTATION_REPORT_005.md`.
 
+### Políticas de autonomia (Issue #020)
+
+O servidor avalia cada ação contra a política (`server/policy/defaultPolicy.ts`). O resultado é **permitido**, **negado**, **exige aprovação** ou **indisponível**. Sem regra explícita, a ação é negada. Push direto na main é sempre proibido, e agentes nunca alteram permissões. Ações críticas (merge, deploy, segredos, permissões, envio de dados a terceiros, despesas) exigem aprovação específica do PO, vinculada a operação, recurso e SHA. Atribuir uma tarefa a um agente não autoriza execução. Mudar a política exige PR aprovado. A página **Políticas** mostra as decisões e os motivos. Detalhes em `docs/IMPLEMENTATION_REPORT_020.md`.
+
 ### Auditoria (Issue #006)
 
 A página **Auditoria** mostra o histórico, com filtros por projeto, evento e resultado. A API (`GET /api/audit`) é somente leitura. O autor vem sempre da sessão, e os eventos nunca contêm senhas, cookies, tokens, e-mails nem texto livre. Cada alteração de projeto ou tarefa é gravada junto com o seu evento, no mesmo arquivo e de forma atômica. Login, logout e recusas ficam em `data/audit.json`. Retenção e garantias em `docs/IMPLEMENTATION_REPORT_006.md`.
@@ -82,6 +86,7 @@ server/                # Servidor intermediário somente leitura (token só aqui
 ├── tasks/             # Tarefas: validação, regras de status/dependências/evidência e armazenamento
 ├── storage/           # Motor comum de arquivo JSON atômico (projetos, tarefas e auditoria)
 ├── audit/             # Eventos de auditoria: formato, retenção, registro avulso e consulta
+├── policy/            # Motor de políticas (negação por padrão, risco, aprovações) e política padrão
 └── snapshotService.ts # Cache, fallback desatualizado e respeito aos limites da API
 shared/contracts.ts    # Tipos internos compartilhados servidor ↔ frontend
 scripts/               # check-dist-secrets.mjs

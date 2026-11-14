@@ -27,6 +27,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'auth.logout': 'Logout',
   'auth.login_rejected': 'Login recusado',
   'access.denied': 'Acesso negado',
+  'policy.decision': 'Decisão de política (bloqueio)',
 };
 
 const OUTCOME_LABELS: Record<AuditOutcome, string> = { success: 'Sucesso', failure: 'Falha', blocked: 'Bloqueado' };

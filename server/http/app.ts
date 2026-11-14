@@ -9,9 +9,21 @@ import type {
   StatusResponse,
 } from '../../shared/contracts.ts';
 import { AGENT_IDS, AUDIT_ACTIONS, AUDIT_OUTCOMES, AUDIT_QUERY_LIMITS } from '../../shared/contracts.ts';
-import type { AuditAction, AuditActor, AuditListResponse, AuditOutcome } from '../../shared/contracts.ts';
+import type {
+  AuditAction,
+  AuditActor,
+  AuditListResponse,
+  AuditOutcome,
+  PolicyAction,
+  PolicyEvaluation,
+  PolicyMatrixResponse,
+  PolicySubject,
+} from '../../shared/contracts.ts';
+import { POLICY_ACTIONS } from '../../shared/contracts.ts';
 import { queryAudit, type AuditLog } from '../audit/auditLog.ts';
 import type { AuditEventInput } from '../audit/events.ts';
+import { DEFAULT_POLICY } from '../policy/defaultPolicy.ts';
+import { DECISION_SEVERITY, evaluatePolicy, validatePolicy, type Policy } from '../policy/engine.ts';
 import { API_SECURITY_HEADERS } from '../../shared/securityHeaders.ts';
 import { ADMIN_USER_ID, readCookie, type AuthService } from '../auth/adminAuth.ts';
 import type { Session } from '../auth/sessions.ts';
@@ -43,6 +55,8 @@ export interface AppDeps {
    * alterações de projetos e tarefas ficam nos próprios arquivos delas, independentemente disto.
    */
   audit?: AuditLog | null;
+  /** Política de autonomia (Issue #020). Padrão: `DEFAULT_POLICY` (código revisado). */
+  policy?: Policy;
   logger: Logger;
   now?: () => number;
 }
@@ -58,6 +72,22 @@ const PROJECT_ITEM_ROUTE = /^\/api\/projects\/([^/]+)$/;
 const TASKS_ROUTE = /^\/api\/projects\/([^/]+)\/tasks$/;
 const TASK_ITEM_ROUTE = /^\/api\/projects\/([^/]+)\/tasks\/([^/]+)$/;
 const AUDIT_ROUTE = '/api/audit';
+const PROJECT_POLICY_ROUTE = /^\/api\/projects\/([^/]+)\/policy$/;
+
+/** Recusa da política: carrega a avaliação para a auditoria (sem texto livre). */
+class PolicyError extends IntegrationError {
+  readonly evaluation: PolicyEvaluation;
+  constructor(evaluation: PolicyEvaluation) {
+    super(
+      evaluation.decision === 'UNAVAILABLE'
+        ? 'capability_unavailable'
+        : evaluation.decision === 'REQUIRE_APPROVAL'
+          ? 'approval_required'
+          : 'policy_denied',
+    );
+    this.evaluation = evaluation;
+  }
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PROJECT_SNAPSHOT_ROUTE = /^\/api\/projects\/([^/]+)\/repositories\/([^/]+)\/([^/]+)\/snapshot$/;
 
@@ -232,6 +262,7 @@ export function createRequestHandler(deps: AppDeps) {
     if (TASK_ITEM_ROUTE.test(pathname)) return 'tasks.item';
     if (PROJECT_SNAPSHOT_ROUTE.test(pathname) || SNAPSHOT_ROUTE.test(pathname)) return 'snapshot';
     if (pathname === AUDIT_ROUTE) return 'audit';
+    if (PROJECT_POLICY_ROUTE.test(pathname)) return 'policy';
     if (pathname.startsWith('/api/auth/')) return 'auth';
     if (pathname === '/api/status') return 'status';
     return 'other';
@@ -260,7 +291,32 @@ export function createRequestHandler(deps: AppDeps) {
    * anônimo, limite de requisições). Só usa valores do servidor: código do erro, nome da rota,
    * método e ids que passaram pela validação de formato.
    */
-  function refusalEvent(req: IncomingMessage, pathname: string, code: ApiErrorCode, session: Session | null): AuditEventInput | null {
+  function refusalEvent(
+    req: IncomingMessage,
+    pathname: string,
+    code: ApiErrorCode,
+    session: Session | null,
+    error?: unknown,
+  ): AuditEventInput | null {
+    if (error instanceof PolicyError && session) {
+      const ids = pathname.split('/').filter((part) => UUID.test(part));
+      const { evaluation } = error;
+      return {
+        action: 'policy.decision',
+        actor: actorOf(session),
+        ownerId: session.userId,
+        projectId: ids[0] && deps.projects?.get(session.userId, ids[0]) ? ids[0] : null,
+        resource: { type: 'route', id: routeName(pathname) },
+        outcome: 'blocked',
+        context: {
+          policyAction: evaluation.action,
+          decision: evaluation.decision,
+          reason: evaluation.reason,
+          risk: evaluation.risk,
+          rule: evaluation.ruleId,
+        },
+      };
+    }
     if (code === 'audit_unavailable' || (code === 'too_many_requests' && pathname !== '/api/auth/login')) return null;
     const route = routeName(pathname);
     const isWrite = req.method === WRITE_METHOD;
@@ -338,6 +394,63 @@ export function createRequestHandler(deps: AppDeps) {
     };
   }
 
+  // Política validada na criação do servidor: uma política inválida impede a inicialização.
+  const policy = deps.policy ? validatePolicy(deps.policy) : DEFAULT_POLICY;
+  const clock = deps.now ?? Date.now;
+  const NO_APPROVALS: ReadonlySet<string> = new Set();
+
+  /**
+   * Avalia a política ANTES da ação, no servidor. O sujeito é sempre a pessoa da sessão (nenhuma
+   * rota aceita sujeito vindo do cliente). `projectId` só é informado depois de confirmado que o
+   * projeto é do usuário; a pior decisão entre as ações envolvidas vence. Fora de ALLOW → erro.
+   */
+  function enforce(session: Session, actions: PolicyAction[], projectId: string | null) {
+    const evaluations = actions.map((action) =>
+      evaluatePolicy(
+        policy,
+        { subject: { kind: 'human', id: session.userId }, action, projectId },
+        { projectAccessible: true, agentAssigned: false, now: clock(), usedApprovals: NO_APPROVALS },
+      ),
+    );
+    const worst = evaluations.reduce((a, b) => (DECISION_SEVERITY[b.decision] > DECISION_SEVERITY[a.decision] ? b : a));
+    if (worst.decision !== 'ALLOW') throw new PolicyError(worst);
+  }
+
+  /** Matriz de decisões do projeto para a pessoa da sessão e para cada agente (somente leitura). */
+  function policyMatrix(session: Session, projectId: string): PolicyMatrixResponse {
+    const assignedAgents = new Set(
+      (deps.tasks?.list(session.userId, projectId) ?? []).flatMap((t) => (t.assignee?.kind === 'agent' ? [t.assignee.agentId] : [])),
+    );
+    const subjects: PolicySubject[] = [{ kind: 'human', id: session.userId }, ...AGENT_IDS.map((id) => ({ kind: 'agent' as const, id }))];
+    return {
+      policyVersion: policy.version,
+      projectId,
+      subjects: subjects.map((subject) => {
+        const assigned = subject.kind === 'agent' && assignedAgents.has(subject.id);
+        return {
+          subject,
+          assigned,
+          evaluations: (Object.keys(POLICY_ACTIONS) as PolicyAction[]).map((action) =>
+            evaluatePolicy(
+              policy,
+              { subject, action, projectId },
+              { projectAccessible: true, agentAssigned: assigned, now: clock(), usedApprovals: NO_APPROVALS },
+            ),
+          ),
+        };
+      }),
+    };
+  }
+
+  /** Ações de política envolvidas numa atualização de tarefa. */
+  function taskUpdateActions(patch: { assignee?: unknown; status?: unknown }): PolicyAction[] {
+    const actions: PolicyAction[] = ['task.update'];
+    if (patch.assignee !== undefined) actions.push('task.assign');
+    if (patch.status !== undefined) actions.push('task.status_change');
+    if (patch.status === 'done') actions.push('task.complete');
+    return actions;
+  }
+
   const linkableRepositories = (session: Session) =>
     deps.config.allowedRepositories.filter((name) => session.scope.includes(name));
 
@@ -355,12 +468,14 @@ export function createRequestHandler(deps: AppDeps) {
     if (pathname === PROJECTS_ROUTE) {
       assertOnlyParams(url, []);
       if (isWrite) {
+        enforce(session, ['project.create'], null);
         const fields = parseProjectCreate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), linkableRepositories(session));
         const project = await store.create(ownerId, fields, actorOf(session));
         deps.logger.log('info', 'Projeto criado', { event: 'project_created', projectId: project.id });
         sendJson(res, 201, project);
         return;
       }
+      enforce(session, ['project.read'], null);
       const body: ProjectListResponse = { ...store.list(ownerId), linkableRepositories: linkableRepositories(session) };
       sendJson(res, 200, body);
       return;
@@ -369,6 +484,8 @@ export function createRequestHandler(deps: AppDeps) {
     if (pathname === ACTIVE_PROJECT_ROUTE) {
       assertOnlyParams(url, []);
       const projectId = parseActiveProject(await readJsonBody(req, MAX_PROJECT_BODY_BYTES));
+      if (projectId !== null && !store.get(ownerId, projectId)) fail('not_found');
+      enforce(session, ['project.select'], projectId);
       if (!(await store.setActive(ownerId, projectId, actorOf(session)))) fail('not_found');
       const body: ActiveProjectResponse = { activeProjectId: projectId };
       sendJson(res, 200, body);
@@ -380,6 +497,8 @@ export function createRequestHandler(deps: AppDeps) {
       assertOnlyParams(url, []);
       const projectId = item[1];
       if (!PROJECT_ID_PATTERN.test(projectId)) fail('not_found');
+      if (!store.get(ownerId, projectId)) fail('not_found');
+      enforce(session, [isWrite ? 'project.update' : 'project.read'], projectId);
       if (isWrite) {
         const patch = parseProjectUpdate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), linkableRepositories(session));
         const updated = (await store.update(ownerId, projectId, patch, actorOf(session))) ?? fail('not_found');
@@ -407,12 +526,15 @@ export function createRequestHandler(deps: AppDeps) {
       if (taskId === undefined) {
         if (isWrite) {
           const fields = parseTaskCreate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), context);
+          // Atribuir (inclusive a agente) é permitido à pessoa; NÃO autoriza execução nenhuma.
+          enforce(session, fields.assignee ? ['task.create', 'task.assign'] : ['task.create'], projectId);
           // Pelo navegador, toda tarefa é manual: a origem nunca vem do cliente.
           const task = await tasks.create(ownerId, projectId, fields, { actor: session.userId, origin: 'manual' });
           deps.logger.log('info', 'Tarefa criada', { event: 'task_created', projectId, taskId: task.id });
           sendJson(res, 201, task);
           return;
         }
+        enforce(session, ['task.read'], projectId);
         const body: TaskListResponse = {
           tasks: tasks.list(ownerId, projectId),
           assignableUsers: [{ userId: session.userId, label: session.email }],
@@ -424,11 +546,13 @@ export function createRequestHandler(deps: AppDeps) {
 
       if (isWrite) {
         const patch = parseTaskUpdate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), context);
+        enforce(session, taskUpdateActions(patch), projectId);
         const updated = (await tasks.update(ownerId, projectId, taskId, patch, session.userId)) ?? fail('not_found');
         deps.logger.log('info', 'Tarefa atualizada', { event: 'task_updated', projectId, taskId });
         sendJson(res, 200, updated);
         return;
       }
+      enforce(session, ['task.read'], projectId);
       sendJson(res, 200, tasks.get(ownerId, projectId, taskId) ?? fail('not_found'));
       return;
     }
@@ -444,8 +568,19 @@ export function createRequestHandler(deps: AppDeps) {
       const fullName = resolveAllowedRepository(owner, repo, deps.config.allowedRepositories);
       // Isolamento: só repositórios vinculados a ESTE projeto, dentro do escopo da sessão.
       if (!project.repositories.includes(fullName) || !session.scope.includes(fullName)) fail('not_found');
+      enforce(session, ['github.read'], projectId);
       if (deps.snapshots === null) fail('missing_credentials');
       sendJson(res, 200, await deps.snapshots.getSnapshot(fullName, { refresh: refreshParam === '1' }));
+      return;
+    }
+
+    const policyMatch = PROJECT_POLICY_ROUTE.exec(pathname);
+    if (policyMatch) {
+      assertOnlyParams(url, []);
+      const [, projectId] = policyMatch;
+      if (!PROJECT_ID_PATTERN.test(projectId) || !store.get(ownerId, projectId)) fail('not_found');
+      enforce(session, ['policy.read'], projectId);
+      sendJson(res, 200, policyMatrix(session, projectId));
       return;
     }
 
@@ -580,6 +715,7 @@ export function createRequestHandler(deps: AppDeps) {
 
       if (pathname === AUDIT_ROUTE) {
         const query = parseAuditQuery(url);
+        enforce(session, ['audit.read'], null);
         // Filtro por projeto: o projeto precisa ser do usuário (o mesmo 404 de sempre, se não for).
         if (query.projectId !== undefined && !deps.projects?.get(session.userId, query.projectId)) fail('not_found');
         const sources = [deps.projects?.auditLog(), deps.tasks?.auditLog(), deps.audit?.log()].filter((x) => x !== undefined);
@@ -620,6 +756,7 @@ export function createRequestHandler(deps: AppDeps) {
         const refreshParam = url.searchParams.get('refresh');
         if (refreshParam !== null && refreshParam !== '1') fail('bad_request');
         const fullName = resolveAllowedRepository(match[1], match[2], deps.config.allowedRepositories);
+        enforce(session, ['github.read'], null);
         // Escopo da sessão: a mesma resposta 404 de um repositório fora da allowlist.
         if (!session.scope.includes(fullName)) fail('not_found');
         if (deps.snapshots === null) fail('missing_credentials');
@@ -648,7 +785,7 @@ export function createRequestHandler(deps: AppDeps) {
       }
       // Corpo grande demais: o restante não é lido; a conexão é encerrada após a resposta.
       if (integrationError.code === 'payload_too_large') errorHeaders.Connection = 'close';
-      const refusal = deps.audit && !rateLimited ? refusalEvent(req, pathname, integrationError.code, authenticated) : null;
+      const refusal = deps.audit && !rateLimited ? refusalEvent(req, pathname, integrationError.code, authenticated, error) : null;
       if (refusal && deps.audit) {
         try {
           await deps.audit.append(refusal);

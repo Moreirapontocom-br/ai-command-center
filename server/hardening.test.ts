@@ -17,6 +17,7 @@ import { IntegrationError } from './github/errors.ts';
 import { createRequestHandler } from './http/app.ts';
 import { createConsoleLogger, isSensitiveKey, redact } from './logger.ts';
 import { createSnapshotService, type SnapshotService } from './snapshotService.ts';
+import { createTestAuth, sessionCookieFor } from './test/authFixtures.ts';
 import { CANARY_TOKEN, jsonResponse, rawSnapshot } from './test/fixtures.ts';
 
 const COOKIE_VALUE = 'sessao=COOKIECANARY123456; outra=COOKIECANARY654321';
@@ -29,6 +30,8 @@ afterEach(async () => {
 });
 
 async function startApp(snapshots: SnapshotService | null = null, rateLimitPerMinute = 100) {
+  const auth = await createTestAuth();
+  const sessionCookie = await sessionCookieFor(auth);
   const logLines: string[] = [];
   server = createServer();
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
@@ -42,14 +45,17 @@ async function startApp(snapshots: SnapshotService | null = null, rateLimitPerMi
       rateLimitPerMinute,
     },
     snapshots,
+    auth,
     logger: createConsoleLogger((line) => logLines.push(line)),
   });
   server.on('request', (req, res) => void handler(req, res));
 
-  function call(path: string, init: { method?: string; headers?: Record<string, string> } = {}) {
+  /** Por padrão envia a sessão do administrador; `anonymous: true` simula um visitante. */
+  function call(path: string, init: { method?: string; headers?: Record<string, string>; anonymous?: boolean; body?: string } = {}) {
+    const authHeaders: Record<string, string> = init.anonymous ? {} : { cookie: sessionCookie };
     return new Promise<{ status: number; headers: Record<string, unknown>; body: string }>((resolve, reject) => {
       const req = request(
-        { host: '127.0.0.1', port, path, method: init.method ?? 'GET', headers: { host: `127.0.0.1:${port}`, ...init.headers } },
+        { host: '127.0.0.1', port, path, method: init.method ?? 'GET', headers: { host: `127.0.0.1:${port}`, ...authHeaders, ...init.headers } },
         (res) => {
           let body = '';
           res.on('data', (chunk) => (body += chunk));
@@ -57,10 +63,10 @@ async function startApp(snapshots: SnapshotService | null = null, rateLimitPerMi
         },
       );
       req.on('error', reject);
-      req.end();
+      req.end(init.body);
     });
   }
-  return { call, logLines, port };
+  return { call, logLines, port, auth, sessionCookie };
 }
 
 const SNAPSHOT_PATH = '/api/repos/Moreirapontocom-br/ai-command-center/snapshot';

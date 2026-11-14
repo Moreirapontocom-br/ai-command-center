@@ -3,6 +3,7 @@ import type {
   ApiErrorBody,
   ApiErrorCode,
   RepoSnapshot,
+  SessionResponse,
   SnapshotResponse,
   StatusResponse,
 } from '../../shared/contracts.ts';
@@ -169,12 +170,38 @@ export function snapshotReply(snapshot = snapshotFixture(), stale = false): Resp
   return json(body);
 }
 
-/** Substitui `fetch` por respostas em sequência para `/api/status` e para o snapshot. */
-export function mockApi(routes: { status: Reply[]; snapshot?: Reply[] }) {
-  const queues = { status: [...routes.status], snapshot: [...(routes.snapshot ?? [])] };
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+export const authenticatedSession: SessionResponse = {
+  authenticated: true,
+  user: { email: 'admin@example.test' },
+  expiresAt: '2026-11-14T08:00:00.000Z',
+};
+
+/**
+ * Substitui `fetch` por respostas em sequência para a sessão, `/api/status` e o snapshot.
+ * Por padrão a sessão do administrador é válida.
+ */
+export function mockApi(routes: { status?: Reply[]; snapshot?: Reply[]; session?: Reply[]; login?: Reply[]; logout?: Reply[] }) {
+  const queues = {
+    session: [...(routes.session ?? [json(authenticatedSession)])],
+    login: [...(routes.login ?? [])],
+    logout: [...(routes.logout ?? [])],
+    status: [...(routes.status ?? [])],
+    snapshot: [...(routes.snapshot ?? [])],
+  };
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    void init; // registrado em `mock.calls` para as asserções
     const url = String(input);
-    const queue = url.startsWith('/api/status') ? queues.status : url.includes('/snapshot') ? queues.snapshot : [];
+    const queue = url.startsWith('/api/auth/session')
+      ? queues.session
+      : url.startsWith('/api/auth/login')
+        ? queues.login
+        : url.startsWith('/api/auth/logout')
+          ? queues.logout
+          : url.startsWith('/api/status')
+            ? queues.status
+            : url.includes('/snapshot')
+              ? queues.snapshot
+              : [];
     const next = queue.length > 1 ? queue.shift() : queue[0];
     if (next === undefined) throw new TypeError(`rota não simulada: ${url}`);
     if (next instanceof Error) throw next;

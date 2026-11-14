@@ -130,6 +130,11 @@ export type ApiErrorCode =
   | 'bad_request'
   | 'method_not_allowed'
   | 'forbidden_origin'
+  | 'unauthenticated'
+  | 'invalid_credentials'
+  | 'auth_not_configured'
+  | 'unsupported_media_type'
+  | 'payload_too_large'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -157,4 +162,23 @@ export interface SnapshotResponse {
     stale: boolean;
     staleReason: ApiErrorCode | null;
   };
+}
+
+/** Resposta de `GET /api/auth/session` e do login. Nunca contém senha, hash ou valor do cookie. */
+export type SessionResponse =
+  | {
+      authenticated: true;
+      user: { email: string };
+      /** Expiração absoluta da sessão (ISO 8601). A sessão também expira por inatividade. */
+      expiresAt: string;
+    }
+  | {
+      authenticated: false;
+      /** `false` quando o servidor ainda não tem administrador configurado. */
+      authConfigured: boolean;
+    };
+
+export interface LoginRequest {
+  email: string;
+  password: string;
 }

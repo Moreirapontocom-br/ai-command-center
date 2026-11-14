@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createAuthService, DEFAULT_AUTH_LIMITS } from './auth/adminAuth.ts';
 import { ConfigError, loadConfig } from './config.ts';
 import { CredentialError } from './auth/credentials.ts';
 import { GH_CLI_ERROR_MESSAGE } from './auth/ghCli.ts';
@@ -35,7 +36,22 @@ const snapshots = config.credentials
     })
   : null;
 
-const handler = createRequestHandler({ config, snapshots, logger });
+const auth = createAuthService({
+  admin: config.admin,
+  // Administrador único: acesso a todos os repositórios da allowlist do servidor.
+  scope: config.allowedRepositories,
+  secureCookie: config.secureCookie,
+  ...DEFAULT_AUTH_LIMITS,
+});
+if (!auth.configured) {
+  logger.log(
+    'warn',
+    'Nenhum administrador configurado: o login está indisponível e as rotas privadas responderão 401. ' +
+      'Defina ACC_ADMIN_EMAIL e ACC_ADMIN_PASSWORD_HASH (npm run auth:hash-password).',
+  );
+}
+
+const handler = createRequestHandler({ config, snapshots, auth, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
 });
@@ -59,9 +75,10 @@ if (config.credentials?.kind === 'gh-cli') {
 }
 
 server.listen(config.port, config.host, () => {
-  logger.log('info', 'Servidor somente leitura iniciado', {
+  logger.log('info', 'Servidor iniciado (GitHub somente leitura, acesso com login)', {
     url: `http://${config.host}:${config.port}`,
     authMode: config.credentials ? config.credentials.kind : 'nenhuma (modo demonstração)',
     repositories: config.allowedRepositories.join(', '),
+    adminConfigured: auth.configured,
   });
 });

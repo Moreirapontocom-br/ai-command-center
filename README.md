@@ -47,6 +47,10 @@ Na página **Projetos** é possível criar, editar e selecionar projetos; o sele
 
 A página **Tarefas** lista as tarefas do projeto ativo, com filtros por status, prioridade e responsável, e permite criar e editar tarefas e mudar o status. Os dados ficam em `data/tasks.json`. O status é interno ao ACC e nunca é inferido do GitHub. Atribuir uma tarefa a um agente **não** inicia nenhuma execução, e uma tarefa de agente só pode ser concluída com um PR ou branch como evidência, com a confirmação registrada pela pessoa logada. Regras em `docs/IMPLEMENTATION_REPORT_005.md`.
 
+### Sandboxes (Issue #021, camada preparatória)
+
+A execução real **está desabilitada**. Já existem os contratos, as validações e o ciclo de vida das sandboxes (solicitada, autorizada, em execução, concluída, cancelada, expirada, falhou), integrados à política da #020, com um adaptador **simulado** que não executa nada. Não há rota HTTP para executar comandos. A comparação de opções de isolamento e a recomendação estão em `docs/IMPLEMENTATION_REPORT_021.md`.
+
 ### Políticas de autonomia (Issue #020)
 
 O servidor avalia cada ação contra a política (`server/policy/defaultPolicy.ts`). O resultado é **permitido**, **negado**, **exige aprovação** ou **indisponível**. Sem regra explícita, a ação é negada. Push direto na main é sempre proibido, e agentes nunca alteram permissões. Ações críticas (merge, deploy, segredos, permissões, envio de dados a terceiros, despesas) exigem aprovação específica do PO, vinculada a operação, recurso e SHA. Atribuir uma tarefa a um agente não autoriza execução. Mudar a política exige PR aprovado. A página **Políticas** mostra as decisões e os motivos. Detalhes em `docs/IMPLEMENTATION_REPORT_020.md`.
@@ -87,6 +91,7 @@ server/                # Servidor intermediário somente leitura (token só aqui
 ├── storage/           # Motor comum de arquivo JSON atômico (projetos, tarefas e auditoria)
 ├── audit/             # Eventos de auditoria: formato, retenção, registro avulso e consulta
 ├── policy/            # Motor de políticas (negação por padrão, risco, aprovações) e política padrão
+├── sandbox/           # Contratos, validação e ciclo de vida de sandboxes; adaptador SIMULADO (sem execução real)
 └── snapshotService.ts # Cache, fallback desatualizado e respeito aos limites da API
 shared/contracts.ts    # Tipos internos compartilhados servidor ↔ frontend
 scripts/               # check-dist-secrets.mjs

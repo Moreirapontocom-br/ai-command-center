@@ -91,6 +91,24 @@ describe('superfície de escrita do servidor', () => {
     }
   });
 
+  it('sandbox (Issue #021): sem execução real, sem I/O e sem rota HTTP', () => {
+    const files = server.filter((f) => f.path.startsWith('server/sandbox/'));
+    expect(files.map((f) => f.path).sort()).toEqual([
+      'server/sandbox/contracts.ts',
+      'server/sandbox/provider.ts',
+      'server/sandbox/service.ts',
+      'server/sandbox/simulatedProvider.ts',
+      'server/sandbox/validation.ts',
+    ]);
+    for (const file of files) {
+      expect(file.code).not.toMatch(/node:child_process|node:fs|node:net|node:http|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
+    }
+    expect(files.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);
+    // Nenhum código fora de server/sandbox usa o serviço (não há API de execução).
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/sandbox/')), /sandbox\/(service|simulatedProvider|provider)/)).toEqual([]);
+    expect(POST_ROUTES.some((route) => /sandbox|exec|run/.test(route))).toBe(false);
+  });
+
   it('auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006)', () => {
     expect(POST_ROUTES.some((route) => route.startsWith('/api/audit'))).toBe(false);
     for (const path of ['/api/audit', '/api/audit/x']) expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);

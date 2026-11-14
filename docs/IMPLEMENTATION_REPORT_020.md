@@ -11,7 +11,7 @@ O motor é uma função pura e determinística: a mesma entrada sempre produz a 
    - push direto na main → `DENY`, mesmo com aprovação;
    - agente alterando permissões → `DENY`;
    - projeto fora do escopo do sujeito → `DENY`;
-   - agente sem tarefa atribuída no projeto → `DENY`.
+   - agente fora de um projeto, ou sem tarefa atribuída no projeto → `DENY`. É uma **invariante do motor** (correção R1): nenhuma política desativa essa regra, nem com `requiresAssignment: false`. O campo `requiresAssignment` continua existindo nas regras, mas só como defesa adicional.
 3. **Regras da política:** sem regra aplicável → `DENY` (negação por padrão). Regra `deny` → `DENY`. Uma regra só cobre ações com risco até o seu `maxRisk`.
 4. **Capacidade:** se o ACC ainda não oferece a capacidade → `UNAVAILABLE`, informando em `requiresApproval` se ela exigiria aprovação quando existir.
 5. **Aprovação:** ação crítica, ou regra `require_approval` → `REQUIRE_APPROVAL`, salvo uma aprovação válida para **exatamente** esta operação → `ALLOW` com `approvalId`, para quem chama consumir (uso único).
@@ -52,6 +52,24 @@ Uma `ApprovalGrant` vincula:
 
 Qualquer divergência mantém `REQUIRE_APPROVAL` com `approval_invalid`, e a ausência de aprovação significa bloqueio. Agentes nunca aprovam. Uma aprovação também não libera o que está indisponível: o ACC continua sem capacidade de merge.
 
+### 3.1 Aprovação no MVP de administrador único (verificação R2)
+
+Hoje existe uma única pessoa, o administrador, que é também o Product Owner. A validação atual **não foi enfraquecida**:
+
+- **Aprovador:** precisa ser uma pessoa (`approvedBy.kind === 'human'`) e não pode ter id de agente, mesmo rotulado como `human`. Com isso, um **agente nunca aprova** nada, nem a própria ação.
+- **Autoaprovação:** continua recusada para ações de pessoas.
+
+Como a aprovação explícita do PO pode funcionar na #011 sem depender de um segundo usuário inexistente:
+
+1. **Ações de agentes: o caso principal da autonomia semiautomática.**
+   - O sujeito é o agente e o aprovador é o PO, então não há autoaprovação e o contrato atual já serve.
+   - Um teste cobre isso: o PO (`admin`) aprova o merge de um agente, com SHA exato → `ALLOW`. A mesma aprovação com o id do agente como aprovador → recusada.
+2. **A aprovação nasce de um ato humano, e nunca vem de uma credencial ou de uma chamada de agente.** Ela é criada apenas por uma rota autenticada com a sessão do PO, protegida contra CSRF e com reautenticação (*step-up*), e mostra na tela a operação exata: ação, projeto, recurso e SHA. Fica gravada no servidor com uso único e é auditada.
+   - O motor recebe a aprovação **do armazenamento do servidor**, nunca do corpo da requisição.
+   - A identidade do agente virá de uma credencial própria, separada da sessão do PO.
+3. **Ações críticas iniciadas pelo próprio PO**, como um merge feito por ele no ACC: hoje continuam sem autoaprovação e já estão indisponíveis. Se a #011 decidir permiti-las, a forma prevista é uma **confirmação explícita com reautenticação**, registrada como um tipo de aprovação distinto (por exemplo `method: 'step_up'`). Essa forma exige mudar o contrato com aprovação do PO; não é uma exceção silenciosa ao `self_approval`.
+4. **Quem chama consome a aprovação no mesmo passo atômico da ação**, junto com o evento de auditoria. Isso impede reutilizar a mesma aprovação.
+
 ## 4. Integração
 
 - **Avaliação no servidor antes de cada ação**, com a pessoa da sessão como sujeito. O cliente nunca escolhe o sujeito.
@@ -88,7 +106,12 @@ Qualquer divergência mantém `REQUIRE_APPROVAL` com `approval_invalid`, e a aus
 - `server/security.test.ts`: o motor não faz I/O e não existe rota de escrita de políticas.
 - **Smoke test do processo real:** 10/10.
 
-## 6. Riscos e limites
+## 6. Correções da revisão
+
+- **R1:** agente sem tarefa atribuída, ou sem projeto, é sempre negado como invariante do motor. Os testes cobrem uma política personalizada permissiva com `requiresAssignment: false`, todas as ações para todos os agentes, e pessoas, que não são afetadas.
+- **R2:** documentação na §3.1. Também foi adicionada uma proteção: um id de agente nunca é aceito como aprovador.
+
+## 7. Riscos e limites
 
 - **Sujeitos reais hoje:** só pessoas. Agentes são avaliados apenas na matriz, porque ainda não executam (#008 e #010). Quando passarem a executar, o motor e as regras já estão prontos, mas o servidor terá de identificar o agente por credencial própria, nunca por um campo enviado pelo cliente.
 - **Aprovações:** não há armazenamento de aprovações nem registro de consumo; isso fica para a #011. Hoje nenhuma ação depende de aprovação para funcionar.

@@ -143,6 +143,50 @@ describe('agentes (semiautomático)', () => {
   });
 });
 
+describe('invariante: agente só com tarefa atribuída (R1)', () => {
+  /** Política personalizada permissiva para agentes, SEM `requiresAssignment`. */
+  const permissive: Policy = validatePolicy({
+    version: 'personalizada',
+    rules: [
+      { id: 'H', subject: 'human:owner', categories: ['observe', 'project', 'task'], effect: 'allow', maxRisk: 'medium' },
+      { id: 'P1-agente-observa', subject: 'agent:*', categories: ['observe'], effect: 'allow', maxRisk: 'low', requiresAssignment: false },
+      { id: 'P2-agente-altera', subject: 'agent:*', categories: ['task', 'project'], effect: 'allow', maxRisk: 'medium' },
+    ],
+  });
+  const run = (subject: PolicySubject, action: string, projectId: string | null, f: Partial<PolicyFacts>) =>
+    evaluatePolicy(permissive, { subject, action, projectId }, facts(f));
+
+  it.each(['project.read', 'task.read', 'github.read', 'audit.read', 'task.update', 'task.status_change', 'task.complete', 'project.update'])(
+    'requiresAssignment:false não libera %s a agente sem tarefa no projeto',
+    (action) => {
+      expect(run(claude, action, P1, { agentAssigned: false })).toMatchObject({ decision: 'DENY', reason: 'agent_not_assigned', ruleId: null });
+    },
+  );
+
+  it('agente sem projeto (ex.: criar projeto) é sempre negado, mesmo com regra que permitiria', () => {
+    expect(run(claude, 'project.create', null, { agentAssigned: true })).toMatchObject({ decision: 'DENY', reason: 'agent_not_assigned' });
+    expect(run(claude, 'project.read', null, { agentAssigned: true })).toMatchObject({ decision: 'DENY', reason: 'agent_not_assigned' });
+  });
+
+  it('todos os agentes, todas as ações: sem atribuição nunca há ALLOW', () => {
+    for (const id of AGENT_IDS) {
+      for (const action of Object.keys(POLICY_ACTIONS)) {
+        expect(run({ kind: 'agent', id }, action, P1, { agentAssigned: false }).decision).toBe('DENY');
+        expect(evaluatePolicy(DEFAULT_POLICY, { subject: { kind: 'agent', id }, action, projectId: P1 }, facts({ agentAssigned: false })).decision).toBe('DENY');
+      }
+    }
+  });
+
+  it('com tarefa atribuída, a política personalizada vale normalmente', () => {
+    expect(run(claude, 'task.read', P1, { agentAssigned: true }).decision).toBe('ALLOW');
+  });
+
+  it('pessoas não são afetadas pela invariante', () => {
+    expect(run(human, 'project.create', null, { agentAssigned: false }).decision).toBe('ALLOW');
+    expect(run(human, 'task.read', P1, { agentAssigned: false }).decision).toBe('ALLOW');
+  });
+});
+
 describe('validação da política (PO)', () => {
   it.each([
     ['liberar ação crítica sem aprovação', { id: 'X', subject: 'human:owner', categories: ['critical'], effect: 'allow', maxRisk: 'high' }, /crítica/],
@@ -196,11 +240,22 @@ describe('aprovações: escopo, versão, validade e uso único', () => {
     ['outro sujeito', grant({ subject: claude })],
     ['aprovada pelo próprio sujeito', grant({ approvedBy: { kind: 'human', id: 'admin' } })],
     ['aprovada por agente', grant({ approvedBy: { kind: 'agent', id: 'claude-code' } as never })],
+    ['id de agente rotulado como pessoa', grant({ approvedBy: { kind: 'human', id: 'claude-code' } })],
     ['expirada', grant({ expiresAt: '2026-11-14T11:30:00Z' })],
     ['ainda não válida', grant({ approvedAt: '2026-11-14T12:30:00Z', expiresAt: '2026-11-14T13:00:00Z' })],
     ['validade longa demais', grant({ approvedAt: '2026-11-13T00:00:00Z', expiresAt: '2026-11-15T00:00:00Z' })],
   ])('aprovação inválida (%s): continua REQUIRE_APPROVAL', (_case, approval) => {
     expect(evaluateAvailable({ approval })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reason: 'approval_invalid' });
+  });
+
+  it('MVP de administrador único: o PO aprova a ação de um AGENTE; o agente nunca aprova a própria', () => {
+    const agentRequest = { subject: claude, resource: grant().resource, target: { sha: SHA, ref: null } };
+    const byPo = grant({ subject: claude, approvedBy: { kind: 'human', id: 'admin' } });
+    expect(evaluateAvailable({ ...agentRequest, approval: byPo })).toMatchObject({ decision: 'ALLOW', reason: 'approved' });
+    const bySelf = grant({ subject: claude, approvedBy: { kind: 'human', id: 'claude-code' } });
+    expect(evaluateAvailable({ ...agentRequest, approval: bySelf })).toMatchObject({ decision: 'REQUIRE_APPROVAL', reason: 'approval_invalid' });
+    // A ação crítica da própria pessoa continua sem autoaprovação (validação não enfraquecida).
+    expect(evaluateAvailable({ approval: grant({ approvedBy: { kind: 'human', id: 'admin' } }) })).toMatchObject({ reason: 'approval_invalid' });
   });
 
   it('aprovação já usada não pode ser reutilizada', () => {

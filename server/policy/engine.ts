@@ -19,8 +19,8 @@ import {
  *
  * 1. Requisição malformada ou ação fora do catálogo → DENY.
  * 2. Regras FIXAS, que nenhuma política altera: push na main é sempre negado; agente nunca altera
- *    permissões; projeto fora do escopo do sujeito → DENY; agente sem tarefa atribuída no projeto
- *    não tem acesso a ele.
+ *    permissões; projeto fora do escopo do sujeito → DENY; agente fora de projeto, ou sem tarefa
+ *    atribuída no projeto, → DENY (invariante, independente de `requiresAssignment`).
  * 3. Regras da política: sem regra aplicável → DENY (negação por padrão). Regra `deny` → DENY.
  * 4. Capacidade inexistente no ACC → UNAVAILABLE (informando se exigiria aprovação).
  * 5. Regra `require_approval` (ou ação crítica) → REQUIRE_APPROVAL, salvo aprovação válida para
@@ -145,6 +145,8 @@ export function approvalProblem(grant: ApprovalGrant, request: PolicyRequest, fa
   if (needsSha && (reqSha === null || grant.target.sha === null)) return 'missing_sha';
   if (grant.target.sha !== reqSha || grant.target.ref !== (request.target?.ref ?? null)) return 'different_target';
   if (grant.approvedBy.kind !== 'human') return 'approver_not_human';
+  // Um id de agente nunca vale como aprovador, mesmo rotulado como "human".
+  if ((AGENT_IDS as readonly string[]).includes(grant.approvedBy.id)) return 'approver_not_human';
   // Ninguém aprova a própria ação; agente nunca aprova.
   if (request.subject.kind === 'human' && grant.approvedBy.id === request.subject.id) return 'self_approval';
   const approvedAt = Date.parse(grant.approvedAt);
@@ -211,6 +213,11 @@ export function evaluatePolicy(
   if (action === 'repo.push_main') return result('DENY', 'main_is_protected');
   if (subject.kind === 'agent' && action === 'permissions.change') return result('DENY', 'agent_cannot_change_permissions');
   if (!facts.projectAccessible) return result('DENY', 'project_out_of_scope');
+  // Invariante do motor (não configurável): agente só age dentro de um projeto e só se tiver
+  // tarefa atribuída nele. Nenhuma política (nem `requiresAssignment: false`) desativa isto.
+  if (subject.kind === 'agent' && (request.projectId === null || !facts.agentAssigned)) {
+    return result('DENY', 'agent_not_assigned');
+  }
 
   // Regras da política (mais restritiva vence; agente específico só restringe).
   const matching = policy.rules.filter((rule) => subjectMatches(rule, subject) && ruleCovers(rule, action));
@@ -219,6 +226,7 @@ export function evaluatePolicy(
   if (denyRule) return result('DENY', 'restricted_by_rule', { ruleId: denyRule.id });
   const base = matching.find((rule) => rule.subject === 'human:owner' || rule.subject === 'agent:*');
   if (!base) return result('DENY', 'no_matching_rule');
+  // Defesa em profundidade: `requiresAssignment` nas regras continua valendo (já coberto acima).
   if (subject.kind === 'agent' && matching.some((rule) => rule.requiresAssignment) && !facts.agentAssigned) {
     return result('DENY', 'agent_not_assigned', { ruleId: base.id });
   }

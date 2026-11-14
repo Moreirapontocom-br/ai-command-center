@@ -87,6 +87,20 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
     description: 'Só é possível vincular repositórios da lista autorizada do servidor.',
   },
   project_limit_reached: { title: 'Limite de projetos', description: 'O número máximo de projetos foi atingido.' },
+  task_limit_reached: { title: 'Limite de tarefas', description: 'O número máximo de tarefas deste projeto foi atingido.' },
+  invalid_status_transition: {
+    title: 'Mudança de status não permitida',
+    description: 'Essa mudança de status não é permitida a partir do status atual.',
+  },
+  dependencies_unresolved: {
+    title: 'Dependências pendentes',
+    description: 'Conclua ou cancele as tarefas das quais esta depende antes de iniciar, revisar ou concluir.',
+  },
+  dependency_cycle: { title: 'Dependência circular', description: 'Essas dependências formariam um ciclo entre tarefas.' },
+  evidence_required: {
+    title: 'Evidência obrigatória',
+    description: 'Tarefa atribuída a agente só pode ser concluída com uma referência a PR ou branch como evidência.',
+  },
   internal: { title: 'Erro inesperado', description: 'Ocorreu um erro interno no servidor.' },
 };
 

@@ -137,6 +137,11 @@ export type ApiErrorCode =
   | 'payload_too_large'
   | 'repository_not_allowed'
   | 'project_limit_reached'
+  | 'task_limit_reached'
+  | 'invalid_status_transition'
+  | 'dependencies_unresolved'
+  | 'dependency_cycle'
+  | 'evidence_required'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -240,4 +245,112 @@ export interface ActiveProjectRequest {
 }
 export interface ActiveProjectResponse {
   activeProjectId: string | null;
+}
+
+/**
+ * Tarefas (Issue #005). O status é INTERNO ao ACC: não é copiado nem inferido do GitHub. Uma
+ * referência a issue/PR/branch é só um vínculo informativo; nada é concluído automaticamente.
+ */
+export const TASK_STATUSES = ['pending', 'planned', 'in_progress', 'blocked', 'in_review', 'done', 'cancelled'] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+/** Status permitidos na criação: trabalho não nasce "em andamento" nem "concluído". */
+export const TASK_INITIAL_STATUSES: readonly TaskStatus[] = ['pending', 'planned'];
+
+/** Transições permitidas (origem → destinos). Reabrir é explícito: concluída → em andamento. */
+export const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
+  pending: ['planned', 'in_progress', 'blocked', 'cancelled'],
+  planned: ['pending', 'in_progress', 'blocked', 'cancelled'],
+  in_progress: ['planned', 'blocked', 'in_review', 'done', 'cancelled'],
+  blocked: ['pending', 'planned', 'in_progress', 'cancelled'],
+  in_review: ['in_progress', 'blocked', 'done', 'cancelled'],
+  done: ['in_progress'],
+  cancelled: ['pending'],
+};
+
+/** Status que exigem todas as dependências resolvidas (concluídas ou canceladas). */
+export const TASK_WORK_STATUSES: readonly TaskStatus[] = ['in_progress', 'in_review', 'done'];
+
+export const TASK_PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
+export type TaskPriority = (typeof TASK_PRIORITIES)[number];
+
+/** Agentes previstos (Issue #026). Atribuir uma tarefa a um agente NÃO autoriza nem inicia execução. */
+export const AGENT_IDS = ['chatgpt', 'claude-code', 'gemini', 'nemotron'] as const;
+export type AgentRef = (typeof AGENT_IDS)[number];
+
+export type TaskAssignee = { kind: 'human'; userId: string } | { kind: 'agent'; agentId: AgentRef };
+
+/** Origem: só o servidor define. Pelo navegador, toda tarefa é `manual`. */
+export const TASK_ORIGINS = ['manual', 'integration', 'agent'] as const;
+export type TaskOrigin = (typeof TASK_ORIGINS)[number];
+
+/** Vínculo externo informativo, sempre a um repositório vinculado ao projeto. Nunca consultado para inferir status. */
+export type TaskReference =
+  | { kind: 'issue' | 'pull_request'; repository: string; number: number }
+  | { kind: 'branch'; repository: string; name: string };
+
+export interface TaskHistoryEntry {
+  at: string;
+  /** `userId` de quem fez a alteração (sempre uma pessoa autenticada nesta versão). */
+  actor: string;
+  action: 'created' | 'updated' | 'status_changed' | 'assignee_changed';
+  /** Campos alterados (em `updated`). */
+  fields?: string[];
+  from?: string | null;
+  to?: string | null;
+}
+
+export const TASK_LIMITS = {
+  titleMax: 200,
+  descriptionMax: 4000,
+  blockedReasonMax: 500,
+  dependenciesMax: 20,
+  referencesMax: 10,
+  tasksPerProjectMax: 300,
+  historyMax: 50,
+} as const;
+
+export interface Task {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  assignee: TaskAssignee | null;
+  /** Ids de tarefas do MESMO projeto das quais esta depende. Sem ciclos. */
+  dependsOn: string[];
+  references: TaskReference[];
+  origin: TaskOrigin;
+  /** Obrigatório (não vazio) quando `status` é `blocked`; vazio nos demais. */
+  blockedReason: string;
+  /**
+   * Conclusão confirmada por uma pessoa autenticada. Uma tarefa atribuída a agente só pode ser
+   * concluída com evidência (referência a PR ou branch) e a confirmação é sempre humana.
+   */
+  completion: { confirmedBy: string; confirmedAt: string } | null;
+  history: TaskHistoryEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Corpo de `POST /api/projects/:id/tasks`. Só `title` é obrigatório. */
+export interface TaskCreateRequest {
+  title: string;
+  description?: string;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  assignee?: TaskAssignee | null;
+  dependsOn?: string[];
+  references?: TaskReference[];
+}
+
+/** Corpo de `POST /api/projects/:id/tasks/:taskId` (parcial; ao menos um campo). */
+export type TaskUpdateRequest = Partial<TaskCreateRequest> & { blockedReason?: string };
+
+export interface TaskListResponse {
+  tasks: Task[];
+  /** Pessoas que podem receber tarefas (nesta versão, apenas o usuário da sessão). */
+  assignableUsers: Array<{ userId: string; label: string }>;
+  agents: AgentRef[];
 }

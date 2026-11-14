@@ -1,16 +1,18 @@
-import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { PROJECT_LIMITS, PROJECT_STATUSES, type Project } from '../../shared/contracts.ts';
 import { IntegrationError } from '../github/errors.ts';
+import { DataFileError, isIsoDate, openJsonFile, type WriteFile } from '../storage/jsonFile.ts';
 import { PROJECT_ID_PATTERN, parseRepositories, parseText, type ProjectFields } from './validation.ts';
+
+/** Mantido por compatibilidade: erros de arquivo de dados (corrompido/ilegível). */
+export { DataFileError as ProjectStoreError };
 
 /**
  * Persistência local dos projetos (Issue #004): um arquivo JSON fora do Git (`ACC_DATA_DIR`).
  *
  * - **Isolamento:** todo registro tem `ownerId`; toda operação recebe o `ownerId` da sessão e só
  *   enxerga os registros dele. Projeto de outro dono é indistinguível de inexistente (`null` → 404).
- * - **Integridade:** escrita atômica (arquivo temporário + `fsync` + `rename`), operações de escrita
+ * - **Integridade:** motor comum `storage/jsonFile.ts` — escrita atômica, operações de escrita
  *   serializadas e estado em memória trocado só depois de gravar com sucesso. Na leitura, o arquivo
  *   é validado por completo; se estiver corrompido o servidor NÃO inicia e NÃO sobrescreve o arquivo.
  * - **Sem segredos:** o arquivo guarda apenas dados de projeto; nenhuma credencial ou sessão.
@@ -31,10 +33,6 @@ interface StoreData {
   activeProjects: Array<{ ownerId: string; projectId: string }>;
 }
 
-export class ProjectStoreError extends Error {
-  name = 'ProjectStoreError';
-}
-
 export interface ProjectStore {
   list(ownerId: string): { projects: Project[]; activeProjectId: string | null };
   get(ownerId: string, projectId: string): Project | null;
@@ -52,49 +50,12 @@ export interface ProjectStoreOptions {
   now?: () => number;
   generateId?: () => string;
   /** Apenas para testes: substitui a gravação atômica. */
-  writeFile?: (filePath: string, content: string) => Promise<void>;
-}
-
-const RETRYABLE_RENAME = new Set(['EPERM', 'EBUSY', 'EACCES']);
-
-/**
- * Grava de forma atômica: o arquivo final só é substituído por um conteúdo completo e sincronizado
- * em disco. No Windows, antivírus/sincronização podem segurar o arquivo por instantes; o `rename`
- * é repetido algumas vezes antes de falhar.
- */
-export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporary = `${filePath}.${randomBytes(6).toString('hex')}.tmp`;
-  const handle = await open(temporary, 'wx', 0o600);
-  try {
-    await handle.writeFile(content, 'utf8');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await rename(temporary, filePath);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? '';
-      if (attempt < 5 && RETRYABLE_RENAME.has(code)) {
-        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-        continue;
-      }
-      await rm(temporary, { force: true });
-      throw error;
-    }
-  }
+  writeFile?: WriteFile;
 }
 
 function corrupt(detail: string): never {
   // A mensagem descreve o problema estrutural, nunca o conteúdo do arquivo.
-  throw new ProjectStoreError(`Arquivo de projetos inválido (${detail}). Corrija ou restaure um backup; ele não será sobrescrito.`);
-}
-
-function isIsoDate(value: unknown): value is string {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && !Number.isNaN(Date.parse(value));
+  throw new DataFileError(`Arquivo de projetos inválido (${detail}). Corrija ou restaure um backup; ele não será sobrescrito.`);
 }
 
 function validateRecord(raw: unknown, index: number): ProjectRecord {
@@ -130,16 +91,13 @@ function validateRecord(raw: unknown, index: number): ProjectRecord {
       updatedAt: r.updatedAt,
     };
   } catch (error) {
-    if (error instanceof ProjectStoreError) throw error;
+    if (error instanceof DataFileError) throw error;
     return corrupt(`conteúdo do projeto ${index}`);
   }
 }
 
-function validateData(raw: unknown): StoreData {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) corrupt('estrutura');
-  const r = raw as Record<string, unknown>;
-  if (r.format !== STORE_FORMAT) corrupt('formato');
-  if (r.version !== STORE_VERSION) corrupt('versão não suportada');
+function validateData(r: Record<string, unknown>): StoreData {
+  if (Object.keys(r).length !== 2) corrupt('estrutura');
   if (!Array.isArray(r.projects) || !Array.isArray(r.activeProjects)) corrupt('estrutura');
   const projects = r.projects.map(validateRecord);
   if (new Set(projects.map((p) => p.id)).size !== projects.length) corrupt('ids duplicados');
@@ -156,35 +114,20 @@ function validateData(raw: unknown): StoreData {
   return { projects, activeProjects };
 }
 
-async function loadData(filePath: string): Promise<StoreData> {
-  let size: number;
-  try {
-    size = (await stat(filePath)).size;
-  } catch (error) {
-    // Primeiro uso: o arquivo é criado na primeira escrita.
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { projects: [], activeProjects: [] };
-    throw new ProjectStoreError('Não foi possível ler o arquivo de projetos.');
-  }
-  if (size > MAX_FILE_BYTES) corrupt('tamanho acima do limite');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(filePath, 'utf8'));
-  } catch {
-    return corrupt('JSON ilegível');
-  }
-  return validateData(parsed);
-}
-
-function serialize(data: StoreData): string {
-  return `${JSON.stringify({ format: STORE_FORMAT, version: STORE_VERSION, ...data }, null, 2)}\n`;
-}
-
 export async function openProjectStore(options: ProjectStoreOptions): Promise<ProjectStore> {
   const now = options.now ?? Date.now;
   const generateId = options.generateId ?? randomUUID;
-  const write = options.writeFile ?? writeFileAtomic;
-  let data = await loadData(options.filePath);
-  let queue: Promise<unknown> = Promise.resolve();
+  const file = await openJsonFile<StoreData>({
+    filePath: options.filePath,
+    label: 'projetos',
+    format: STORE_FORMAT,
+    version: STORE_VERSION,
+    maxBytes: MAX_FILE_BYTES,
+    empty: () => ({ projects: [], activeProjects: [] }),
+    validate: validateData,
+    writeFile: options.writeFile,
+  });
+  const mutate = file.mutate.bind(file);
 
   // `ownerId` nunca sai do servidor.
   const toProject = (record: ProjectRecord): Project => ({
@@ -198,25 +141,12 @@ export async function openProjectStore(options: ProjectStoreOptions): Promise<Pr
     updatedAt: record.updatedAt,
   });
   const find = (ownerId: string, projectId: string) =>
-    data.projects.find((p) => p.ownerId === ownerId && p.id === projectId);
-
-  /** Aplica uma alteração numa cópia, grava e só então a torna visível. Uma escrita por vez. */
-  function mutate<T>(change: (draft: StoreData) => T): Promise<T> {
-    const run = queue.then(async () => {
-      const draft = structuredClone(data);
-      const result = change(draft);
-      await write(options.filePath, serialize(draft));
-      data = draft;
-      return result;
-    });
-    queue = run.catch(() => undefined);
-    return run;
-  }
+    file.data.projects.find((p) => p.ownerId === ownerId && p.id === projectId);
 
   return {
     list(ownerId) {
-      const projects = data.projects.filter((p) => p.ownerId === ownerId).map(toProject);
-      const active = data.activeProjects.find((a) => a.ownerId === ownerId)?.projectId ?? null;
+      const projects = file.data.projects.filter((p) => p.ownerId === ownerId).map(toProject);
+      const active = file.data.activeProjects.find((a) => a.ownerId === ownerId)?.projectId ?? null;
       return { projects, activeProjectId: active };
     },
 

@@ -43,6 +43,8 @@ export interface ServerConfig {
   secureCookie: boolean;
   /** Caminho absoluto do arquivo de projetos (`ACC_DATA_DIR`, padrão `./data`, fora do Git). */
   projectsFile: string;
+  /** Caminho absoluto do arquivo de tarefas (Issue #005), na mesma pasta. */
+  tasksFile: string;
 }
 
 export class ConfigError extends Error {
@@ -204,5 +206,6 @@ export function loadConfig(
     admin,
     secureCookie: deployment === 'production',
     projectsFile: join(dataDir, 'projects.json'),
+    tasksFile: join(dataDir, 'tasks.json'),
   };
 }

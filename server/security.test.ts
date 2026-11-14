@@ -48,13 +48,15 @@ describe('superfície de escrita do servidor', () => {
     expect([...GH_AUTH_TOKEN_ARGS]).toEqual(['auth', 'token', '--hostname', 'github.com']);
   });
 
-  it('POST só em login/logout (Issue #003) e projetos (Issue #004); o resto é GET/HEAD', () => {
+  it('POST só em login/logout (Issue #003), projetos (Issue #004) e tarefas (Issue #005); o resto é GET/HEAD', () => {
     expect([...POST_ROUTES]).toEqual([
       '/api/auth/login',
       '/api/auth/logout',
       '/api/projects',
       '/api/projects/active',
       '/api/projects/:id',
+      '/api/projects/:id/tasks',
+      '/api/projects/:id/tasks/:taskId',
     ]);
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
     for (const path of [
@@ -69,7 +71,7 @@ describe('superfície de escrita do servidor', () => {
     for (const path of ['/api/auth/login', '/api/auth/logout', '/api/projects/active']) {
       expect([...allowedMethods(path)]).toEqual(['POST']);
     }
-    for (const path of ['/api/projects', `/api/projects/${id}`]) {
+    for (const path of ['/api/projects', `/api/projects/${id}`, `/api/projects/${id}/tasks`, `/api/projects/${id}/tasks/${id}`]) {
       expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD', 'POST']);
     }
     // Nenhum PUT/PATCH/DELETE em nenhuma rota; POST aparece uma única vez (constante WRITE_METHOD).
@@ -78,9 +80,15 @@ describe('superfície de escrita do servidor', () => {
     expect(app.match(/['"]POST['"]/g)).toHaveLength(1);
   });
 
-  it('projetos gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issue #004)', () => {
-    const projectFiles = server.filter((f) => f.path.startsWith('server/projects/'));
-    expect(projectFiles.map((f) => f.path).sort()).toEqual(['server/projects/projectStore.ts', 'server/projects/validation.ts']);
+  it('projetos e tarefas gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issues #004/#005)', () => {
+    const projectFiles = server.filter((f) => /^server\/(?:projects|tasks|storage)\//.test(f.path));
+    expect(projectFiles.map((f) => f.path).sort()).toEqual([
+      'server/projects/projectStore.ts',
+      'server/projects/validation.ts',
+      'server/storage/jsonFile.ts',
+      'server/tasks/taskStore.ts',
+      'server/tasks/validation.ts',
+    ]);
     for (const file of projectFiles) {
       expect(file.code).not.toMatch(/github\/client|github\/queries|snapshotService|\bfetch\(|child_process|node:net|node:http/);
     }
@@ -135,11 +143,12 @@ describe('frontend', () => {
     expect(filesMatching(frontend, /method:\s*['"](?:PUT|PATCH|DELETE)/i)).toEqual([]);
     expect(filesMatching(frontend, /method:\s*['"]POST/)).toEqual(['src/services/apiClient.ts']);
     // Quem envia corpo (`post:`) são só os clientes de autenticação e de projetos.
-    expect(filesMatching(frontend, /\bpost:\s/)).toEqual(['src/services/authApi.ts', 'src/services/projectsApi.ts']);
-    const posted = ['src/services/authApi.ts', 'src/services/projectsApi.ts'].flatMap((path) => {
+    const writers = ['src/services/authApi.ts', 'src/services/projectsApi.ts', 'src/services/tasksApi.ts'];
+    expect(filesMatching(frontend, /\bpost:\s/)).toEqual(writers);
+    const posted = writers.flatMap((path) => {
       const code = frontend.find((f) => f.path === path)!.code;
-      return [...code.matchAll(/requestJson\((['`])([^'`]+)\1, \{ post:/g)].map((m) =>
-        m[2].replace('${encodeURIComponent(projectId)}', ':id'),
+      return [...code.matchAll(/requestJson\(\s*(['`])([^'`]+)\1, \{ post:/g)].map((m) =>
+        m[2].replace('${encodeURIComponent(projectId)}', ':id').replace('${encodeURIComponent(taskId)}', ':taskId'),
       );
     });
     expect(posted.sort()).toEqual([...POST_ROUTES].sort());

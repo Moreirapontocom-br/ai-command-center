@@ -122,7 +122,9 @@ A proteção **no servidor** (branch protection/rulesets) era indisponível dura
 7. A CSP vale onde o Vite serve o frontend (dev e preview). Uma hospedagem futura precisa reproduzir `appSecurityHeaders('production')`.
 8. Os testes do hook levam cerca de 40 s no Windows (Git real); no Linux da CI são mais rápidos.
 
-## 9. Recomendações para o PR 2 (não implementadas)
+## 9. Recomendações para o PR 2
+
+> **Implementadas no PR #35** (mesclado em `f1115ab`): login de administrador único, sessão no servidor, cookie `HttpOnly; SameSite=Strict`, CSRF por `Origin`, limite de tentativas. Ver `docs/IMPLEMENTATION_REPORT_003_PR2.md`. A lista abaixo é o registro original.
 
 - Antes de expor o servidor fora do loopback, implementar autenticação de usuários da aplicação. O gh-cli continua sendo só credencial do desenvolvedor perante o GitHub.
 - Sessões com cookie `HttpOnly; Secure; SameSite=Strict`, prefixo `__Host-`, expiração curta e rotação no login. O logger já mascara `Cookie`/`Set-Cookie`; manter os testes de não eco.
@@ -202,5 +204,7 @@ Evidência: `docs/evidence/issue003-main-protection-active.txt`. Nenhum valor de
 | Branch comprometida `feature/002-github-integration` | **Removida**, depois de confirmar: PR #25 CLOSED sem merge; única branch remota contendo `c368bbf`; nenhum PR aberto dependente; árvore idêntica à da v2 já mesclada |
 | `refs/pull/25/head` | **Pendente**: continua expondo `c368bbf` (token revogado) e 8 commits alcançáveis só por ela. A remoção depende do GitHub Support. O texto do chamado foi entregue ao PO |
 | Alerta de secret scanning #1 | Aberto. Tipo `github_personal_access_token`, `.env.example` linha 8, commit `c368bbf`. Corresponde à credencial **revogada** |
+
+**Estado após o PR #35:** a `main` está em `f1115abeccaa895a88019f0bf62bf2d1d37674d3`, com CI e `Main audit` verdes. Ruleset, secret scanning e push protection seguem ativos, sem alteração.
 
 **Pendências restantes:** envio do chamado ao GitHub Support pelo PO, e fechamento do alerta #1 como *revoked* depois da remoção. As branches locais `backup/002-original-bcc3c1e` e `rebuild/002-clean` ficam a critério do PO.

@@ -42,6 +42,8 @@ Estado efetivo verificado pela API em 14/11/2026 (`GET /rulesets/27242416` e `GE
 
 **Primeiro uso real:** o PR #33 foi mesclado em 14/11/2026 pelo merge commit `e3d44326bd14c391059a8ebcb095d4fecbfcda4b`, sem `--admin`. Os checks estavam verdes e a branch estava atualizada. A CI no push da `main` (3 jobs) e o workflow `Main audit` passaram, com todos os commits classificados como introduzidos pelo PR #33.
 
+**Uso seguinte:** o PR #35 (Issue #003, PR 2, autenticação) foi mesclado do mesmo modo em `f1115abeccaa895a88019f0bf62bf2d1d37674d3`, e a CI e o `Main audit` passaram nesse commit. O ruleset exige branch atualizada: depois de cada merge, os outros PRs abertos precisam incorporar a `main` (merge normal, sem rebase de histórico publicado) e passar de novo pela CI.
+
 **Limites que continuam valendo:** um administrador pode desativar ou editar o ruleset pela interface ou pela API. Por isso a auditoria detectiva (seção 5) e o hook local continuam ativos. A revisão independente e a aprovação do PO seguem obrigatórias **por processo**, já que o GitHub exige 0 aprovações.
 
 **Credencial revogada da Issue #002:** a branch remota comprometida `feature/002-github-integration` foi excluída em 14/11/2026, depois de confirmar que o PR #25 foi fechado sem merge e que nenhum trabalho ativo dependia dela. O commit `c368bbf` continua acessível por `refs/pull/25/head`, uma referência somente leitura criada pelo GitHub. Remover essa referência e o cache **depende do GitHub Support** e está pendente. O alerta de secret scanning **#1** corresponde a esse token já revogado e permanece aberto até a remoção.

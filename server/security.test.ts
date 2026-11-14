@@ -8,6 +8,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { GH_AUTH_TOKEN_ARGS } from './auth/ghCli.ts';
+import { allowedMethods, POST_ROUTES } from './http/app.ts';
 import { APPROVED_DOCUMENTS, createGraphQLClient, GITHUB_GRAPHQL_ENDPOINT, isReadOnlyDocument } from './github/client.ts';
 import * as queries from './github/queries.ts';
 
@@ -47,9 +48,16 @@ describe('superfície de escrita do servidor', () => {
     expect([...GH_AUTH_TOKEN_ARGS]).toEqual(['auth', 'token', '--hostname', 'github.com']);
   });
 
-  it('o servidor HTTP só aceita GET e HEAD', () => {
+  it('rotas de negócio só aceitam GET e HEAD; POST existe apenas em login e logout (Issue #003, PR 2)', () => {
+    expect([...POST_ROUTES]).toEqual(['/api/auth/login', '/api/auth/logout']);
+    for (const path of ['/api/status', '/api/repos/a/b/snapshot', '/api/auth/session', '/api/qualquer']) {
+      expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);
+    }
+    for (const path of POST_ROUTES) expect([...allowedMethods(path)]).toEqual(['POST']);
+    // Nenhum PUT/PATCH/DELETE em nenhuma rota, e a lista de POST é a única fonte de métodos de escrita.
     const app = server.find((f) => f.path === 'server/http/app.ts')!.code;
-    expect(app).toContain("req.method !== 'GET' && req.method !== 'HEAD'");
+    expect(app).not.toMatch(/['"](?:PUT|PATCH|DELETE)['"]/);
+    expect(app.match(/['"]POST['"]/g)).toHaveLength(1);
   });
 });
 
@@ -96,8 +104,18 @@ describe('frontend', () => {
     expect(filesMatching(frontend, /https?:\/\/api\.github\.com/)).toEqual([]);
   });
 
-  it('só faz GET para o servidor local (sem método de escrita)', () => {
-    expect(filesMatching(frontend, /\bfetch\(/)).toEqual(['src/services/githubApi.ts']);
-    expect(filesMatching(frontend, /method:\s*['"](?:POST|PUT|PATCH|DELETE)/i)).toEqual([]);
+  it('um único ponto de rede; POST só para login/logout do ACC (Issue #003, PR 2)', () => {
+    expect(filesMatching(frontend, /\bfetch\(/)).toEqual(['src/services/apiClient.ts']);
+    expect(filesMatching(frontend, /method:\s*['"](?:PUT|PATCH|DELETE)/i)).toEqual([]);
+    expect(filesMatching(frontend, /method:\s*['"]POST/)).toEqual(['src/services/apiClient.ts']);
+    // Quem envia corpo (`post:`) é só o cliente de autenticação, e apenas para as rotas de login/logout.
+    expect(filesMatching(frontend, /\bpost:\s/)).toEqual(['src/services/authApi.ts']);
+    const authApi = frontend.find((f) => f.path === 'src/services/authApi.ts')!.code;
+    const posted = [...authApi.matchAll(/requestJson\('([^']+)', \{ post:/g)].map((m) => m[1]);
+    expect(posted.sort()).toEqual([...POST_ROUTES].sort());
+  });
+
+  it('não guarda sessão nem senha no navegador', () => {
+    expect(filesMatching(frontend, /localStorage|sessionStorage|indexedDB|document\.cookie/)).toEqual([]);
   });
 });

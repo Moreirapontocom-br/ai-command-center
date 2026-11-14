@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ApiClientError, fetchSnapshot, fetchStatus } from '../../services/githubApi';
+import { useAuth } from '../auth/authContext';
 import { GitHubDataContext, type GitHubDataState } from './githubDataContext';
 
 function toClientError(error: unknown): ApiClientError {
@@ -16,6 +17,16 @@ function isAbort(error: unknown): boolean {
  */
 export function GitHubDataProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<GitHubDataState>({ phase: 'loading' });
+  const { sessionLost } = useAuth();
+  // Rota privada respondeu 401: a sessão expirou ou foi revogada; volta para o login.
+  const toClientErrorOrLogout = useCallback(
+    (error: unknown) => {
+      const clientError = toClientError(error);
+      if (clientError.code === 'unauthenticated') sessionLost();
+      return clientError;
+    },
+    [sessionLost],
+  );
   const stateRef = useRef(state);
   const controllerRef = useRef<AbortController | null>(null);
 
@@ -47,18 +58,18 @@ export function GitHubDataProvider({ children }: { children: ReactNode }) {
         });
       } catch (error) {
         if (isAbort(error)) return;
-        setState({ phase: 'error', repository, error: toClientError(error) });
+        setState({ phase: 'error', repository, error: toClientErrorOrLogout(error) });
       }
     } catch (error) {
       if (isAbort(error)) return;
-      const clientError = toClientError(error);
+      const clientError = toClientErrorOrLogout(error);
       setState(
         clientError.code === 'server_unreachable'
           ? { phase: 'demo', reason: 'server_unreachable' }
           : { phase: 'error', repository: null, error: clientError },
       );
     }
-  }, []);
+  }, [toClientErrorOrLogout]);
 
   const start = useCallback(
     (run: (signal: AbortSignal) => Promise<void>) => {
@@ -98,7 +109,7 @@ export function GitHubDataProvider({ children }: { children: ReactNode }) {
         });
       } catch (error) {
         if (isAbort(error)) return;
-        const clientError = toClientError(error);
+        const clientError = toClientErrorOrLogout(error);
         // Mantém os dados anteriores, sinalizando que estão desatualizados e por quê.
         setState((previous) =>
           previous.phase === 'ready'
@@ -107,7 +118,7 @@ export function GitHubDataProvider({ children }: { children: ReactNode }) {
         );
       }
     });
-  }, [load, start]);
+  }, [load, start, toClientErrorOrLogout]);
 
   const value = useMemo(() => ({ state, refresh }), [state, refresh]);
   return <GitHubDataContext.Provider value={value}>{children}</GitHubDataContext.Provider>;

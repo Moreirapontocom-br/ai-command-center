@@ -8,16 +8,22 @@ function getNav() {
   return screen.getByRole('navigation', { name: 'Navegação principal' });
 }
 
+/** Sem servidor (fetch padrão dos testes), a sessão não pode ser verificada: modo demonstração. */
+async function renderApp() {
+  render(<App />);
+  await screen.findByRole('navigation', { name: 'Navegação principal' });
+}
+
 describe('App', () => {
-  it('abre no dashboard com aviso de dados fictícios', () => {
-    render(<App />);
+  it('abre no dashboard com aviso de dados fictícios', async () => {
+    await renderApp();
     expect(screen.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeInTheDocument();
     expect(screen.getByRole('note')).toHaveTextContent(/Dados fictícios/);
     expect(screen.getByText('Modo demonstração')).toBeInTheDocument();
   });
 
-  it('exibe os agentes ChatGPT, Claude Code e Gemini', () => {
-    render(<App />);
+  it('exibe os agentes ChatGPT, Claude Code e Gemini', async () => {
+    await renderApp();
     for (const name of ['ChatGPT', 'Claude Code', 'Gemini']) {
       expect(screen.getByRole('article', { name })).toBeInTheDocument();
     }
@@ -25,7 +31,7 @@ describe('App', () => {
 
   it('navega entre as seções pela sidebar', async () => {
     const user = userEvent.setup();
-    render(<App />);
+    await renderApp();
 
     await user.click(within(getNav()).getByRole('button', { name: 'Tarefas' }));
     expect(screen.getByRole('heading', { level: 1, name: 'Tarefas' })).toBeInTheDocument();
@@ -50,7 +56,7 @@ describe('App', () => {
 
   it('abre e fecha o menu mobile', async () => {
     const user = userEvent.setup();
-    render(<App />);
+    await renderApp();
     const toggle = screen.getByRole('button', { name: 'Abrir menu' });
 
     expect(toggle).toHaveAttribute('aria-expanded', 'false');

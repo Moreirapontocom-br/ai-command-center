@@ -1,4 +1,6 @@
 import type { Ref } from 'react';
+import { useState } from 'react';
+import { useAuth } from '../../features/auth/authContext';
 import { useGitHubData } from '../../features/github/githubDataContext';
 
 interface HeaderProps {
@@ -29,6 +31,30 @@ function DataSourceBadge() {
   );
 }
 
+function UserMenu() {
+  const { state, signOut } = useAuth();
+  const [leaving, setLeaving] = useState(false);
+  if (state.phase !== 'authenticated') return null;
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <span className="hidden max-w-48 truncate text-sm text-slate-600 sm:inline" title={state.email}>
+        {state.email}
+      </span>
+      <button
+        type="button"
+        disabled={leaving}
+        onClick={() => {
+          setLeaving(true);
+          void signOut();
+        }}
+        className="rounded-md border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-60"
+      >
+        Sair
+      </button>
+    </div>
+  );
+}
+
 export function Header({ title, isMenuOpen, onMenuToggle, menuButtonRef }: HeaderProps) {
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-4 sm:px-6">
@@ -52,6 +78,7 @@ export function Header({ title, isMenuOpen, onMenuToggle, menuButtonRef }: Heade
       </button>
       <h1 className="min-w-0 flex-1 truncate text-lg font-semibold">{title}</h1>
       <DataSourceBadge />
+      <UserMenu />
     </header>
   );
 }

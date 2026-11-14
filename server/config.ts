@@ -1,4 +1,6 @@
 import { isAbsolute } from 'node:path';
+import type { AdminAccount } from './auth/adminAuth.ts';
+import { MIN_CONFIG_SCRYPT_N, parsePasswordHash, PasswordHashFormatError } from './auth/password.ts';
 import { createFineGrainedTokenProvider, type CredentialProvider } from './auth/credentials.ts';
 import { createGhCliCredentialProvider, type GhCliProviderOptions } from './auth/ghCli.ts';
 
@@ -35,6 +37,10 @@ export interface ServerConfig {
   minRefreshIntervalMs: number;
   /** Limite de requisições por cliente a cada minuto. */
   rateLimitPerMinute: number;
+  /** Administrador único do ACC (`null` = não configurado: nenhum login é possível). */
+  admin: AdminAccount | null;
+  /** Cookie de sessão com `Secure` e prefixo `__Host-` (apenas em `ACC_DEPLOYMENT=production`). */
+  secureCookie: boolean;
 }
 
 export class ConfigError extends Error {
@@ -58,7 +64,7 @@ export const AUTH_MODES = ['fine-grained', 'gh-cli'] as const;
  * - `GITHUB_AUTH=gh-cli` → sessão local do GitHub CLI (somente desenvolvimento local). Exige
  *   `ACC_DEPLOYMENT=local` explícito e `GITHUB_TOKEN` vazio (configuração ambígua é recusada), e é
  *   recusado com `NODE_ENV=production`. O `gh-cli` identifica o DESENVOLVEDOR perante o GitHub; ele
- *   não autentica usuários desta aplicação (o servidor não tem login nesta versão);
+ *   NÃO autentica usuários desta aplicação (isso é feito pelo login do administrador, `auth/adminAuth.ts`);
  * - qualquer outro valor → erro. Nunca há detecção automática.
  */
 function parseDeployment(value: string | undefined): DeploymentMode | null {
@@ -109,6 +115,41 @@ function resolveCredentials(
   return createGhCliCredentialProvider({ ...ghCliOverrides, ghPath, env });
 }
 
+const EMAIL_PATTERN = /^[^\s@]{1,64}@[^\s@]{1,253}\.[^\s@]{2,63}$/;
+
+/**
+ * Administrador único: `ACC_ADMIN_EMAIL` + `ACC_ADMIN_PASSWORD_HASH` (gerado por
+ * `npm run auth:hash-password`). Senha em texto puro no ambiente é recusada. Nenhuma mensagem
+ * repete os valores recebidos.
+ */
+function resolveAdmin(env: Record<string, string | undefined>): AdminAccount | null {
+  if (env.ACC_ADMIN_PASSWORD !== undefined) {
+    throw new ConfigError(
+      'ACC_ADMIN_PASSWORD não é aceito: a senha nunca fica em texto puro. Gere ACC_ADMIN_PASSWORD_HASH com npm run auth:hash-password.',
+    );
+  }
+  const email = env.ACC_ADMIN_EMAIL?.trim() ?? '';
+  const encodedHash = env.ACC_ADMIN_PASSWORD_HASH?.trim() ?? '';
+  if (email === '' && encodedHash === '') return null;
+  if (email === '' || encodedHash === '') {
+    throw new ConfigError('ACC_ADMIN_EMAIL e ACC_ADMIN_PASSWORD_HASH devem ser definidos juntos.');
+  }
+  if (!EMAIL_PATTERN.test(email)) throw new ConfigError('ACC_ADMIN_EMAIL não é um e-mail válido.');
+  let passwordHash;
+  try {
+    passwordHash = parsePasswordHash(encodedHash);
+  } catch (error) {
+    if (error instanceof PasswordHashFormatError) {
+      throw new ConfigError(`ACC_ADMIN_PASSWORD_HASH inválido (${error.message}) Gere-o com npm run auth:hash-password.`);
+    }
+    throw error;
+  }
+  if (passwordHash.params.N < MIN_CONFIG_SCRYPT_N) {
+    throw new ConfigError('ACC_ADMIN_PASSWORD_HASH usa custo scrypt abaixo do mínimo. Gere-o novamente com npm run auth:hash-password.');
+  }
+  return { email, passwordHash };
+}
+
 /**
  * Lê a configuração do ambiente. Falha de forma explícita em configurações inseguras.
  * As mensagens de erro nunca incluem o valor do token.
@@ -120,7 +161,7 @@ export function loadConfig(
 ): ServerConfig {
   // Uma credencial com prefixo VITE_ seria embutida no bundle do navegador pelo Vite.
   const leakedKeys = Object.keys(env).filter(
-    (key) => key.startsWith('VITE_') && /TOKEN|SECRET|GITHUB|KEY|PAT/i.test(key),
+    (key) => key.startsWith('VITE_') && /TOKEN|SECRET|GITHUB|KEY|PAT|PASS|ADMIN|SESSION|HASH/i.test(key),
   );
   if (leakedKeys.length > 0) {
     throw new ConfigError(
@@ -131,14 +172,15 @@ export function loadConfig(
   const host = env.API_HOST?.trim() || '127.0.0.1';
   if (!(LOOPBACK_HOSTS as readonly string[]).includes(host)) {
     throw new ConfigError(
-      'API_HOST deve ser um endereço de loopback (127.0.0.1, localhost ou ::1). O servidor não possui ' +
-        'autenticação de usuários e não pode ser exposto à rede nesta versão.',
+      'API_HOST deve ser um endereço de loopback (127.0.0.1, localhost ou ::1). Exposição à rede ' +
+        '(HTTPS, proxy confiável, Host público) ainda não é suportada nesta versão.',
     );
   }
 
   const port = parsePort(env.API_PORT, 8787);
   const deployment = parseDeployment(env.ACC_DEPLOYMENT);
   const credentials = resolveCredentials(env, deployment, ghCliOverrides);
+  const admin = resolveAdmin(env);
 
   return {
     deployment,
@@ -156,5 +198,7 @@ export function loadConfig(
     cacheTtlMs: 60_000,
     minRefreshIntervalMs: 15_000,
     rateLimitPerMinute: 60,
+    admin,
+    secureCookie: deployment === 'production',
   };
 }

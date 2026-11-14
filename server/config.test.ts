@@ -5,6 +5,8 @@ import { createFineGrainedTokenProvider } from './auth/credentials.ts';
 import type { ExecFileLike } from './auth/ghCli.ts';
 import { ConfigError, loadConfig } from './config.ts';
 import { createConsoleLogger, redact } from './logger.ts';
+import { hashPassword } from './auth/password.ts';
+import { TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD, testPasswordHash } from './test/authFixtures.ts';
 import { CANARY_TOKEN } from './test/fixtures.ts';
 
 describe('configuração', () => {
@@ -184,5 +186,59 @@ describe('proteção contra exposição de credenciais', () => {
     expect(lines[0]).not.toContain('ghp_x');
     expect(lines[0]).toContain('[REDACTED]');
     expect(redact('-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----')).toBe('[REDACTED]');
+  });
+});
+
+describe('administrador do ACC (Issue #003, PR 2)', () => {
+  const strongHash = () => hashPassword(TEST_ADMIN_PASSWORD, { N: 2 ** 17, r: 8, p: 1 });
+
+  function expectConfigError(env: Record<string, string>, secretFragments: string[] = []) {
+    try {
+      loadConfig(env);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      for (const fragment of secretFragments) expect((error as Error).message).not.toContain(fragment);
+      return;
+    }
+    throw new Error('esperava ConfigError');
+  }
+
+  it('sem administrador: admin=null (login indisponível); cookie não Secure fora de produção', () => {
+    const config = loadConfig({});
+    expect(config.admin).toBeNull();
+    expect(config.secureCookie).toBe(false);
+    expect(loadConfig({ ACC_DEPLOYMENT: 'local' }).secureCookie).toBe(false);
+  });
+
+  it('aceita e-mail + hash scrypt forte; cookie Secure em produção', async () => {
+    const hash = await strongHash();
+    const config = loadConfig({ ACC_ADMIN_EMAIL: TEST_ADMIN_EMAIL, ACC_ADMIN_PASSWORD_HASH: hash, ACC_DEPLOYMENT: 'production' });
+    expect(config.admin?.email).toBe(TEST_ADMIN_EMAIL);
+    expect(config.admin?.passwordHash.params.N).toBe(2 ** 17);
+    expect(config.secureCookie).toBe(true);
+  });
+
+  it('recusa senha em texto puro no ambiente, sem repetir o valor', () => {
+    expectConfigError({ ACC_ADMIN_EMAIL: TEST_ADMIN_EMAIL, ACC_ADMIN_PASSWORD: TEST_ADMIN_PASSWORD }, [TEST_ADMIN_PASSWORD]);
+    expectConfigError({ ACC_ADMIN_PASSWORD: '' });
+  });
+
+  it('exige e-mail e hash juntos e válidos, sem repetir valores', async () => {
+    const hash = await strongHash();
+    expectConfigError({ ACC_ADMIN_EMAIL: TEST_ADMIN_EMAIL });
+    expectConfigError({ ACC_ADMIN_PASSWORD_HASH: hash }, [hash]);
+    expectConfigError({ ACC_ADMIN_EMAIL: 'nao-e-email', ACC_ADMIN_PASSWORD_HASH: hash });
+    expectConfigError({ ACC_ADMIN_EMAIL: TEST_ADMIN_EMAIL, ACC_ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD }, [TEST_ADMIN_PASSWORD]);
+  });
+
+  it('recusa hash com custo scrypt abaixo do mínimo', async () => {
+    const weak = await testPasswordHash(); // N = 2^10
+    expectConfigError({ ACC_ADMIN_EMAIL: TEST_ADMIN_EMAIL, ACC_ADMIN_PASSWORD_HASH: weak }, [weak]);
+  });
+
+  it('variáveis VITE_ de senha, sessão ou administrador são recusadas (iriam para o bundle)', () => {
+    for (const key of ['VITE_ADMIN_PASSWORD', 'VITE_ACC_ADMIN_PASSWORD_HASH', 'VITE_SESSION_SECRET']) {
+      expectConfigError({ [key]: 'x' });
+    }
   });
 });

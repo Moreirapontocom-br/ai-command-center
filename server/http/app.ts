@@ -5,8 +5,10 @@ import type {
   ApiErrorCode,
   ProjectListResponse,
   SessionResponse,
+  TaskListResponse,
   StatusResponse,
 } from '../../shared/contracts.ts';
+import { AGENT_IDS } from '../../shared/contracts.ts';
 import { API_SECURITY_HEADERS } from '../../shared/securityHeaders.ts';
 import { readCookie, type AuthService } from '../auth/adminAuth.ts';
 import type { Session } from '../auth/sessions.ts';
@@ -15,6 +17,8 @@ import { ERROR_HTTP_STATUS, IntegrationError } from '../github/errors.ts';
 import type { Logger } from '../logger.ts';
 import type { ProjectStore } from '../projects/projectStore.ts';
 import { parseActiveProject, parseProjectCreate, parseProjectUpdate, PROJECT_ID_PATTERN } from '../projects/validation.ts';
+import type { TaskStore } from '../tasks/taskStore.ts';
+import { parseTaskCreate, parseTaskUpdate, TASK_ID_PATTERN, type TaskInputContext } from '../tasks/validation.ts';
 import type { SnapshotService } from '../snapshotService.ts';
 import { createRateLimiter } from './rateLimiter.ts';
 
@@ -28,6 +32,8 @@ export interface AppDeps {
   auth: AuthService;
   /** Projetos (Issue #004). Ausente: as rotas de projetos respondem erro interno. */
   projects?: ProjectStore | null;
+  /** Tarefas por projeto (Issue #005). Ausente: as rotas de tarefas respondem erro interno. */
+  tasks?: TaskStore | null;
   logger: Logger;
   now?: () => number;
 }
@@ -40,6 +46,8 @@ const AUTH_POST_ROUTES: readonly string[] = Object.freeze(['/api/auth/login', '/
 const PROJECTS_ROUTE = '/api/projects';
 const ACTIVE_PROJECT_ROUTE = '/api/projects/active';
 const PROJECT_ITEM_ROUTE = /^\/api\/projects\/([^/]+)$/;
+const TASKS_ROUTE = /^\/api\/projects\/([^/]+)\/tasks$/;
+const TASK_ITEM_ROUTE = /^\/api\/projects\/([^/]+)\/tasks\/([^/]+)$/;
 const PROJECT_SNAPSHOT_ROUTE = /^\/api\/projects\/([^/]+)\/repositories\/([^/]+)\/([^/]+)\/snapshot$/;
 
 /**
@@ -52,6 +60,8 @@ export const POST_ROUTES: readonly string[] = Object.freeze([
   PROJECTS_ROUTE,
   ACTIVE_PROJECT_ROUTE,
   '/api/projects/:id',
+  '/api/projects/:id/tasks',
+  '/api/projects/:id/tasks/:taskId',
 ]);
 /** Rotas acessíveis sem sessão. Nenhuma devolve dados do GitHub, de projetos nem da configuração. */
 export const PUBLIC_ROUTES: readonly string[] = Object.freeze(['/api/auth/session', ...AUTH_POST_ROUTES]);
@@ -63,7 +73,14 @@ export function allowedMethods(pathname: string): readonly string[] {
   if (AUTH_POST_ROUTES.includes(pathname) || pathname === ACTIVE_PROJECT_ROUTE) return [WRITE_METHOD];
   // Listar/criar e ler/editar projetos. Um id malformado recebe a mesma resposta de método que um
   // válido; o formato só é verificado depois da autenticação.
-  if (pathname === PROJECTS_ROUTE || PROJECT_ITEM_ROUTE.test(pathname)) return [...READ_METHODS, WRITE_METHOD];
+  if (
+    pathname === PROJECTS_ROUTE ||
+    PROJECT_ITEM_ROUTE.test(pathname) ||
+    TASKS_ROUTE.test(pathname) ||
+    TASK_ITEM_ROUTE.test(pathname)
+  ) {
+    return [...READ_METHODS, WRITE_METHOD];
+  }
   return READ_METHODS;
 }
 
@@ -241,6 +258,48 @@ export function createRequestHandler(deps: AppDeps) {
         return;
       }
       sendJson(res, 200, store.get(ownerId, projectId) ?? fail('not_found'));
+      return;
+    }
+
+    const tasksMatch = TASKS_ROUTE.exec(pathname) ?? TASK_ITEM_ROUTE.exec(pathname);
+    if (tasksMatch) {
+      assertOnlyParams(url, []);
+      const [, projectId, taskId] = tasksMatch;
+      if (!PROJECT_ID_PATTERN.test(projectId) || (taskId !== undefined && !TASK_ID_PATTERN.test(taskId))) fail('not_found');
+      // Isolamento: o projeto precisa ser do usuário; as tarefas são buscadas por (dono, projeto).
+      const project = store.get(ownerId, projectId) ?? fail('not_found');
+      const tasks = deps.tasks ?? fail('internal');
+      const context: TaskInputContext = {
+        repositories: project.repositories.filter((name) => session.scope.includes(name)),
+        assignableUserIds: [session.userId],
+      };
+
+      if (taskId === undefined) {
+        if (isWrite) {
+          const fields = parseTaskCreate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), context);
+          // Pelo navegador, toda tarefa é manual: a origem nunca vem do cliente.
+          const task = await tasks.create(ownerId, projectId, fields, { actor: session.userId, origin: 'manual' });
+          deps.logger.log('info', 'Tarefa criada', { event: 'task_created', projectId, taskId: task.id });
+          sendJson(res, 201, task);
+          return;
+        }
+        const body: TaskListResponse = {
+          tasks: tasks.list(ownerId, projectId),
+          assignableUsers: [{ userId: session.userId, label: session.email }],
+          agents: [...AGENT_IDS],
+        };
+        sendJson(res, 200, body);
+        return;
+      }
+
+      if (isWrite) {
+        const patch = parseTaskUpdate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), context);
+        const updated = (await tasks.update(ownerId, projectId, taskId, patch, session.userId)) ?? fail('not_found');
+        deps.logger.log('info', 'Tarefa atualizada', { event: 'task_updated', projectId, taskId });
+        sendJson(res, 200, updated);
+        return;
+      }
+      sendJson(res, 200, tasks.get(ownerId, projectId, taskId) ?? fail('not_found'));
       return;
     }
 

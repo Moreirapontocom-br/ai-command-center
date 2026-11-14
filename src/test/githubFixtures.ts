@@ -4,6 +4,8 @@ import type {
   ApiErrorCode,
   Project,
   ProjectListResponse,
+  Task,
+  TaskListResponse,
   RepoSnapshot,
   SessionResponse,
   SnapshotResponse,
@@ -202,6 +204,36 @@ export function projectList(overrides: Partial<ProjectListResponse> = {}): Proje
   return { projects: [projectFixture()], activeProjectId: PROJECT_ID, linkableRepositories: [REPO], ...overrides };
 }
 
+export function taskList(overrides: Partial<TaskListResponse> = {}): TaskListResponse {
+  return {
+    tasks: [],
+    assignableUsers: [{ userId: 'admin', label: 'admin@example.test' }],
+    agents: ['chatgpt', 'claude-code', 'gemini', 'nemotron'],
+    ...overrides,
+  };
+}
+
+export function taskFixture(overrides: Partial<Task> = {}): Task {
+  return {
+    id: '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b',
+    projectId: PROJECT_ID,
+    title: 'Tarefa real',
+    description: '',
+    status: 'pending',
+    priority: 'medium',
+    assignee: null,
+    dependsOn: [],
+    references: [],
+    origin: 'manual',
+    blockedReason: '',
+    completion: null,
+    history: [{ at: '2026-11-13T12:00:00.000Z', actor: 'admin', action: 'created', to: 'pending' }],
+    createdAt: '2026-11-13T12:00:00.000Z',
+    updatedAt: '2026-11-13T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
 export function mockApi(routes: {
   status?: Reply[];
   snapshot?: Reply[];
@@ -213,8 +245,15 @@ export function mockApi(routes: {
   createProject?: Reply[];
   updateProject?: Reply[];
   selectProject?: Reply[];
+  /** `GET /api/projects/:id/tasks` (padrão: lista vazia). */
+  tasks?: Reply[];
+  createTask?: Reply[];
+  updateTask?: Reply[];
 }) {
   const queues = {
+    tasks: [...(routes.tasks ?? [json(taskList())])],
+    createTask: [...(routes.createTask ?? [])],
+    updateTask: [...(routes.updateTask ?? [])],
     projects: [...(routes.projects ?? [json(projectList())])],
     createProject: [...(routes.createProject ?? [])],
     updateProject: [...(routes.updateProject ?? [])],
@@ -238,6 +277,12 @@ export function mockApi(routes: {
             ? queues.status
             : url.includes('/snapshot')
               ? queues.snapshot
+              : /\/tasks$/.test(url)
+                ? init?.method === 'POST'
+                  ? queues.createTask
+                  : queues.tasks
+                : /\/tasks\/[^/]+$/.test(url)
+                  ? queues.updateTask
               : url === '/api/projects/active'
                 ? queues.selectProject
                 : url === '/api/projects'

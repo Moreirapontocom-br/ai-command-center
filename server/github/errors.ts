@@ -57,6 +57,11 @@ export const ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   payload_too_large: 'Corpo da requisição muito grande.',
   repository_not_allowed: 'Repositório não autorizado neste servidor.',
   project_limit_reached: 'Limite de projetos atingido.',
+  task_limit_reached: 'Limite de tarefas do projeto atingido.',
+  invalid_status_transition: 'Mudança de status não permitida a partir do status atual.',
+  dependencies_unresolved: 'A tarefa depende de tarefas que ainda não foram concluídas ou canceladas.',
+  dependency_cycle: 'As dependências formariam um ciclo.',
+  evidence_required: 'Tarefa atribuída a agente só pode ser concluída com evidência (referência a PR ou branch).',
   internal: 'Erro interno do servidor.',
 };
 
@@ -81,5 +86,10 @@ export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
   payload_too_large: 413,
   repository_not_allowed: 422,
   project_limit_reached: 409,
+  task_limit_reached: 409,
+  invalid_status_transition: 409,
+  dependencies_unresolved: 409,
+  dependency_cycle: 422,
+  evidence_required: 422,
   internal: 500,
 };

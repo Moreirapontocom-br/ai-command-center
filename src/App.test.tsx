@@ -35,9 +35,8 @@ describe('App', () => {
 
     await user.click(within(getNav()).getByRole('button', { name: 'Tarefas' }));
     expect(screen.getByRole('heading', { level: 1, name: 'Tarefas' })).toBeInTheDocument();
-    expect(screen.getAllByRole('listitem').filter((li) => li.closest('main'))).toHaveLength(
-      MOCK_TASKS.length,
-    );
+    // Tarefas reais ficam no servidor (Issue #005): sem ele, nada de dados inventados.
+    expect(within(screen.getByRole('main')).getByRole('alert')).toHaveTextContent('Tarefas indisponíveis');
     expect(within(getNav()).getByRole('button', { name: 'Tarefas' })).toHaveAttribute(
       'aria-current',
       'page',

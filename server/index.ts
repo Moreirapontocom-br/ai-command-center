@@ -7,7 +7,9 @@ import { GH_CLI_ERROR_MESSAGE } from './auth/ghCli.ts';
 import { createGraphQLClient } from './github/client.ts';
 import { createRequestHandler } from './http/app.ts';
 import { createConsoleLogger } from './logger.ts';
-import { openProjectStore, ProjectStoreError } from './projects/projectStore.ts';
+import { openProjectStore } from './projects/projectStore.ts';
+import { DataFileError } from './storage/jsonFile.ts';
+import { openTaskStore } from './tasks/taskStore.ts';
 import { createSnapshotService } from './snapshotService.ts';
 
 const logger = createConsoleLogger();
@@ -52,16 +54,19 @@ if (!auth.configured) {
   );
 }
 
-// Projetos (Issue #004): arquivo local validado na abertura. Corrompido → o servidor não inicia.
+// Projetos (Issue #004) e tarefas (Issue #005): arquivos locais validados na abertura.
+// Corrompido → o servidor não inicia (e o arquivo não é sobrescrito).
 let projects;
+let tasks;
 try {
   projects = await openProjectStore({ filePath: config.projectsFile, allowedRepositories: config.allowedRepositories });
+  tasks = await openTaskStore({ filePath: config.tasksFile });
 } catch (error) {
-  logger.log('error', error instanceof ProjectStoreError ? error.message : 'Falha ao abrir o arquivo de projetos.');
+  logger.log('error', error instanceof DataFileError ? error.message : 'Falha ao abrir os arquivos de dados.');
   process.exit(1);
 }
 
-const handler = createRequestHandler({ config, snapshots, auth, projects, logger });
+const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
 });

@@ -2,6 +2,8 @@ import { vi } from 'vitest';
 import type {
   ApiErrorBody,
   ApiErrorCode,
+  Project,
+  ProjectListResponse,
   RepoSnapshot,
   SessionResponse,
   SnapshotResponse,
@@ -180,8 +182,43 @@ export const authenticatedSession: SessionResponse = {
  * Substitui `fetch` por respostas em sequência para a sessão, `/api/status` e o snapshot.
  * Por padrão a sessão do administrador é válida.
  */
-export function mockApi(routes: { status?: Reply[]; snapshot?: Reply[]; session?: Reply[]; login?: Reply[]; logout?: Reply[] }) {
+export const PROJECT_ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+export function projectFixture(overrides: Partial<Project> = {}): Project {
+  return {
+    id: PROJECT_ID,
+    name: 'AI Command Center',
+    description: 'Painel de projetos',
+    objective: 'MVP',
+    status: 'active',
+    repositories: [REPO],
+    createdAt: '2026-11-13T10:00:00.000Z',
+    updatedAt: '2026-11-13T10:00:00.000Z',
+    ...overrides,
+  };
+}
+
+export function projectList(overrides: Partial<ProjectListResponse> = {}): ProjectListResponse {
+  return { projects: [projectFixture()], activeProjectId: PROJECT_ID, linkableRepositories: [REPO], ...overrides };
+}
+
+export function mockApi(routes: {
+  status?: Reply[];
+  snapshot?: Reply[];
+  session?: Reply[];
+  login?: Reply[];
+  logout?: Reply[];
+  /** `GET /api/projects` (padrão: um projeto ativo vinculado ao repositório). */
+  projects?: Reply[];
+  createProject?: Reply[];
+  updateProject?: Reply[];
+  selectProject?: Reply[];
+}) {
   const queues = {
+    projects: [...(routes.projects ?? [json(projectList())])],
+    createProject: [...(routes.createProject ?? [])],
+    updateProject: [...(routes.updateProject ?? [])],
+    selectProject: [...(routes.selectProject ?? [])],
     session: [...(routes.session ?? [json(authenticatedSession)])],
     login: [...(routes.login ?? [])],
     logout: [...(routes.logout ?? [])],
@@ -201,7 +238,15 @@ export function mockApi(routes: { status?: Reply[]; snapshot?: Reply[]; session?
             ? queues.status
             : url.includes('/snapshot')
               ? queues.snapshot
-              : [];
+              : url === '/api/projects/active'
+                ? queues.selectProject
+                : url === '/api/projects'
+                  ? init?.method === 'POST'
+                    ? queues.createProject
+                    : queues.projects
+                  : url.startsWith('/api/projects/')
+                    ? queues.updateProject
+                    : [];
     const next = queue.length > 1 ? queue.shift() : queue[0];
     if (next === undefined) throw new TypeError(`rota não simulada: ${url}`);
     if (next instanceof Error) throw next;

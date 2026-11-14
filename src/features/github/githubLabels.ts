@@ -82,6 +82,11 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
   auth_not_configured: { title: 'Administrador não configurado', description: 'Configure o administrador no servidor.' },
   unsupported_media_type: { title: 'Requisição inválida', description: 'Formato de dados não suportado.' },
   payload_too_large: { title: 'Requisição inválida', description: 'Dados enviados muito grandes.' },
+  repository_not_allowed: {
+    title: 'Repositório não autorizado',
+    description: 'Só é possível vincular repositórios da lista autorizada do servidor.',
+  },
+  project_limit_reached: { title: 'Limite de projetos', description: 'O número máximo de projetos foi atingido.' },
   internal: { title: 'Erro inesperado', description: 'Ocorreu um erro interno no servidor.' },
 };
 

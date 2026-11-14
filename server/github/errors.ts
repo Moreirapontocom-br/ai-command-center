@@ -55,6 +55,8 @@ export const ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   auth_not_configured: 'Nenhum administrador está configurado neste servidor.',
   unsupported_media_type: 'Envie os dados como application/json.',
   payload_too_large: 'Corpo da requisição muito grande.',
+  repository_not_allowed: 'Repositório não autorizado neste servidor.',
+  project_limit_reached: 'Limite de projetos atingido.',
   internal: 'Erro interno do servidor.',
 };
 
@@ -77,5 +79,7 @@ export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
   auth_not_configured: 503,
   unsupported_media_type: 415,
   payload_too_large: 413,
+  repository_not_allowed: 422,
+  project_limit_reached: 409,
   internal: 500,
 };

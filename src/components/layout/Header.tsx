@@ -2,6 +2,7 @@ import type { Ref } from 'react';
 import { useState } from 'react';
 import { useAuth } from '../../features/auth/authContext';
 import { useGitHubData } from '../../features/github/githubDataContext';
+import { useProjects } from '../../features/projects/projectsContext';
 
 interface HeaderProps {
   title: string;
@@ -10,8 +11,45 @@ interface HeaderProps {
   menuButtonRef?: Ref<HTMLButtonElement>;
 }
 
+/** Seletor do projeto ativo. A escolha é gravada no servidor (não no navegador). */
+function ProjectSwitcher() {
+  const { state, select } = useProjects();
+  const [saving, setSaving] = useState(false);
+  if (state.phase !== 'ready' || state.projects.length === 0) return null;
+  return (
+    <label className="flex min-w-0 shrink items-center gap-2 text-sm text-slate-600">
+      <span className="hidden md:inline">Projeto</span>
+      <select
+        aria-label="Projeto ativo"
+        value={state.activeProjectId ?? ''}
+        disabled={saving}
+        onChange={async (event) => {
+          setSaving(true);
+          await select(event.target.value === '' ? null : event.target.value);
+          setSaving(false);
+        }}
+        className="max-w-40 min-w-0 truncate rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-800 sm:max-w-56"
+      >
+        <option value="">Nenhum</option>
+        {state.projects.map((project) => (
+          <option key={project.id} value={project.id}>
+            {project.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function DataSourceBadge() {
   const { state } = useGitHubData();
+  if (state.phase === 'demo' && (state.reason === 'project_without_repository' || state.reason === 'no_active_project')) {
+    return (
+      <span className="hidden shrink-0 rounded-full bg-slate-200 px-3 py-1 text-xs font-medium text-slate-700 sm:inline">
+        Sem GitHub
+      </span>
+    );
+  }
   // Só indica dados reais quando um snapshot do GitHub foi de fato carregado.
   if (state.phase === 'ready') {
     return state.stale ? (
@@ -77,6 +115,7 @@ export function Header({ title, isMenuOpen, onMenuToggle, menuButtonRef }: Heade
         </svg>
       </button>
       <h1 className="min-w-0 flex-1 truncate text-lg font-semibold">{title}</h1>
+      <ProjectSwitcher />
       <DataSourceBadge />
       <UserMenu />
     </header>

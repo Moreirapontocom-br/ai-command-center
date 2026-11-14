@@ -46,8 +46,8 @@ describe('sessão administrativa única', () => {
 
   it('o limite do store também impõe uma sessão (defesa em profundidade)', () => {
     const store = createSessionStore({ idleTimeoutMs: 1000, absoluteTimeoutMs: 5000, maxSessions: 1, now: () => 0 });
-    const a = store.create({ email: 'a@b.c', scope: [] });
-    const b = store.create({ email: 'a@b.c', scope: [] });
+    const a = store.create({ userId: 'admin', email: 'a@b.c', scope: [] });
+    const b = store.create({ userId: 'admin', email: 'a@b.c', scope: [] });
     expect(store.size()).toBe(1);
     expect(store.touch(a.token)).toBeNull();
     expect(store.touch(b.token)).not.toBeNull();

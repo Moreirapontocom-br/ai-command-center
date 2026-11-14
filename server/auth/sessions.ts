@@ -7,6 +7,12 @@ import { createHash, randomBytes } from 'node:crypto';
  */
 
 export interface Session {
+  /**
+   * Identificador estável do usuário dono da sessão. Os dados de negócio (projetos) são isolados
+   * por este valor. No MVP há um único usuário (`ADMIN_USER_ID`); com múltiplos usuários, cada
+   * conta terá o seu.
+   */
+  userId: string;
   email: string;
   /** Repositórios que esta sessão pode consultar (escopo autorizado). */
   scope: readonly string[];
@@ -17,7 +23,7 @@ export interface Session {
 }
 
 export interface SessionStore {
-  create(input: { email: string; scope: readonly string[] }): { token: string; session: Session };
+  create(input: { userId: string; email: string; scope: readonly string[] }): { token: string; session: Session };
   /** Valida o token e renova a janela de inatividade. `null` se ausente, expirado ou revogado. */
   touch(token: string): Session | null;
   revoke(token: string): void;
@@ -51,7 +57,7 @@ export function createSessionStore(options: SessionStoreOptions): SessionStore {
   }
 
   return {
-    create({ email, scope }) {
+    create({ userId, email, scope }) {
       const at = now();
       sweep(at);
       // Limite de sessões simultâneas: descarta as mais antigas (ordem de inserção do Map).
@@ -62,6 +68,7 @@ export function createSessionStore(options: SessionStoreOptions): SessionStore {
       }
       const token = randomBytes(32).toString('base64url');
       const session: Session = {
+        userId,
         email,
         scope: Object.freeze([...scope]),
         createdAt: at,

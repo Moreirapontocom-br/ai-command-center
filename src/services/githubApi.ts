@@ -16,7 +16,7 @@ function isStatusResponse(value: unknown): value is StatusResponse {
   return isObject(value) && typeof value.configured === 'boolean' && Array.isArray(value.repositories);
 }
 
-function isSnapshotResponse(value: unknown): value is SnapshotResponse {
+export function isSnapshotResponse(value: unknown): value is SnapshotResponse {
   return (
     isObject(value) &&
     isObject(value.snapshot) &&

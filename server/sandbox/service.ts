@@ -28,6 +28,10 @@ import { assertWorkBranch, assertWorkspaceId, parseSandboxRequest, workBranchFor
  *   operar com outro dono/projeto é indistinguível de inexistente.
  * - Workspace, branch e prazos são DERIVADOS aqui; o chamador não escolhe caminhos nem branch.
  * - Registros em memória (não há execução a retomar); persistência e quotas ficam para #012/#022.
+ * - Prazos são verificados em toda operação que avança o ciclo de vida (`authorize`, `start`), sem
+ *   depender de `expireOverdue()` ter rodado: o que venceu passa a `expired` e a operação é recusada.
+ * - Operações sobre o MESMO registro são serializadas (fila por id): expiração, autorização, início,
+ *   resultado e cancelamento nunca se intercalam durante as chamadas assíncronas ao provedor.
  */
 
 export class SandboxError extends Error {
@@ -60,7 +64,10 @@ export interface SandboxService {
   /** Resultado informado pelo provedor (na simulação, pelos testes). */
   report(ownerId: string, projectId: string, id: string, outcome: 'completed' | 'failed', reason?: string): Promise<SandboxRecord>;
   cancel(ownerId: string, projectId: string, id: string): Promise<SandboxRecord>;
-  /** Expira registros com prazo vencido (chamado periodicamente por quem hospeda o serviço). */
+  /**
+   * Expira registros com prazo vencido (chamado periodicamente por quem hospeda o serviço). É só a
+   * varredura: `authorize` e `start` já recusam e expiram o que venceu, mesmo sem esta chamada.
+   */
   expireOverdue(): Promise<SandboxRecord[]>;
   get(ownerId: string, projectId: string, id: string): SandboxRecord | null;
   list(ownerId: string, projectId: string): SandboxRecord[];
@@ -75,6 +82,8 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
   const catalog = options.catalog ?? POLICY_ACTIONS;
   const records = new Map<string, SandboxRecord>();
   const usedApprovals = new Set<string>();
+  /** Fila por registro: a próxima operação só começa quando a anterior termina (com sucesso ou erro). */
+  const queues = new Map<string, Promise<void>>();
   const iso = (ms = now()) => new Date(ms).toISOString();
   const log = (event: string, record: SandboxRecord) =>
     options.logger?.log('info', 'Sandbox', { event, requestId: record.id, projectId: record.projectId, state: record.state });
@@ -84,6 +93,22 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     if (!record || record.ownerId !== ownerId || record.projectId !== projectId) throw new SandboxError('not_found');
     return record;
   }
+
+  function serialized<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = queues.get(id) ?? Promise.resolve();
+    const result = previous.then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    queues.set(id, tail);
+    void tail.then(() => {
+      if (queues.get(id) === tail) queues.delete(id);
+    });
+    return result;
+  }
+
+  const isOverdue = (record: SandboxRecord) => Date.parse(record.deadline) <= now();
 
   function transition(record: SandboxRecord, to: SandboxState, reason: string | null, deadlineMs?: number) {
     if (!SANDBOX_TRANSITIONS[record.state].includes(to)) throw new SandboxError('invalid_transition');
@@ -109,6 +134,18 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     } catch {
       record.cleanup = 'pending';
     }
+  }
+
+  /**
+   * Se o prazo do estado atual venceu, leva o registro a `expired` (transição válida) com o descarte
+   * pertinente. Devolve `true` quando expirou. Deve ser chamada dentro de `serialized`.
+   */
+  async function expireIfOverdue(record: SandboxRecord): Promise<boolean> {
+    if (TERMINAL_STATES.includes(record.state) || !isOverdue(record)) return false;
+    const wasRunning = record.state === 'running';
+    transition(record, 'expired', wasRunning ? 'timeout' : 'not_started_in_time');
+    if (wasRunning || record.cleanup === 'pending') await teardown(record, wasRunning);
+    return true;
   }
 
   function evaluate(ownerId: string, spec: SandboxSpec, approval: ApprovalGrant | null) {
@@ -194,63 +231,79 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
       return structuredClone(record);
     },
 
-    async authorize(ownerId, projectId, id, approval) {
-      const record = find(ownerId, projectId, id);
-      if (record.state !== 'requested') throw new SandboxError('invalid_transition');
-      const evaluation = evaluate(ownerId, record.spec, approval);
-      if (evaluation.decision !== 'ALLOW' || evaluation.approvalId === null) {
-        throw new SandboxError(evaluation.decision === 'REQUIRE_APPROVAL' ? 'approval_invalid' : 'policy_denied', evaluation);
-      }
-      usedApprovals.add(evaluation.approvalId);
-      record.approvalId = evaluation.approvalId;
-      const deadline = Math.min(Date.parse(approval.expiresAt), now() + SANDBOX_LIMITS.approvalWindowSeconds * 1000);
-      transition(record, 'authorized', 'approved', deadline);
-      return structuredClone(record);
+    authorize(ownerId, projectId, id, approval) {
+      return serialized(id, async () => {
+        const record = find(ownerId, projectId, id);
+        if (record.state !== 'requested') throw new SandboxError('invalid_transition');
+        // Prazo da solicitação vencido: expira antes de avaliar, e a aprovação não é consumida.
+        if (await expireIfOverdue(record)) throw new SandboxError('expired');
+        const evaluation = evaluate(ownerId, record.spec, approval);
+        if (evaluation.decision !== 'ALLOW' || evaluation.approvalId === null) {
+          throw new SandboxError(evaluation.decision === 'REQUIRE_APPROVAL' ? 'approval_invalid' : 'policy_denied', evaluation);
+        }
+        usedApprovals.add(evaluation.approvalId);
+        record.approvalId = evaluation.approvalId;
+        const deadline = Math.min(Date.parse(approval.expiresAt), now() + SANDBOX_LIMITS.approvalWindowSeconds * 1000);
+        transition(record, 'authorized', 'approved', deadline);
+        return structuredClone(record);
+      });
     },
 
-    async start(ownerId, projectId, id) {
-      const record = find(ownerId, projectId, id);
-      if (record.state !== 'authorized') throw new SandboxError('invalid_transition');
-      // Execução real desligada: provedor que executa código é recusado sem mudar o estado.
-      if (options.provider.executesCode && !REAL_EXECUTION_ENABLED) throw new SandboxError('real_execution_disabled');
-      try {
-        await options.provider.prepare(record.spec);
-        record.cleanup = 'pending';
-        await options.provider.start(record.spec);
-      } catch (error) {
-        transition(record, 'failed', error instanceof SandboxProviderError ? error.code : 'provider_error');
+    start(ownerId, projectId, id) {
+      return serialized(id, async () => {
+        const record = find(ownerId, projectId, id);
+        if (record.state !== 'authorized') throw new SandboxError('invalid_transition');
+        // Autorização vencida: expira sem tocar no provedor.
+        if (await expireIfOverdue(record)) throw new SandboxError('expired');
+        // Execução real desligada: provedor que executa código é recusado sem mudar o estado.
+        if (options.provider.executesCode && !REAL_EXECUTION_ENABLED) throw new SandboxError('real_execution_disabled');
+        try {
+          await options.provider.prepare(record.spec);
+          record.cleanup = 'pending';
+          // O preparo leva tempo: se a autorização venceu nesse meio-tempo, não inicia; descarta o workspace.
+          if (await expireIfOverdue(record)) throw new SandboxError('expired');
+          await options.provider.start(record.spec);
+        } catch (error) {
+          if (error instanceof SandboxError) throw error;
+          transition(record, 'failed', error instanceof SandboxProviderError ? error.code : 'provider_error');
+          await teardown(record, false);
+          return structuredClone(record);
+        }
+        transition(record, 'running', null, now() + record.spec.limits.timeoutSeconds * 1000);
+        return structuredClone(record);
+      });
+    },
+
+    report(ownerId, projectId, id, outcome, reason) {
+      return serialized(id, async () => {
+        const record = find(ownerId, projectId, id);
+        if (record.state !== 'running') throw new SandboxError('invalid_transition');
+        transition(record, outcome, outcome === 'failed' ? (reason ?? 'provider_error') : null);
         await teardown(record, false);
         return structuredClone(record);
-      }
-      transition(record, 'running', null, now() + record.spec.limits.timeoutSeconds * 1000);
-      return structuredClone(record);
+      });
     },
 
-    async report(ownerId, projectId, id, outcome, reason) {
-      const record = find(ownerId, projectId, id);
-      if (record.state !== 'running') throw new SandboxError('invalid_transition');
-      transition(record, outcome, outcome === 'failed' ? (reason ?? 'provider_error') : null);
-      await teardown(record, false);
-      return structuredClone(record);
-    },
-
-    async cancel(ownerId, projectId, id) {
-      const record = find(ownerId, projectId, id);
-      if (TERMINAL_STATES.includes(record.state)) throw new SandboxError('invalid_transition');
-      const wasRunning = record.state === 'running';
-      transition(record, 'cancelled', 'cancelled_by_user');
-      if (wasRunning || record.cleanup === 'pending') await teardown(record, wasRunning);
-      return structuredClone(record);
+    cancel(ownerId, projectId, id) {
+      return serialized(id, async () => {
+        const record = find(ownerId, projectId, id);
+        if (TERMINAL_STATES.includes(record.state)) throw new SandboxError('invalid_transition');
+        const wasRunning = record.state === 'running';
+        transition(record, 'cancelled', 'cancelled_by_user');
+        if (wasRunning || record.cleanup === 'pending') await teardown(record, wasRunning);
+        return structuredClone(record);
+      });
     },
 
     async expireOverdue() {
       const expired: SandboxRecord[] = [];
-      for (const record of records.values()) {
-        if (TERMINAL_STATES.includes(record.state) || Date.parse(record.deadline) > now()) continue;
-        const wasRunning = record.state === 'running';
-        transition(record, 'expired', wasRunning ? 'timeout' : 'not_started_in_time');
-        if (wasRunning || record.cleanup === 'pending') await teardown(record, wasRunning);
-        expired.push(structuredClone(record));
+      for (const id of [...records.keys()]) {
+        // Reavaliado dentro da fila: uma operação em curso sobre o registro termina antes.
+        const result = await serialized(id, async () => {
+          const record = records.get(id);
+          return record && (await expireIfOverdue(record)) ? structuredClone(record) : null;
+        });
+        if (result) expired.push(result);
       }
       return expired;
     },

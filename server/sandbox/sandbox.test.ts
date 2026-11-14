@@ -336,3 +336,174 @@ describe('ausência de segredos', () => {
     expect(service.get('admin', P1, record.id)).toMatchObject({ state: 'requested', spec: { network: { allow: [] } } });
   });
 });
+
+describe('prazos vencidos sem depender de expireOverdue (R1)', () => {
+  const HOUR = 60 * 60 * 1000;
+
+  /** Provedor simulado cujo `prepare` fica pendente até `release()` — para intercalar chamadas. */
+  function gatedProvider() {
+    const sim = createSimulatedProvider();
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const preparing = new Promise<void>((resolve) => (entered = resolve));
+    const provider: SandboxProvider = {
+      ...sim,
+      async prepare(spec) {
+        entered();
+        await gate;
+        await sim.prepare(spec);
+      },
+    };
+    return { provider, sim, release, preparing };
+  }
+
+  async function authorized(ctx: ReturnType<typeof setup>) {
+    const record = await ctx.service.request('admin', body());
+    return ctx.service.authorize('admin', P1, record.id, approvalFor(record));
+  }
+
+  it('authorize com solicitação vencida: expira, recusa e não consome a aprovação', async () => {
+    const { service, provider, advance } = setup();
+    const record = await service.request('admin', body());
+    advance(HOUR);
+    const approval = approvalFor(record, { approvedAt: '2026-11-14T12:59:00Z', expiresAt: '2026-11-14T14:00:00Z' });
+    await expect(service.authorize('admin', P1, record.id, approval)).rejects.toMatchObject({ code: 'expired' });
+    expect(service.get('admin', P1, record.id)).toMatchObject({ state: 'expired', reason: 'not_started_in_time', approvalId: null, cleanup: 'not_needed' });
+    expect(service.get('admin', P1, record.id)!.history.map((h) => h.to)).toEqual(['requested', 'expired']);
+    // Estado terminal: nova tentativa é transição inválida; o provedor nunca foi chamado.
+    await expect(service.authorize('admin', P1, record.id, approval)).rejects.toMatchObject({ code: 'invalid_transition' });
+    expect((provider as ReturnType<typeof createSimulatedProvider>).calls).toEqual([]);
+    // A aprovação não foi consumida: ainda autoriza outra solicitação com o mesmo alvo.
+    const fresh = await service.request('admin', body());
+    const reuse = { ...approval, target: approvalFor(fresh).target };
+    await expect(service.authorize('admin', P1, fresh.id, reuse)).resolves.toMatchObject({ state: 'authorized', approvalId: approval.id });
+  });
+
+  it('authorize ainda dentro do prazo (1 ms antes) é aceito', async () => {
+    const { service, advance } = setup();
+    const record = await service.request('admin', body());
+    advance(HOUR - 1);
+    await expect(service.authorize('admin', P1, record.id, approvalFor(record))).resolves.toMatchObject({ state: 'authorized' });
+  });
+
+  it('start com autorização vencida: expira sem preparar nem iniciar o provedor', async () => {
+    const ctx = setup();
+    const record = await authorized(ctx);
+    ctx.advance(HOUR);
+    await expect(ctx.service.start('admin', P1, record.id)).rejects.toMatchObject({ code: 'expired' });
+    expect(ctx.service.get('admin', P1, record.id)).toMatchObject({ state: 'expired', reason: 'not_started_in_time', cleanup: 'not_needed' });
+    expect((ctx.provider as ReturnType<typeof createSimulatedProvider>).calls).toEqual([]);
+    await expect(ctx.service.start('admin', P1, record.id)).rejects.toMatchObject({ code: 'invalid_transition' });
+  });
+
+  it('start respeita o prazo da aprovação quando ele é menor que a janela padrão', async () => {
+    const ctx = setup();
+    const record = await ctx.service.request('admin', body());
+    await ctx.service.authorize('admin', P1, record.id, approvalFor(record, { expiresAt: '2026-11-14T12:10:00Z' }));
+    ctx.advance(10 * 60 * 1000);
+    await expect(ctx.service.start('admin', P1, record.id)).rejects.toMatchObject({ code: 'expired' });
+  });
+
+  it('start ainda dentro do prazo inicia normalmente', async () => {
+    const ctx = setup();
+    const record = await authorized(ctx);
+    ctx.advance(HOUR - 1);
+    await expect(ctx.service.start('admin', P1, record.id)).resolves.toMatchObject({ state: 'running' });
+  });
+
+  it('prazo que vence durante o preparo: não inicia e descarta o workspace', async () => {
+    const { provider, sim, release, preparing } = gatedProvider();
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    ctx.advance(HOUR);
+    release();
+    await expect(starting).rejects.toMatchObject({ code: 'expired' });
+    expect(ctx.service.get('admin', P1, record.id)).toMatchObject({ state: 'expired', cleanup: 'done' });
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('dois start concorrentes: só um prepara e inicia', async () => {
+    const { provider, sim, release, preparing } = gatedProvider();
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const first = ctx.service.start('admin', P1, record.id);
+    const second = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    release();
+    const results = await Promise.allSettled([first, second]);
+    expect(results[0]).toMatchObject({ status: 'fulfilled', value: { state: 'running' } });
+    expect(results[1]).toMatchObject({ status: 'rejected', reason: { code: 'invalid_transition' } });
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'start']);
+  });
+
+  it('cancelar durante o preparo: espera o start e então para e descarta (sem workspace órfão)', async () => {
+    const { provider, sim, release, preparing } = gatedProvider();
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    const cancelling = ctx.service.cancel('admin', P1, record.id);
+    release();
+    await expect(starting).resolves.toMatchObject({ state: 'running' });
+    await expect(cancelling).resolves.toMatchObject({ state: 'cancelled', cleanup: 'done' });
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+    expect(ctx.service.get('admin', P1, record.id)!.history.map((h) => h.to)).toEqual(['requested', 'authorized', 'running', 'cancelled']);
+  });
+
+  it('expireOverdue durante o preparo de um start vencido: expira uma única vez', async () => {
+    const { provider, sim, release, preparing } = gatedProvider();
+    const ctx = setup({ provider });
+    const record = await authorized(ctx);
+    const starting = ctx.service.start('admin', P1, record.id);
+    await preparing;
+    ctx.advance(HOUR);
+    const sweeping = ctx.service.expireOverdue();
+    release();
+    await expect(starting).rejects.toMatchObject({ code: 'expired' });
+    expect(await sweeping).toEqual([]);
+    const final = ctx.service.get('admin', P1, record.id)!;
+    expect(final).toMatchObject({ state: 'expired', cleanup: 'done' });
+    expect(final.history.filter((h) => h.to === 'expired')).toHaveLength(1);
+    expect(sim.calls.map((c) => c.op)).toEqual(['prepare', 'destroy']);
+  });
+
+  it('start e expireOverdue concorrentes com prazo já vencido: um só "expired", provedor intocado', async () => {
+    const ctx = setup();
+    const record = await authorized(ctx);
+    ctx.advance(HOUR);
+    const [started, swept] = await Promise.allSettled([ctx.service.start('admin', P1, record.id), ctx.service.expireOverdue()]);
+    expect(started).toMatchObject({ status: 'rejected', reason: { code: 'expired' } });
+    expect(swept).toMatchObject({ status: 'fulfilled', value: [] });
+    expect(ctx.service.get('admin', P1, record.id)!.history.filter((h) => h.to === 'expired')).toHaveLength(1);
+    expect((ctx.provider as ReturnType<typeof createSimulatedProvider>).calls).toEqual([]);
+  });
+
+  it('authorize e cancel concorrentes: aplicados em ordem, sem estado intermediário inválido', async () => {
+    const { service } = setup();
+    const record = await service.request('admin', body());
+    const [auth, cancel, auth2] = await Promise.allSettled([
+      service.authorize('admin', P1, record.id, approvalFor(record)),
+      service.cancel('admin', P1, record.id),
+      service.authorize('admin', P1, record.id, approvalFor(record)),
+    ]);
+    expect(auth).toMatchObject({ status: 'fulfilled', value: { state: 'authorized' } });
+    expect(cancel).toMatchObject({ status: 'fulfilled', value: { state: 'cancelled' } });
+    expect(auth2).toMatchObject({ status: 'rejected', reason: { code: 'invalid_transition' } });
+    expect(service.get('admin', P1, record.id)!.history.map((h) => h.to)).toEqual(['requested', 'authorized', 'cancelled']);
+  });
+
+  it('authorize vencido concorrente com expireOverdue: expira uma única vez', async () => {
+    const { service, advance } = setup();
+    const record = await service.request('admin', body());
+    advance(HOUR);
+    const [swept, auth] = await Promise.allSettled([service.expireOverdue(), service.authorize('admin', P1, record.id, approvalFor(record))]);
+    expect(swept).toMatchObject({ status: 'fulfilled', value: [expect.objectContaining({ id: record.id, state: 'expired' })] });
+    expect(auth).toMatchObject({ status: 'rejected', reason: { code: 'invalid_transition' } });
+    expect(service.get('admin', P1, record.id)!.history.filter((h) => h.to === 'expired')).toHaveLength(1);
+  });
+});

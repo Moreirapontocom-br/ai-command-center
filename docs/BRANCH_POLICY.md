@@ -10,21 +10,83 @@
 4. **Revisão independente pelo ChatGPT** (coordenador técnico e revisor) antes do merge. Quem implementa não revisa o próprio trabalho como aprovação final.
 5. **Checks obrigatórios verdes** (CI: testes, lint, build, verificação de segredos) e **aprovação humana do Product Owner** antes do merge. O PO é a autoridade final e o único que executa ou autoriza o merge.
 6. **Proibido:** `git push --force`/`--force-with-lease` em branches compartilhadas, exclusão da `main` ou de branches de outra issue, merge sem autorização explícita do PO, `--no-verify` para contornar hooks.
-7. **Sem custos:** o repositório permanece privado e no plano gratuito; nenhuma alteração paga sem aprovação.
+7. **Sem custos:** o repositório permanece no plano gratuito; nenhuma alteração paga sem aprovação. Mudanças de visibilidade e de configurações do GitHub (proteções, rulesets, segurança) são decisão do PO.
 8. Antes de publicar: `git fetch origin` e conferir se a `main` remota mudou; divergência relevante interrompe o trabalho para revisão.
 
-## 2. Limitações do GitHub Free em repositório privado pessoal
+## 2. Proteção da `main` no servidor do GitHub
 
-Verificado em 13/11/2026 (API do GitHub, evidência em `docs/evidence/issue003-pr1-governance.txt`):
+### 2.1 Situação atual — **pendente: nenhuma proteção ativa**
 
-| Recurso | Situação neste repositório |
+Histórico: em 13/11/2026 o repositório era **privado** e a API respondia HTTP 403 ("Upgrade to GitHub Pro or make this repository public") para branch protection e rulesets (`docs/evidence/issue003-pr1-governance.txt`). Depois disso o PO tornou o repositório **público**; no GitHub Free esses recursos passaram a estar disponíveis.
+
+Reverificado em 14/11/2026, somente leitura (`docs/evidence/issue003-pr1-main-protection.txt`):
+
+| Recurso | Situação |
 | --- | --- |
-| Branch protection rules (`/branches/main/protection`) | **Indisponível** — HTTP 403 "Upgrade to GitHub Pro or make this repository public" |
-| Rulesets (`/rulesets`) | **Indisponível** — mesmo HTTP 403 |
-| Required status checks / required reviews no servidor | **Indisponíveis** (dependem dos itens acima) |
-| GitHub Actions, Dependabot alerts | Disponíveis gratuitamente |
+| Visibilidade | **Pública** |
+| Branch protection clássica (`/branches/main/protection`) | **Não configurada** — HTTP 404 "Branch not protected"; `protected=false` |
+| Rulesets (`/rulesets`) e regras efetivas na `main` (`/rules/branches/main`) | **Nenhum** — `[]` |
+| Secret scanning e push protection | Disponíveis (gratuitos em repositório público), **desativados** |
+| Dependabot alerts | Ativados (Issue #003); security updates automáticas desativadas |
+| Permissão padrão do `GITHUB_TOKEN` nos workflows | `read`; workflows não podem aprovar PRs |
+| Workflows de PRs de forks | Exigem aprovação para contribuidores de primeira vez |
 
-Consequência: **o servidor do GitHub não impede** push direto, push forçado ou exclusão da `main` por quem tem permissão de escrita. As regras da seção 1 são cumpridas por processo, pelo hook local (preventivo, contra engano) e pela auditoria (detectiva). Tornar o repositório público ou contratar o GitHub Pro habilitaria a proteção no servidor — ambas as decisões são do PO e **não** foram tomadas.
+Consequência: **até o PO ativar a proposta da seção 2.2, o servidor do GitHub não impede** push direto, push forçado ou exclusão da `main` por quem tem permissão de escrita. Enquanto isso, as regras da seção 1 continuam cumpridas por processo, pelo hook local (preventivo, contra engano) e pela auditoria (detectiva). Nenhuma configuração foi criada ou alterada sem autorização do PO.
+
+### 2.2 Proposta de ruleset (aguarda autorização do PO)
+
+Objetivo: exigir PR e checks verdes, impedir push forçado e exclusão — **sem** exigir aprovação de revisor no GitHub. O repositório tem um único mantenedor e o GitHub não permite que o autor aprove o próprio PR; exigir 1 aprovação travaria todo merge. A revisão independente (ChatGPT) e a aprovação do PO continuam obrigatórias **por processo** (seção 1, regras 4 e 5), e o merge pelo PO registra essa aprovação.
+
+| Regra | Valor proposto | Efeito |
+| --- | --- | --- |
+| Alvo | Branch padrão (`~DEFAULT_BRANCH`, hoje `main`) | — |
+| `pull_request` | Aprovações exigidas: **0**; descartar aprovações antigas em novo push; exigir resolução das conversas | Nenhum commit chega à `main` sem PR, nem do administrador |
+| `required_status_checks` | `Test, lint & build (Node 22.x)`, `Test, lint & build (Node 24.x)`, `Secret scan (tracked files & commits)` (GitHub Actions); exigir branch atualizada com a `main` | Merge só com a CI verde sobre a `main` atual |
+| `non_fast_forward` | Ativa | Bloqueia push forçado |
+| `deletion` | Ativa | Bloqueia exclusão da `main` |
+| Lista de bypass | **Vazia** | A regra vale também para o dono do repositório |
+| Métodos de merge | Todos permitidos (merge, squash, rebase) | A auditoria (seção 5) reconhece os três |
+
+O job `Main integrity audit (informative)` **não** entra nos checks exigidos: só roda depois do push na `main` e nunca apareceria num PR.
+
+Ativação proposta (executar **somente** após autorização do PO; equivalente pela web: *Settings → Rules → Rulesets → New branch ruleset*):
+
+```bash
+gh api -X POST repos/Moreirapontocom-br/ai-command-center/rulesets --input - <<'JSON'
+{
+  "name": "main-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "pull_request", "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true
+    } },
+    { "type": "required_status_checks", "parameters": {
+        "strict_required_status_checks_policy": true,
+        "required_status_checks": [
+          { "context": "Test, lint & build (Node 22.x)", "integration_id": 15368 },
+          { "context": "Test, lint & build (Node 24.x)", "integration_id": 15368 },
+          { "context": "Secret scan (tracked files & commits)", "integration_id": 15368 }
+        ]
+    } }
+  ]
+}
+JSON
+```
+
+`15368` é o identificador do app GitHub Actions, conferido nos check runs do PR #33. Fixá-lo impede que outro app satisfaça o check com o mesmo nome. Se um job da CI for renomeado, o ruleset precisa ser atualizado no mesmo PR, ou nenhum merge passará.
+
+Verificação após a ativação (somente leitura): `gh api repos/Moreirapontocom-br/ai-command-center/rules/branches/main` deve listar as 4 regras, e o PR aberto deve exibir os 3 checks como *Required*. Não se testa a proteção com push real na `main`.
+
+Recomendações complementares, também decisão do PO: ativar **secret scanning** e **push protection** (gratuitos em repositório público).
 
 ## 3. Controles preventivos x detectivos
 
@@ -32,9 +94,10 @@ Consequência: **o servidor do GitHub não impede** push direto, push forçado o
 | --- | --- | --- | --- |
 | Hook `.githooks/pre-push` | **Preventivo local** | Recusa, neste clone, qualquer push cujo destino seja `refs/heads/main` (qualquer remoto ou URL, inclusive forçado e exclusão; `Main`/`MAIN` também). Com vários refspecs, nada é enviado | Não impede `git push --no-verify`, outro clone sem o hook, a interface web nem a API do GitHub. **Não é controle de segurança contra usuário malicioso**: evita engano |
 | Hook `.githooks/pre-commit` | Preventivo local | Bloqueia commit com possível credencial (`scripts/check-secrets.mjs staged`) | Também é contornável com `--no-verify` |
-| CI (`.github/workflows/ci.yml`) | Preventivo **por processo** + detectivo | Em PR: testes, lint, build, segredos — o PO só faz merge com checks verdes. Em push na `main`: revalida o estado da `main` | Não bloqueia merge no servidor (não há required checks no plano Free) |
+| CI (`.github/workflows/ci.yml`) | Preventivo **por processo** + detectivo | Em PR: testes, lint, build, segredos — o PO só faz merge com checks verdes. Em push na `main`: revalida o estado da `main` | Não bloqueia merge no servidor enquanto o ruleset da seção 2.2 não for ativado |
 | Auditoria (`.github/workflows/main-audit.yml`) | **Detectivo** | Após cada push na `main`, informa se cada commit chegou por PR mesclado e se o GitHub reportou push forçado/exclusão | Não impede nada; roda depois do fato. Quem tem acesso de administrador pode desativar workflows ou apagar execuções |
 | Revisão independente + aprovação do PO | Preventivo por processo | Ninguém faz merge sozinho | Depende de disciplina |
+| Ruleset da `main` (seção 2.2) | **Preventivo no servidor** — **pendente** | Exigirá PR e checks verdes; bloqueará push forçado e exclusão, inclusive para o dono | Não exige aprovação de revisor (único mantenedor); um administrador pode desativar o ruleset |
 
 ## 4. Ativando os hooks (`core.hooksPath`)
 

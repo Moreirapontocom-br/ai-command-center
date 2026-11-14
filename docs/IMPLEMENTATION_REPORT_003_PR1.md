@@ -6,7 +6,7 @@
 | --- | --- |
 | Branch | `feature/003-security-foundation` (criada a partir de `origin/main`) |
 | SHA inicial (base) | `0de3903d9530feb45cc8d25a91fe7f0fbd580ec1` (merge do PR #32), igual à base esperada |
-| Commits | `c65fa35` S1 (governança) · `c360d05` S2 (segurança) · `13d2c86` relatório (SHA revisado) · correção **R1** (head da branch; ver seção 10) |
+| Commits | `c65fa35` S1 (governança) · `c360d05` S2 (segurança) · `13d2c86` relatório (SHA revisado) · `f31dffe` correção **R1** (seção 10) · rodada final de governança, só documentação (head da branch; seção 11) |
 | Escopo | Somente o PR 1. **Nenhuma** autenticação, login, senha ou sessão (PR 2) |
 | Data | 13/11/2026 |
 
@@ -95,13 +95,14 @@ Ativado em 13/11/2026 por `PUT /repos/…/vulnerability-alerts` (HTTP 204), conf
 | Neste PR | Hook pre-push (local, contra engano), pre-commit de segredos, processo de PR + revisão + aprovação do PO | Workflow `Main audit`, CI em push na `main` |
 | Limite | Contornável (`--no-verify`, outro clone, interface web); sem proteção no servidor no plano Free | Não desfaz nada; um administrador pode desativar workflows |
 
-A proteção **no servidor** (branch protection/rulesets) é indisponível: HTTP 403 em repositório privado no plano Free. Nenhuma regra foi criada ou alterada.
+A proteção **no servidor** (branch protection/rulesets) era indisponível durante a implementação: HTTP 403 em repositório privado no plano Free. O repositório foi tornado público depois; os recursos ficaram disponíveis, mas **nenhuma proteção está ativa** (seção 11). Nenhuma regra foi criada ou alterada.
 
 ## 7. Evidências
 
 | Arquivo | Conteúdo |
 | --- | --- |
-| `docs/evidence/issue003-pr1-governance.txt` | Fase 0, 403 de proteção/rulesets, Dependabot antes/depois, `core.hooksPath`, auditoria real e simulada |
+| `docs/evidence/issue003-pr1-governance.txt` | Fase 0, 403 de proteção/rulesets (repositório ainda privado), Dependabot antes/depois, `core.hooksPath`, auditoria real e simulada |
+| `docs/evidence/issue003-pr1-main-protection.txt` | Rodada final: repositório público, ausência de branch protection e rulesets, configurações de segurança e Actions, refs públicas |
 | `docs/evidence/issue003-pr1-checks.txt` | Testes, lint, build, verificações de segredos (dist, versionados, commits, histórico) e CSP, hook no clone real |
 | `docs/evidence/issue003-pr1-csp-browser.txt` | CSP efetiva e comportamento no Chrome (preview, preview com labels, dev) |
 | `docs/evidence/issue003-pr1-csp-preview-tarefas-1440.png` | Captura do preview sob a CSP de produção |
@@ -112,7 +113,7 @@ A proteção **no servidor** (branch protection/rulesets) é indisponível: HTTP
 
 ## 8. Pendências, riscos e limitações
 
-1. **Proteção no servidor indisponível** (Free + privado). Opções, que são decisão do PO: tornar o repositório público ou contratar o GitHub Pro. Até lá, valem processo, hook e auditoria.
+1. **Proteção no servidor não ativada.** O repositório agora é público e o Free permite rulesets, mas a `main` não tem nenhuma regra. A proposta está em `docs/BRANCH_POLICY.md` §2.2 e aguarda o PO. Até lá, valem processo, hook e auditoria. Ver seção 11.
 2. **Hooks são locais e opcionais**: cada clone precisa de `npm run hooks:install`; `--no-verify` contorna.
 3. **Primeira execução real** da auditoria e da CI em push na `main` só ocorrerá no merge deste PR. Recomenda-se conferir o run após o merge. O commit de merge deve aparecer como `ok` (PR #N).
 4. **Auditoria limitada** a 2048 commits por evento (limite do payload, sinalizado no relatório), à consistência eventual da API e ao orçamento de 3 min (seção 10). Commits não examinados a tempo aparecem como inconclusivos.
@@ -162,3 +163,25 @@ A proteção **no servidor** (branch protection/rulesets) é indisponível: HTTP
 - evento simulado do merge do PR #32 na API real: OK; o mesmo evento com `forced=true`: alerta, saída 1.
 
 Evidência: `docs/evidence/issue003-pr1-r1-audit-budget.txt`.
+
+## 11. Rodada final de governança — proteção da `main` (14/11/2026)
+
+Somente leitura no GitHub; nenhuma configuração foi alterada. Evidência: `docs/evidence/issue003-pr1-main-protection.txt`.
+
+| Verificação | Resultado |
+| --- | --- |
+| Branch / SHA revisado | `feature/003-security-foundation` @ `f31dffee901644aee0105601640a09b4c42f5a79` (local = remoto); PR #33 OPEN, MERGEABLE/CLEAN, 3 checks verdes |
+| Visibilidade | **Pública** (antes: privada, com 403 nas APIs de proteção) |
+| Branch protection clássica | Não configurada (HTTP 404 "Branch not protected", `protected=false`) |
+| Rulesets / regras efetivas na `main` | Nenhum (`[]`) |
+| Secret scanning / push protection | Disponíveis em repositório público, **desativados** |
+
+**Alterações (só documentação):** `docs/BRANCH_POLICY.md` §2 reescrita com a situação real e a proposta de ruleset (§2.2); regra 7 da §1 deixou de afirmar que o repositório é privado; tabela da §3 com a linha do ruleset pendente. Nenhum controle existente (hooks, CI, auditoria, varredura de segredos, cabeçalhos) foi alterado.
+
+**Proposta (aguarda o PO):** ruleset `main-protection` na branch padrão, sem bypass, com: PR obrigatório com **0** aprovações (o autor não pode aprovar o próprio PR; a revisão do ChatGPT e a aprovação do PO seguem por processo); os 3 checks da CI exigidos (app GitHub Actions, `15368`) com branch atualizada; bloqueio de push forçado e de exclusão. Comando pronto em `docs/BRANCH_POLICY.md` §2.2.
+
+**Pendências para decisão do PO:**
+
+1. Ativar o ruleset da §2.2.
+2. Ativar secret scanning e push protection (gratuitos em repositório público).
+3. **Exposição do commit `c368bbf`** (token da Issue #002, já revogado em 11/11/2026): com o repositório público, ele é acessível por `refs/heads/feature/002-github-integration` e `refs/pull/25/head`. O token revogado não dá acesso, mas o valor está público. Remediação possível: excluir a branch remota antiga (decisão do PO) e pedir ao GitHub Support a remoção de `refs/pull/25/head` e dos objetos em cache.

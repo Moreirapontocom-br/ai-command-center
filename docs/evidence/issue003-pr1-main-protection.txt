@@ -1,0 +1,56 @@
+# Issue #003 PR 1 — verificação da proteção da main no servidor (rodada final de governança)
+# Gerado em 2026-11-14T00:37:07Z. Somente leitura; nenhuma configuração do GitHub foi alterada. Nenhum token é registrado.
+
+## Repositório
+Moreirapontocom-br/ai-command-center visibility=PUBLIC isPrivate=false default=main
+HEAD da branch do PR #33: f31dffee901644aee0105601640a09b4c42f5a79
+origin/main: 0de3903d9530feb45cc8d25a91fe7f0fbd580ec1
+
+## Branch protection clássica
+GET branches/main/protection: {"message":"Branch not protected","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"404"}gh: Branch not protected (HTTP 404)
+
+GET branches/main (protected): false
+
+## Rulesets
+GET rulesets: []
+GET rules/branches/main (regras efetivas na main): []
+
+## Configurações relacionadas
+security_and_analysis: dependabot_security_updates=disabled secret_scanning=disabled secret_scanning_non_provider_patterns=disabled secret_scanning_push_protection=disabled secret_scanning_validity_checks=disabled
+Actions workflow permissions: {"default_workflow_permissions":"read","can_approve_pull_request_reviews":false}
+Aprovação de workflows de forks: {"approval_policy":"first_time_contributors"}
+
+## Refs remotas públicas (excluídas refs/pull/*/merge)
+0de3903d9530feb45cc8d25a91fe7f0fbd580ec1	HEAD
+0e17cc2cadbb45ef9b4e51897e9b41f44f794d55	refs/heads/feature/001-project-setup
+bcc3c1e13af2b6d47ccfff075a4f2fe9f58e620c	refs/heads/feature/002-github-integration
+ab6b26fb862ca48f2864d01954600861fec3e665	refs/heads/feature/002-github-integration-v2
+f31dffee901644aee0105601640a09b4c42f5a79	refs/heads/feature/003-security-foundation
+0de3903d9530feb45cc8d25a91fe7f0fbd580ec1	refs/heads/main
+0e17cc2cadbb45ef9b4e51897e9b41f44f794d55	refs/pull/1/head
+bcc3c1e13af2b6d47ccfff075a4f2fe9f58e620c	refs/pull/25/head
+ab6b26fb862ca48f2864d01954600861fec3e665	refs/pull/32/head
+f31dffee901644aee0105601640a09b4c42f5a79	refs/pull/33/head
+Commit c368bbf (token vazado e já revogado, Issue #002) acessível pela API pública: c368bbf5c39cc6b7267d5804a5fb3c59d005a9dd
+
+Conclusão: a main NÃO tem proteção no servidor (nem branch protection, nem ruleset).
+
+## Checks locais após as alterações de documentação
+ Test Files  17 passed (17)
+      Tests  274 passed (274)
+TEST_EXIT=0
+> ai-command-center@0.1.0 lint
+> eslint .
+LINT_EXIT=0
+dist/assets/index-BHBrrxtK.css   18.15 kB │ gzip:  4.45 kB
+dist/assets/index-UVm7LvyH.js   248.46 kB │ gzip: 76.69 kB
+✓ built in 212ms
+BUILD_EXIT=0
+> node scripts/check-dist-secrets.mjs
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+SECRETS_EXIT=0
+> node scripts/check-dist-csp.mjs
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+CSP_EXIT=0
+Nenhuma credencial encontrada (112 arquivo(s) versionado(s)).
+TRACKED_EXIT=0

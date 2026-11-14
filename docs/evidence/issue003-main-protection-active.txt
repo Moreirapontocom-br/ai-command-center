@@ -1,0 +1,46 @@
+# Issue #003 — proteção da main ativa (execução autorizada pelo PO)
+# Gerado em 2026-11-14T01:07:40Z. Somente leitura. Nenhum valor de credencial é registrado.
+
+## Ruleset 27242416
+{"bypass_actors":[],"conditions":{"ref_name":{"exclude":[],"include":["~DEFAULT_BRANCH"]}},"current_user_can_bypass":"never","enforcement":"active","id":27242416,"name":"main-protection","rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"parameters":{"allowed_merge_methods":["merge","squash","rebase"],"dismiss_stale_reviews_on_push":true,"require_code_owner_review":false,"require_extra_approval_for_unattributed_changes":true,"require_last_push_approval":false,"required_approving_review_count":0,"required_review_thread_resolution":true,"required_reviewers":[]},"type":"pull_request"},{"parameters":{"do_not_enforce_on_create":false,"required_status_checks":[{"context":"Test, lint \u0026 build (Node 22.x)","integration_id":15368},{"context":"Test, lint \u0026 build (Node 24.x)","integration_id":15368},{"context":"Secret scan (tracked files \u0026 commits)","integration_id":15368}],"strict_required_status_checks_policy":true},"type":"required_status_checks"}],"target":"branch"}
+
+## Regras efetivas na main (GET rules/branches/main)
+deletion ruleset_id=27242416
+non_fast_forward ruleset_id=27242416
+pull_request ruleset_id=27242416
+required_status_checks ruleset_id=27242416
+
+## Segurança
+dependabot_security_updates=disabled
+secret_scanning=enabled
+secret_scanning_non_provider_patterns=disabled
+secret_scanning_push_protection=enabled
+secret_scanning_validity_checks=disabled
+
+## Alertas de secret scanning (somente metadados)
+#1 state=open type=github_personal_access_token validity=unknown
+  local: .env.example:8 commit=c368bbf5c39cc6b7267d5804a5fb3c59d005a9dd
+
+## PR #33
+state=MERGED mergedAt=2026-11-14T00:47:27Z head=7ae3923e572eb046660a5f28ac90e62b6b449e82 mergeCommit=e3d44326bd14c391059a8ebcb095d4fecbfcda4b
+origin/main=e3d44326bd14c391059a8ebcb095d4fecbfcda4b
+
+## Workflows no merge commit e3d4432
+Main audit event=push conclusion=success
+CI event=push conclusion=success
+
+## Credencial revogada da Issue #002
+PR #25 state=CLOSED mergedAt=null
+branch feature/002-github-integration: "message":"Branch not found"
+refs remanescentes:
+  e3d44326bd14c391059a8ebcb095d4fecbfcda4b	HEAD
+  0e17cc2cadbb45ef9b4e51897e9b41f44f794d55	refs/heads/feature/001-project-setup
+  ab6b26fb862ca48f2864d01954600861fec3e665	refs/heads/feature/002-github-integration-v2
+  7ae3923e572eb046660a5f28ac90e62b6b449e82	refs/heads/feature/003-security-foundation
+  e3d44326bd14c391059a8ebcb095d4fecbfcda4b	refs/heads/main
+  0e17cc2cadbb45ef9b4e51897e9b41f44f794d55	refs/pull/1/head
+  bcc3c1e13af2b6d47ccfff075a4f2fe9f58e620c	refs/pull/25/head
+  ab6b26fb862ca48f2864d01954600861fec3e665	refs/pull/32/head
+  7ae3923e572eb046660a5f28ac90e62b6b449e82	refs/pull/33/head
+c368bbf alcançável por alguma branch remota: não
+refs/pull/25/head: pendente de remoção pelo GitHub Support (chamado preparado para o PO).

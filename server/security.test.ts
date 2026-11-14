@@ -109,6 +109,24 @@ describe('superfície de escrita do servidor', () => {
     expect(POST_ROUTES.some((route) => /sandbox|exec|run/.test(route))).toBe(false);
   });
 
+  it('limites (Issue #022): sem I/O, sem rede, sem execução, sem conectores de IA e sem rota HTTP', () => {
+    const files = server.filter((f) => f.path.startsWith('server/limits/'));
+    expect(files.map((f) => f.path).sort()).toEqual([
+      'server/limits/contracts.ts',
+      'server/limits/controller.ts',
+      'server/limits/providers.ts',
+      'server/limits/validation.ts',
+    ]);
+    for (const file of files) {
+      expect(file.code).not.toMatch(/node:child_process|node:fs|node:net|node:http|node:https|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
+      // Não usa o sandbox (execução) nem credenciais/sessões de contas de IA.
+      expect(file.code).not.toMatch(/sandbox\/(service|simulatedProvider|provider)|cookie|process\.env/i);
+    }
+    // Nenhum código fora de server/limits usa o controlador (não há API nem integração real ainda).
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/limits/')), /limits\/(controller|providers)/)).toEqual([]);
+    expect(POST_ROUTES.some((route) => /limit|budget|quota|kill|spend|admission/.test(route))).toBe(false);
+  });
+
   it('auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006)', () => {
     expect(POST_ROUTES.some((route) => route.startsWith('/api/audit'))).toBe(false);
     for (const path of ['/api/audit', '/api/audit/x']) expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);

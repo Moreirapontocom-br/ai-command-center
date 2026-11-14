@@ -61,6 +61,9 @@ export const ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   invalid_status_transition: 'Mudança de status não permitida a partir do status atual.',
   dependencies_unresolved: 'A tarefa depende de tarefas que ainda não foram concluídas ou canceladas.',
   dependency_cycle: 'As dependências formariam um ciclo.',
+  policy_denied: 'Ação negada pela política de autonomia.',
+  approval_required: 'Ação exige aprovação específica do Product Owner.',
+  capability_unavailable: 'Operação indisponível nesta versão do ACC.',
   audit_unavailable: 'Não foi possível registrar a auditoria; a operação não foi concluída.',
   evidence_required: 'Tarefa atribuída a agente só pode ser concluída com evidência (referência a PR ou branch).',
   internal: 'Erro interno do servidor.',
@@ -93,5 +96,8 @@ export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
   dependency_cycle: 422,
   evidence_required: 422,
   audit_unavailable: 503,
+  policy_denied: 403,
+  approval_required: 403,
+  capability_unavailable: 503,
   internal: 500,
 };

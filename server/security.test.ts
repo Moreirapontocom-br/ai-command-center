@@ -81,6 +81,16 @@ describe('superfície de escrita do servidor', () => {
     expect(app.match(/['"]POST['"]/g)).toHaveLength(1);
   });
 
+  it('políticas: sem rota de escrita, e o motor não grava nada nem usa I/O (Issue #020)', () => {
+    const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
+    expect([...allowedMethods(`/api/projects/${id}/policy`)]).toEqual(['GET', 'HEAD']);
+    expect(POST_ROUTES.some((route) => route.includes('policy'))).toBe(false);
+    for (const path of ['server/policy/engine.ts', 'server/policy/defaultPolicy.ts']) {
+      const code = server.find((f) => f.path === path)!.code;
+      expect(code).not.toMatch(/node:fs|node:http|node:child_process|\bfetch\(|writeFile/);
+    }
+  });
+
   it('auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006)', () => {
     expect(POST_ROUTES.some((route) => route.startsWith('/api/audit'))).toBe(false);
     for (const path of ['/api/audit', '/api/audit/x']) expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);
@@ -90,10 +100,12 @@ describe('superfície de escrita do servidor', () => {
   });
 
   it('projetos e tarefas gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issues #004/#005)', () => {
-    const projectFiles = server.filter((f) => /^server\/(?:projects|tasks|storage|audit)\//.test(f.path));
+    const projectFiles = server.filter((f) => /^server\/(?:projects|tasks|storage|audit|policy)\//.test(f.path));
     expect(projectFiles.map((f) => f.path).sort()).toEqual([
       'server/audit/auditLog.ts',
       'server/audit/events.ts',
+      'server/policy/defaultPolicy.ts',
+      'server/policy/engine.ts',
       'server/projects/projectStore.ts',
       'server/projects/validation.ts',
       'server/storage/jsonFile.ts',

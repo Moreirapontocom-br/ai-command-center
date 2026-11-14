@@ -96,6 +96,9 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
     title: 'Dependências pendentes',
     description: 'Conclua ou cancele as tarefas das quais esta depende antes de iniciar, revisar ou concluir.',
   },
+  policy_denied: { title: 'Negado pela política', description: 'A política de autonomia não permite esta ação.' },
+  approval_required: { title: 'Aprovação necessária', description: 'Esta ação exige aprovação específica do Product Owner.' },
+  capability_unavailable: { title: 'Indisponível', description: 'Esta operação ainda não existe nesta versão do ACC.' },
   audit_unavailable: {
     title: 'Auditoria indisponível',
     description: 'Não foi possível registrar a auditoria no servidor; a operação não foi concluída.',

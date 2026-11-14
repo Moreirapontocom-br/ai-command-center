@@ -143,6 +143,9 @@ export type ApiErrorCode =
   | 'dependency_cycle'
   | 'evidence_required'
   | 'audit_unavailable'
+  | 'policy_denied'
+  | 'approval_required'
+  | 'capability_unavailable'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -375,6 +378,7 @@ export const AUDIT_ACTIONS = [
   'auth.logout',
   'auth.login_rejected',
   'access.denied',
+  'policy.decision',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -412,4 +416,111 @@ export interface AuditListResponse {
   nextBefore: number | null;
   /** Eventos antigos já descartados pela política de retenção (por arquivo de origem). */
   retention: { droppedEvents: number };
+}
+
+/**
+ * Políticas de autonomia (Issue #020). Avaliação determinística, NEGADA POR PADRÃO: nenhuma ação é
+ * permitida só por falta de regra. Autonomia oficial: semiautomática (B). O Product Owner é a
+ * autoridade final; a política é código revisado (alterá-la exige PR aprovado).
+ */
+export const POLICY_DECISIONS = ['ALLOW', 'DENY', 'REQUIRE_APPROVAL', 'UNAVAILABLE'] as const;
+export type PolicyDecision = (typeof POLICY_DECISIONS)[number];
+
+export const RISK_LEVELS = ['low', 'medium', 'high'] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+
+export const POLICY_CATEGORIES = ['observe', 'plan', 'project', 'task', 'tool', 'change', 'sandbox', 'approval', 'critical'] as const;
+export type PolicyCategory = (typeof POLICY_CATEGORIES)[number];
+
+export interface PolicyActionInfo {
+  category: PolicyCategory;
+  risk: RiskLevel;
+  /** Ação crítica: nunca liberada de forma autônoma; exige aprovação específica do PO. */
+  critical: boolean;
+  /** `false` quando o ACC ainda não tem a capacidade/infraestrutura (resulta em UNAVAILABLE). */
+  available: boolean;
+}
+
+/** Catálogo fechado de ações avaliáveis. Ação fora do catálogo é negada. */
+export const POLICY_ACTIONS = {
+  'project.read': { category: 'observe', risk: 'low', critical: false, available: true },
+  'task.read': { category: 'observe', risk: 'low', critical: false, available: true },
+  'github.read': { category: 'observe', risk: 'low', critical: false, available: true },
+  'audit.read': { category: 'observe', risk: 'low', critical: false, available: true },
+  'policy.read': { category: 'observe', risk: 'low', critical: false, available: true },
+  'task.propose': { category: 'plan', risk: 'low', critical: false, available: false },
+  'project.create': { category: 'project', risk: 'medium', critical: false, available: true },
+  'project.update': { category: 'project', risk: 'medium', critical: false, available: true },
+  'project.select': { category: 'project', risk: 'low', critical: false, available: true },
+  'task.create': { category: 'task', risk: 'medium', critical: false, available: true },
+  'task.update': { category: 'task', risk: 'medium', critical: false, available: true },
+  'task.assign': { category: 'task', risk: 'medium', critical: false, available: true },
+  'task.status_change': { category: 'task', risk: 'medium', critical: false, available: true },
+  'task.complete': { category: 'task', risk: 'medium', critical: false, available: true },
+  'tool.use': { category: 'tool', risk: 'medium', critical: false, available: false },
+  'change.prepare': { category: 'change', risk: 'medium', critical: false, available: false },
+  'sandbox.execute': { category: 'sandbox', risk: 'high', critical: false, available: false },
+  'approval.request': { category: 'approval', risk: 'low', critical: false, available: false },
+  'repo.merge': { category: 'critical', risk: 'high', critical: true, available: false },
+  'repo.push_main': { category: 'critical', risk: 'high', critical: true, available: false },
+  'deploy.publish': { category: 'critical', risk: 'high', critical: true, available: false },
+  'permissions.change': { category: 'critical', risk: 'high', critical: true, available: false },
+  'secrets.access': { category: 'critical', risk: 'high', critical: true, available: false },
+  'data.send_external': { category: 'critical', risk: 'high', critical: true, available: false },
+  'spend.create': { category: 'critical', risk: 'high', critical: true, available: false },
+} as const satisfies Record<string, PolicyActionInfo>;
+export type PolicyAction = keyof typeof POLICY_ACTIONS;
+
+export type PolicySubject = { kind: 'human'; id: string } | { kind: 'agent'; id: AgentRef };
+
+export const POLICY_REASONS = [
+  'allowed_by_rule',
+  'no_matching_rule',
+  'unknown_action',
+  'malformed_request',
+  'project_out_of_scope',
+  'agent_not_assigned',
+  'agent_cannot_change_permissions',
+  'main_is_protected',
+  'restricted_by_rule',
+  'approval_required',
+  'approval_invalid',
+  'approved',
+  'capability_unavailable',
+] as const;
+export type PolicyReason = (typeof POLICY_REASONS)[number];
+
+export interface PolicyEvaluation {
+  decision: PolicyDecision;
+  action: string;
+  risk: RiskLevel | null;
+  reason: PolicyReason;
+  /** Regra que decidiu (`null` em negação por padrão e nas regras fixas). */
+  ruleId: string | null;
+  /** A ação exigiria aprovação específica do PO, mesmo que hoje esteja indisponível. */
+  requiresApproval: boolean;
+  /** Aprovação aceita (quem chama deve consumi-la: uso único). */
+  approvalId: string | null;
+}
+
+/**
+ * Contrato de aprovação (o fluxo completo é da Issue #011). Vale para UMA operação exata:
+ * ação, projeto, recurso, alvo (SHA/ref), sujeito, validade e uso único.
+ */
+export interface ApprovalGrant {
+  id: string;
+  action: PolicyAction;
+  projectId: string | null;
+  resource: { type: string; id: string };
+  target: { sha: string | null; ref: string | null };
+  subject: PolicySubject;
+  approvedBy: { kind: 'human'; id: string };
+  approvedAt: string;
+  expiresAt: string;
+}
+
+export interface PolicyMatrixResponse {
+  policyVersion: string;
+  projectId: string;
+  subjects: Array<{ subject: PolicySubject; assigned: boolean; evaluations: PolicyEvaluation[] }>;
 }

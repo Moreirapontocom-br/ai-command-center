@@ -70,6 +70,10 @@ export const CONTEXT_KEYS = [
   'evidence',
   'cleared',
   'hadSession',
+  'policyAction',
+  'decision',
+  'risk',
+  'rule',
 ] as const;
 
 function isContextValue(value: unknown): value is AuditContextValue {

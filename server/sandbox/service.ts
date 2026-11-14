@@ -69,6 +69,13 @@ export interface SandboxService {
    * varredura: `authorize` e `start` já recusam e expiram o que venceu, mesmo sem esta chamada.
    */
   expireOverdue(): Promise<SandboxRecord[]>;
+  /**
+   * Recuperação de descarte: repete a limpeza de um registro TERMINAL com `cleanup: 'pending'`.
+   * Não reabre o estado nem altera estado, motivo ou histórico; só muda `cleanup` para `done` quando
+   * `destroy()` confirmar. Sem pendência, não chama o provedor (idempotente). Serializada por registro.
+   * Não resolve chamadas ao provedor que nunca retornam (ver limitações no relatório da #021).
+   */
+  retryCleanup(ownerId: string, projectId: string, id: string): Promise<SandboxRecord>;
   get(ownerId: string, projectId: string, id: string): SandboxRecord | null;
   list(ownerId: string, projectId: string): SandboxRecord[];
 }
@@ -84,6 +91,8 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
   const usedApprovals = new Set<string>();
   /** Fila por registro: a próxima operação só começa quando a anterior termina (com sucesso ou erro). */
   const queues = new Map<string, Promise<void>>();
+  /** Registros cujo último `stop()` falhou: a recuperação de descarte tenta parar de novo. */
+  const stopPending = new Set<string>();
   const iso = (ms = now()) => new Date(ms).toISOString();
   const log = (event: string, record: SandboxRecord) =>
     options.logger?.log('info', 'Sandbox', { event, requestId: record.id, projectId: record.projectId, state: record.state });
@@ -121,16 +130,26 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     log(`sandbox_${to}`, record);
   }
 
-  /** Descarte: para a execução (se houver) e destrói o workspace; falha vira `cleanup: pending`. */
-  async function teardown(record: SandboxRecord, wasRunning: boolean) {
-    try {
-      if (wasRunning) await options.provider.stop(record.id);
-    } catch {
-      // segue para o descarte mesmo assim
+  /**
+   * Descarte: para a execução (se ela pode ter começado) e destrói o workspace. Falha de `stop()`
+   * não impede `destroy()`; só `destroy()` confirmado marca `cleanup: 'done'`, senão fica `pending`.
+   * Erros do provedor nunca são registrados (só o estado de `cleanup`).
+   */
+  async function teardown(record: SandboxRecord, mayBeRunning: boolean) {
+    if (mayBeRunning) {
+      try {
+        await options.provider.stop(record.id);
+        stopPending.delete(record.id);
+      } catch {
+        // segue para o descarte mesmo assim
+        stopPending.add(record.id);
+      }
     }
     try {
       await options.provider.destroy(record.id);
+      // `destroy()` confirmado descarta workspace, credenciais e rede (contrato do provedor).
       record.cleanup = 'done';
+      stopPending.delete(record.id);
     } catch {
       record.cleanup = 'pending';
     }
@@ -257,16 +276,22 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
         if (await expireIfOverdue(record)) throw new SandboxError('expired');
         // Execução real desligada: provedor que executa código é recusado sem mudar o estado.
         if (options.provider.executesCode && !REAL_EXECUTION_ENABLED) throw new SandboxError('real_execution_disabled');
+        // Recursos podem existir assim que `prepare()` é chamado (inclusive se ele falhar no meio):
+        // a partir daqui o descarte é obrigatório até `destroy()` confirmar.
+        record.cleanup = 'pending';
+        let startCalled = false;
         try {
           await options.provider.prepare(record.spec);
-          record.cleanup = 'pending';
           // O preparo leva tempo: se a autorização venceu nesse meio-tempo, não inicia; descarta o workspace.
           if (await expireIfOverdue(record)) throw new SandboxError('expired');
+          // A execução pode começar parcialmente mesmo se `start()` lançar: o descarte inclui `stop()`.
+          startCalled = true;
           await options.provider.start(record.spec);
         } catch (error) {
           if (error instanceof SandboxError) throw error;
+          // Só o código (token) do erro é guardado; mensagem, caminhos e credenciais nunca.
           transition(record, 'failed', error instanceof SandboxProviderError ? error.code : 'provider_error');
-          await teardown(record, false);
+          await teardown(record, startCalled);
           return structuredClone(record);
         }
         // A autorização pode ter vencido durante `provider.start()`. Não se renova o prazo com a
@@ -318,6 +343,27 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
         if (result) expired.push(result);
       }
       return expired;
+    },
+
+    retryCleanup(ownerId, projectId, id) {
+      return serialized(id, async () => {
+        const record = find(ownerId, projectId, id);
+        // Só registros terminais: em andamento, o descarte pertence ao próprio ciclo de vida.
+        if (!TERMINAL_STATES.includes(record.state)) throw new SandboxError('not_terminal');
+        // Nada pendente (ex.: tentativa concorrente já confirmou): não chama o provedor de novo.
+        if (record.cleanup !== 'pending') return structuredClone(record);
+        // Repete `stop()` só se a parada anterior falhou; depois sempre `destroy()`.
+        await teardown(record, stopPending.has(record.id));
+        record.updatedAt = iso();
+        options.logger?.log('info', 'Sandbox', {
+          event: 'sandbox_cleanup_retry',
+          requestId: record.id,
+          projectId: record.projectId,
+          state: record.state,
+          cleanup: record.cleanup,
+        });
+        return structuredClone(record);
+      });
     },
 
     get(ownerId, projectId, id) {

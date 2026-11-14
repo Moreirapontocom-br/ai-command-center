@@ -39,11 +39,21 @@ Regras do serviço:
   - a solicitação expira se não for autorizada em 1 h, e a execução expira no tempo limite;
   - `authorize()` e `start()` verificam o prazo antes de avançar, sem depender de `expireOverdue()`: o que venceu passa a `expired` (com descarte, se houver workspace), a operação é recusada com `expired` e a aprovação não é consumida. `start()` verifica de novo após o preparo e outra vez após `provider.start()`, antes de passar a `running`. Se a autorização venceu durante essa chamada, o registro passa a `expired`, o provedor é parado e o workspace é descartado, sem renovar o prazo;
   - `report()` verifica o tempo limite de execução antes de aceitar o resultado. Se ele venceu (inclusive no instante exato), o registro passa a `expired` com motivo `timeout`, o provedor é parado, o workspace é descartado e o resultado é recusado com `expired`. Resultado atrasado nunca sobrescreve um estado terminal;
-  - **limitação:** a camada não interrompe uma chamada pendente ao provedor (`prepare`/`start`). A verificação ocorre quando a chamada retorna, e `cancel`/`expireOverdue` sobre o mesmo registro aguardam na fila até lá. Um provedor que nunca responda manteria o registro bloqueado. Tempo limite por chamada e interrupção forçada dependem do provedor real (#031) e não são garantidos aqui;
-  - operações sobre o mesmo registro são serializadas (fila por id), então expiração, autorização, início, resultado e cancelamento não se intercalam durante chamadas ao provedor;
+  - operações sobre o mesmo registro são serializadas (fila por id), então expiração, autorização, início, resultado, cancelamento e recuperação de descarte não se intercalam durante chamadas ao provedor;
   - cancelar ou expirar para a execução e descarta o workspace;
-  - falha do provedor leva a `failed`, com o código salvo apenas como token;
+  - falha do provedor leva a `failed`, com o código salvo apenas como token (fora do formato, vira `provider_error`). Mensagens, caminhos e credenciais do provedor nunca são registrados;
   - falha no descarte marca `cleanup: 'pending'`, sem fingir que limpou.
+- **Falhas parciais e recuperação de descarte (R3):**
+  - `cleanup` passa a `pending` **antes** de `prepare()`, porque recursos podem existir mesmo que ele falhe no meio. Se a preparação falhar, o registro vai para `failed` e `destroy()` é tentado;
+  - se `start()` foi chamado e falhou, a execução pode ter começado: o serviço chama `stop()` e depois `destroy()`. Falha em `stop()` não impede `destroy()`, e a razão original da falha é preservada;
+  - só `destroy()` confirmado marca `cleanup: 'done'`. Pelo contrato do provedor, ele descarta workspace, credenciais e rede;
+  - `retryCleanup(ownerId, projectId, id)` repete o descarte de um registro **terminal** com `cleanup: 'pending'`. Ela não reabre o estado nem altera estado, motivo, prazo ou histórico; só muda `cleanup` para `done` após `destroy()` confirmado e mantém `pending` se falhar. Repete `stop()` apenas se a parada anterior falhou. Registro não terminal é recusado com `not_terminal`; sem pendência, não chama o provedor. Ela é serializada na fila por id, então tentativas concorrentes não duplicam o descarte. Fica em memória e não tem rota HTTP;
+  - a interface `SandboxProvider` não mudou. O adaptador simulado ganhou `failNext(..., { partial: true })` (efeito simulado antes do erro) e `activeExecutions`, compatíveis com o uso anterior.
+- **Limitações de chamadas pendentes (não resolvidas nesta camada):**
+  - `prepare()` ou `start()` que nunca retornam bloqueiam todas as operações daquele registro (`cancel`, `expireOverdue`, `retryCleanup`), que aguardam na fila. A verificação de prazo só ocorre quando a chamada retorna;
+  - `retryCleanup` não resolve chamadas permanentemente pendentes: ela também entra na fila;
+  - tempo limite por chamada, cancelamento forçado e recuperação após reinício (os registros e a fila estão em memória) são requisitos do provedor real e da Issue #031;
+  - o adaptador simulado não oferece isolamento físico algum, e nenhuma garantia de isolamento pode ser atribuída a ele.
 - **Sem segredos:** a mensagem do provedor nunca vai para registros nem logs, e as especificações só guardam nomes de escopo.
 - **Sem API pública:** nenhuma rota HTTP usa o serviço, o que é verificado por teste estrutural. Atribuir uma tarefa a um agente continua sem iniciar nada.
 - **Sem persistência:** os registros ficam em memória, porque não há execução a retomar. Persistência, filas e quotas ficam para #012 e #022.
@@ -91,7 +101,7 @@ Regras do serviço:
 
 ## 5. Testes
 
-- `server/sandbox/sandbox.test.ts`, 87 testes:
+- `server/sandbox/sandbox.test.ts`, 103 testes:
   - execução desabilitada: catálogo real dá `UNAVAILABLE` e o provedor nunca é chamado; provedor que executa código é recusado;
   - política da #020: aprovação exata, uso único e aprovações inválidas (SHA, tarefa, agente, autoaprovação, expirada); agente não atribuído; tarefa inativa;
   - isolamento entre donos e projetos e repositório não vinculado;
@@ -101,7 +111,8 @@ Regras do serviço:
   - matriz de estados, fluxo completo, transições proibidas, cancelamento, expiração, falhas do provedor e descarte pendente;
   - ausência de segredos e cópias defensivas.
   - prazos (R1): `authorize`/`start` vencidos e no limite (1 ms antes), prazo da aprovação menor que a janela, prazo que vence durante o preparo, e concorrência (dois `start`, `cancel` durante o preparo, `expireOverdue` contra `start`/`authorize`, `authorize` × `cancel`);
-  - rodada final: `report` 1 ms antes, no instante e depois do vencimento (`completed` e `failed`), resultado atrasado após `expireOverdue`, `report` × `expireOverdue` × `cancel`; vencimento durante `provider.start()` (sem renovar o prazo), retorno 1 ms antes do prazo, e `cancel`/`expireOverdue` concorrentes durante `provider.start()`.
+  - rodada final: `report` 1 ms antes, no instante e depois do vencimento (`completed` e `failed`), resultado atrasado após `expireOverdue`, `report` × `expireOverdue` × `cancel`; vencimento durante `provider.start()` (sem renovar o prazo), retorno 1 ms antes do prazo, e `cancel`/`expireOverdue` concorrentes durante `provider.start()`;
+  - R3: `prepare()` parcial (com e sem falha de `destroy()`), código de erro fora do formato, `start()` parcial com falha de `stop()` e de `destroy()`, cancelamento com `stop()` falhando, recuperação após falha de `destroy()` (inclusive nova falha), recuperação sem pendência, registro não terminal e outro dono, duas recuperações concorrentes, recuperação concorrente com `cancel()` e `expireOverdue()`, estado `expired` preservado, ausência de segredos e caminhos, e provedor que executa código recusado.
 - `server/security.test.ts`: `server/sandbox` não usa `child_process`, `fs`, rede, `vm`, `worker_threads`, `eval` nem `Function`. Nenhum código fora do módulo usa o serviço, e não há rota de execução.
 
 ## 6. Decisões que precisam do Product Owner

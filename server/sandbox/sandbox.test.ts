@@ -640,3 +640,222 @@ describe('prazos vencidos sem depender de expireOverdue (R1)', () => {
     expect(sim.liveWorkspaces.size).toBe(0);
   });
 });
+
+describe('falhas parciais do provedor e recuperação de descarte (R3)', () => {
+  type Sim = ReturnType<typeof createSimulatedProvider>;
+  const ops = (sim: Sim) => sim.calls.map((c) => c.op);
+
+  async function authorizedWith(sim: Sim) {
+    const ctx = setup({ provider: sim });
+    const record = await ctx.service.request('admin', body());
+    await ctx.service.authorize('admin', P1, record.id, approvalFor(record));
+    return { ...ctx, sim, id: record.id };
+  }
+
+  async function runningWith(sim: Sim) {
+    const ctx = await authorizedWith(sim);
+    await ctx.service.start('admin', P1, ctx.id);
+    return ctx;
+  }
+
+  /** Registro terminal (`cancelled`) com descarte pendente: `destroy()` falhou no cancelamento. */
+  async function cancelledPending() {
+    const sim = createSimulatedProvider();
+    const ctx = await runningWith(sim);
+    sim.failNext('destroy', 'destroy_failed');
+    const cancelled = await ctx.service.cancel('admin', P1, ctx.id);
+    expect(cancelled).toMatchObject({ state: 'cancelled', reason: 'cancelled_by_user', cleanup: 'pending' });
+    return { ...ctx, cancelled };
+  }
+
+  // --- R3.1: prepare() parcial ---
+
+  it('prepare() cria o workspace parcialmente e lança: failed com código seguro, descarte confirmado', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await authorizedWith(sim);
+    sim.failNext('prepare', 'disk_full', `falhou em C:\\providers\\ws com ${CANARY_SECRET}`, { partial: true });
+    const failed = await service.start('admin', P1, id);
+    expect(failed).toMatchObject({ state: 'failed', reason: 'disk_full', cleanup: 'done' });
+    // start() nunca foi chamado, então não há stop(); o workspace parcial foi destruído.
+    expect(ops(sim)).toEqual(['prepare', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('prepare() parcial com destroy() falhando: cleanup fica "pending" (nunca "done" sem confirmação)', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await authorizedWith(sim);
+    sim.failNext('prepare', 'disk_full', undefined, { partial: true });
+    sim.failNext('destroy', 'destroy_failed');
+    expect(await service.start('admin', P1, id)).toMatchObject({ state: 'failed', reason: 'disk_full', cleanup: 'pending' });
+    expect(sim.liveWorkspaces.size).toBe(1);
+    // Recuperação: destrói o workspace parcial sem chamar stop() (nada foi iniciado).
+    expect(await service.retryCleanup('admin', P1, id)).toMatchObject({ state: 'failed', reason: 'disk_full', cleanup: 'done' });
+    expect(ops(sim)).toEqual(['prepare', 'destroy', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('código de erro fora do formato de token vira "provider_error"', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await authorizedWith(sim);
+    sim.failNext('prepare', '/var/lib/ws: permission denied', undefined, { partial: true });
+    expect(await service.start('admin', P1, id)).toMatchObject({ state: 'failed', reason: 'provider_error', cleanup: 'done' });
+  });
+
+  // --- R3.2: start() parcial ---
+
+  it('start() inicia parcialmente e lança: stop() e depois destroy(), razão original preservada', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await authorizedWith(sim);
+    sim.failNext('start', 'quota_exceeded', undefined, { partial: true });
+    expect(await service.start('admin', P1, id)).toMatchObject({ state: 'failed', reason: 'quota_exceeded', cleanup: 'done' });
+    expect(ops(sim)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.activeExecutions.size).toBe(0);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('start() parcial + stop() falhando: destroy() ainda é tentado e confirma o descarte', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await authorizedWith(sim);
+    sim.failNext('start', 'quota_exceeded', undefined, { partial: true });
+    sim.failNext('stop', 'stop_failed');
+    expect(await service.start('admin', P1, id)).toMatchObject({ state: 'failed', reason: 'quota_exceeded', cleanup: 'done' });
+    expect(ops(sim)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.activeExecutions.size).toBe(0);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('start() parcial + stop() e destroy() falhando: pending; a recuperação para e descarta', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await authorizedWith(sim);
+    sim.failNext('start', 'quota_exceeded', undefined, { partial: true });
+    sim.failNext('stop', 'stop_failed');
+    sim.failNext('destroy', 'destroy_failed');
+    expect(await service.start('admin', P1, id)).toMatchObject({ state: 'failed', reason: 'quota_exceeded', cleanup: 'pending' });
+    expect(sim.activeExecutions.has(id)).toBe(true);
+    const recovered = await service.retryCleanup('admin', P1, id);
+    expect(recovered).toMatchObject({ state: 'failed', reason: 'quota_exceeded', cleanup: 'done' });
+    // A parada anterior falhou, então a recuperação repete stop() antes de destroy().
+    expect(ops(sim)).toEqual(['prepare', 'start', 'stop', 'destroy', 'stop', 'destroy']);
+    expect(sim.activeExecutions.size).toBe(0);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('cancelar em execução com stop() falhando: destroy() ainda confirma o descarte', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await runningWith(sim);
+    sim.failNext('stop', 'stop_failed');
+    expect(await service.cancel('admin', P1, id)).toMatchObject({ state: 'cancelled', reason: 'cancelled_by_user', cleanup: 'done' });
+    expect(ops(sim)).toEqual(['prepare', 'start', 'stop', 'destroy']);
+    expect(sim.activeExecutions.size).toBe(0);
+  });
+
+  // --- R3.3: recuperação de cleanup pendente ---
+
+  it('destroy() falha e a recuperação confirma depois, sem reabrir nem mudar o desfecho', async () => {
+    const { service, sim, id, cancelled } = await cancelledPending();
+    const recovered = await service.retryCleanup('admin', P1, id);
+    expect(recovered).toMatchObject({ state: 'cancelled', reason: 'cancelled_by_user', cleanup: 'done' });
+    expect(recovered.history).toEqual(cancelled.history);
+    expect(recovered.deadline).toBe(cancelled.deadline);
+    expect(ops(sim)).toEqual(['prepare', 'start', 'stop', 'destroy', 'destroy']);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  it('nova tentativa que também falha mantém "pending"; a seguinte confirma', async () => {
+    const { service, sim, id } = await cancelledPending();
+    sim.failNext('destroy', 'destroy_failed');
+    expect(await service.retryCleanup('admin', P1, id)).toMatchObject({ state: 'cancelled', cleanup: 'pending' });
+    expect(await service.retryCleanup('admin', P1, id)).toMatchObject({ state: 'cancelled', cleanup: 'done' });
+    expect(sim.calls.filter((c) => c.op === 'destroy')).toHaveLength(3);
+  });
+
+  it('sem pendência, a recuperação não chama o provedor', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await runningWith(sim);
+    await service.report('admin', P1, id, 'completed');
+    const before = sim.calls.length;
+    expect(await service.retryCleanup('admin', P1, id)).toMatchObject({ state: 'completed', cleanup: 'done' });
+    expect(sim.calls.length).toBe(before);
+  });
+
+  it('registro não terminal é recusado (o descarte pertence ao ciclo de vida); outro dono: not_found', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id } = await runningWith(sim);
+    await expect(service.retryCleanup('admin', P1, id)).rejects.toMatchObject({ code: 'not_terminal' });
+    await expect(service.retryCleanup('user-b', P1, id)).rejects.toMatchObject({ code: 'not_found' });
+    await expect(service.retryCleanup('admin', P2, id)).rejects.toMatchObject({ code: 'not_found' });
+    expect(service.get('admin', P1, id)).toMatchObject({ state: 'running', cleanup: 'pending' });
+    expect(ops(sim)).toEqual(['prepare', 'start']);
+  });
+
+  it('duas recuperações concorrentes: um único destroy()', async () => {
+    const { service, sim, id } = await cancelledPending();
+    const destroysBefore = sim.calls.filter((c) => c.op === 'destroy').length;
+    const [a, b] = await Promise.all([service.retryCleanup('admin', P1, id), service.retryCleanup('admin', P1, id)]);
+    expect(a).toMatchObject({ cleanup: 'done' });
+    expect(b).toMatchObject({ cleanup: 'done' });
+    expect(sim.calls.filter((c) => c.op === 'destroy').length - destroysBefore).toBe(1);
+  });
+
+  it('recuperação concorrente com cancel() e expireOverdue(): estado terminal preservado, um único destroy()', async () => {
+    const { service, sim, id, advance, cancelled } = await cancelledPending();
+    advance(24 * 60 * 60 * 1000);
+    const callsBefore = sim.calls.length;
+    const [retried, cancelAgain, swept, retriedAgain] = await Promise.allSettled([
+      service.retryCleanup('admin', P1, id),
+      service.cancel('admin', P1, id),
+      service.expireOverdue(),
+      service.retryCleanup('admin', P1, id),
+    ]);
+    expect(retried).toMatchObject({ status: 'fulfilled', value: { state: 'cancelled', cleanup: 'done' } });
+    expect(cancelAgain).toMatchObject({ status: 'rejected', reason: { code: 'invalid_transition' } });
+    expect(swept).toMatchObject({ status: 'fulfilled', value: [] });
+    expect(retriedAgain).toMatchObject({ status: 'fulfilled', value: { state: 'cancelled', cleanup: 'done' } });
+    expect(sim.calls.slice(callsBefore).map((c) => c.op)).toEqual(['destroy']);
+    const final = service.get('admin', P1, id)!;
+    expect(final).toMatchObject({ state: 'cancelled', reason: 'cancelled_by_user' });
+    expect(final.history).toEqual(cancelled.history);
+  });
+
+  it('recuperação de registro expirado com descarte pendente mantém "expired"/"timeout"', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id, advance } = await runningWith(sim);
+    advance(600 * 1000);
+    sim.failNext('destroy', 'destroy_failed');
+    const [expired] = await service.expireOverdue();
+    expect(expired).toMatchObject({ state: 'expired', reason: 'timeout', cleanup: 'pending' });
+    const [recovered] = await Promise.all([service.retryCleanup('admin', P1, id), service.expireOverdue()]);
+    expect(recovered).toMatchObject({ state: 'expired', reason: 'timeout', cleanup: 'done' });
+    expect(service.get('admin', P1, id)!.history.filter((h) => h.to === 'expired')).toHaveLength(1);
+    expect(sim.liveWorkspaces.size).toBe(0);
+  });
+
+  // --- Segredos e execução real ---
+
+  it('mensagens do provedor com segredos em falhas parciais e na recuperação nunca vão para registro nem log', async () => {
+    const sim = createSimulatedProvider();
+    const { service, id, logLines } = await authorizedWith(sim);
+    const leak = `Bearer ${CANARY_SECRET} at /home/runner/.config/token`;
+    sim.failNext('start', 'quota_exceeded', leak, { partial: true });
+    sim.failNext('stop', 'stop_failed', leak);
+    sim.failNext('destroy', `token=${CANARY_SECRET}`, leak);
+    await service.start('admin', P1, id);
+    sim.failNext('destroy', 'destroy_failed', leak);
+    await service.retryCleanup('admin', P1, id);
+    await service.retryCleanup('admin', P1, id);
+    const everything = JSON.stringify(service.list('admin', P1)) + logLines.join('\n');
+    expect(everything).not.toContain(CANARY_SECRET);
+    expect(everything).not.toContain('/home/runner');
+    expect(service.get('admin', P1, id)).toMatchObject({ state: 'failed', reason: 'quota_exceeded', cleanup: 'done' });
+  });
+
+  it('provedor que executa código: recusado antes de prepare(); nada para recuperar', async () => {
+    const real = { ...createSimulatedProvider(), id: 'fake-real', isolation: 'microvm' as const, executesCode: true };
+    const { service, id } = await authorizedWith(real as Sim);
+    await expect(service.start('admin', P1, id)).rejects.toMatchObject({ code: 'real_execution_disabled' });
+    expect(service.get('admin', P1, id)).toMatchObject({ state: 'authorized', cleanup: 'not_needed' });
+    await expect(service.retryCleanup('admin', P1, id)).rejects.toMatchObject({ code: 'not_terminal' });
+    expect(real.calls).toEqual([]);
+    expect(REAL_EXECUTION_ENABLED).toBe(false);
+  });
+});

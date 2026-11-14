@@ -115,15 +115,18 @@ describe('superfície de escrita do servidor', () => {
       'server/limits/contracts.ts',
       'server/limits/controller.ts',
       'server/limits/providers.ts',
+      'server/limits/simulatedApprovalVerifier.ts',
       'server/limits/validation.ts',
     ]);
+    // O verificador SIMULADO nunca é o padrão: o controlador não o importa (sem verificador = negado).
+    expect(files.find((f) => f.path === 'server/limits/controller.ts')!.code).not.toMatch(/simulatedApprovalVerifier/);
     for (const file of files) {
       expect(file.code).not.toMatch(/node:child_process|node:fs|node:net|node:http|node:https|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
       // Não usa o sandbox (execução) nem credenciais/sessões de contas de IA.
       expect(file.code).not.toMatch(/sandbox\/(service|simulatedProvider|provider)|cookie|process\.env/i);
     }
     // Nenhum código fora de server/limits usa o controlador (não há API nem integração real ainda).
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/limits/')), /limits\/(controller|providers)/)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/limits/')), /limits\/(controller|providers|simulatedApprovalVerifier)/)).toEqual([]);
     expect(POST_ROUTES.some((route) => /limit|budget|quota|kill|spend|admission/.test(route))).toBe(false);
   });
 

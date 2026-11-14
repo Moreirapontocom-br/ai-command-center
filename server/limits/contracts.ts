@@ -140,6 +140,12 @@ export interface Admission {
   tokens: { ceiling: number; reported: number | null } | null;
   /** Kill switch: pedido de cancelamento ao responsável pela execução e seu resultado. */
   cancellation: { requestedAt: string; result: CancellationResult | 'pending' } | null;
+  /**
+   * Ocupação da vaga de concorrência, SEPARADA do estado lógico. Fica `held` enquanto a operação
+   * pode estar ativa: só passa a `released` quando o término é informado (`complete`), quando o
+   * cancelamento é confirmado (`cancelled`) ou quando uma pessoa/o host confirma a interrupção.
+   */
+  capacity: 'held' | 'released';
   approvalIds: string[];
 }
 
@@ -158,6 +164,42 @@ export interface HumanApproval {
   approvedBy: { kind: 'human'; id: string };
   approvedAt: string;
   expiresAt: string;
+}
+
+/**
+ * Resultado da verificação de ORIGEM de uma aprovação humana. Campos válidos não provam nada: só
+ * um verificador confiável (o fluxo persistente da Issue #011) atesta que a aprovação foi emitida
+ * por quem diz e não foi alterada. `approverId` é a identidade AUTENTICADA do aprovador.
+ */
+export type ApprovalVerification = { authentic: true; approverId: string } | { authentic: false; reason: string };
+
+/**
+ * Contrato do verificador de aprovações (implementação real: Issue #011). Síncrono, porque a
+ * admissão e as mudanças sensíveis não intercalam `await`. Sem verificador configurado, o
+ * controlador NEGA alteração de limites e reativação do kill switch.
+ */
+export interface ApprovalVerifier {
+  readonly id: string;
+  /** `simulated`: apenas para testes; nunca deve ser configurado em produção. */
+  readonly kind: 'simulated' | 'trusted';
+  verify(approval: HumanApproval): ApprovalVerification;
+}
+
+/** Relato OFICIAL de indisponibilidade temporária (só restringe; nunca torna algo disponível). */
+export interface ProviderUnavailability {
+  reason: string;
+  until: string | null;
+}
+
+/**
+ * Quota OFICIAL de solicitações informada pelo provedor, SEM declará-lo indisponível. Só restringe:
+ * soma-se ao limite do catálogo e às demais quotas ativas (todas são aplicadas); nunca o amplia.
+ */
+export interface ProviderQuota {
+  reason: string;
+  count: number;
+  windowSeconds: number;
+  until: string | null;
 }
 
 export type KillSwitchScope = { kind: 'global' } | { kind: 'project'; projectId: string };

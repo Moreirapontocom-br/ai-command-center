@@ -19,6 +19,7 @@ import {
   MAX_HUMAN_APPROVAL_TTL_MS,
   type Admission,
   type AdmissionRequestInput,
+  type ApprovalVerifier,
   type CancellationResult,
   type ControllerAuditEntry,
   type ControllerLimits,
@@ -26,6 +27,8 @@ import {
   type KillSwitchScope,
   type KillSwitchState,
   type ProviderProfile,
+  type ProviderQuota,
+  type ProviderUnavailability,
   type UsageMode,
 } from './contracts.ts';
 import { defaultProviderCatalog } from './providers.ts';
@@ -54,6 +57,10 @@ import {
  * - Limites e kill switch são do CONTROLADOR (o que o ACC admite). Cancelar é um PEDIDO a quem
  *   hospeda a execução; não há garantia de interrupção física de provedor externo.
  * - Estado em memória: persistência (inclusive do kill switch) e filas são das #011/#012.
+ * - Aprovações humanas só valem se um verificador CONFIÁVEL (#011) atestar a origem; sem ele,
+ *   alteração de limites e reativação do kill switch são negadas.
+ * - Término lógico ≠ interrupção confirmada: a vaga de concorrência só é liberada quando a
+ *   operação comprovadamente terminou ou foi interrompida.
  */
 
 export class LimitsError extends Error {
@@ -76,13 +83,8 @@ export interface UsageReport {
   tokens: number | null;
 }
 
-/** Relato OFICIAL de um provedor. Só restringe: nunca torna algo disponível. */
-export interface ProviderReport {
-  status: 'unavailable';
-  reason: string;
-  until: string | null;
-  officialRequestLimit?: { count: number; windowSeconds: number } | null;
-}
+/** Máximo de quotas oficiais ativas por provedor/modo (memória limitada; excedente é recusado). */
+const MAX_ACTIVE_QUOTAS = 20;
 
 export interface LimitsControllerOptions {
   projects: Pick<ProjectStore, 'get'>;
@@ -94,6 +96,12 @@ export interface LimitsControllerOptions {
   providers?: ProviderProfile[];
   /** Quem hospeda a execução trata o pedido de cancelamento (sem ele: `not_supported`). */
   cancelHandler?: (admission: Admission) => Promise<CancellationResult>;
+  /**
+   * Verificador de ORIGEM das aprovações humanas (fluxo confiável: Issue #011). Ausente em
+   * produção hoje: por isso alteração de limites e reativação do kill switch são negadas.
+   * Os testes usam `createSimulatedApprovalVerifier()`, explícito e só para testes.
+   */
+  approvalVerifier?: ApprovalVerifier;
   now?: () => number;
   generateId?: () => string;
   logger?: Logger;
@@ -111,8 +119,10 @@ export function createLimitsController(options: LimitsControllerOptions) {
   let limits: ControllerLimits = parseLimits(DEFAULT_LIMITS);
   const providers = new Map<string, ProviderProfile>();
   for (const profile of options.providers ?? defaultProviderCatalog()) providers.set(`${profile.provider}|${profile.mode}`, structuredClone(profile));
-  /** Relatos oficiais de indisponibilidade (sobrepostos ao catálogo, nunca o ampliam). */
-  const reports = new Map<string, ProviderReport>();
+  /** Relatos oficiais de indisponibilidade temporária (sobrepostos ao catálogo, nunca o ampliam). */
+  const unavailability = new Map<string, ProviderUnavailability>();
+  /** Quotas oficiais de solicitações, separadas da indisponibilidade; todas as ativas se aplicam. */
+  const quotas = new Map<string, ProviderQuota[]>();
 
   const admissions = new Map<string, Admission>();
   const byIdempotency = new Map<string, { admissionId: string; fingerprint: string }>();
@@ -156,14 +166,29 @@ export function createLimitsController(options: LimitsControllerOptions) {
 
   // ---------- Provedores ----------
 
-  function activeReport(key: string): ProviderReport | null {
-    const report = reports.get(key);
+  const stillValid = (until: string | null) => until === null || Date.parse(until) > now();
+
+  function activeUnavailability(key: string): ProviderUnavailability | null {
+    const report = unavailability.get(key);
     if (!report) return null;
-    if (report.until !== null && Date.parse(report.until) <= now()) {
-      reports.delete(key);
+    if (!stillValid(report.until)) {
+      unavailability.delete(key);
       return null;
     }
     return report;
+  }
+
+  /** Quotas oficiais ainda vigentes (as expiradas são descartadas). */
+  function activeQuotas(key: string): ProviderQuota[] {
+    const list = (quotas.get(key) ?? []).filter((q) => stillValid(q.until));
+    if (list.length === 0) quotas.delete(key);
+    else quotas.set(key, list);
+    return list;
+  }
+
+  function validateReport(reason: unknown, until: unknown) {
+    if (typeof reason !== 'string' || !REASON_TOKEN.test(reason)) throw new LimitsError('invalid_report');
+    if (until !== null && (typeof until !== 'string' || !Number.isFinite(Date.parse(until)))) throw new LimitsError('invalid_report');
   }
 
   // ---------- Orçamento ----------
@@ -180,9 +205,22 @@ export function createLimitsController(options: LimitsControllerOptions) {
   // ---------- Ciclo de vida ----------
 
   const isActive = (a: Admission) => a.state === 'admitted';
+  /** Vaga ocupada: a operação pode estar ativa (inclusive depois do término lógico). */
+  const holdsCapacity = (a: Admission) => a.capacity === 'held';
 
-  /** Pede cancelamento a quem hospeda a execução e registra o resultado (sem prometer interrupção). */
-  async function requestCancellation(a: Admission, event: string): Promise<CancellationResult> {
+  function releaseCapacity(a: Admission, reason: string, actor: string) {
+    if (a.capacity === 'released') return;
+    a.capacity = 'released';
+    audit({ event: 'capacity_released', actor, projectId: a.projectId, admissionId: a.id, decision: 'recorded', reason });
+  }
+
+  /**
+   * Pede cancelamento a quem hospeda a execução e registra o resultado (sem prometer interrupção).
+   * Só `cancelled` libera a vaga; `failed`, `not_supported` e `pending` a mantêm ocupada. Um pedido
+   * em andamento não é duplicado.
+   */
+  async function requestCancellation(a: Admission, event: string): Promise<CancellationResult | 'pending'> {
+    if (a.cancellation?.result === 'pending') return 'pending';
     a.cancellation = { requestedAt: iso(), result: 'pending' };
     let result: CancellationResult = 'not_supported';
     if (options.cancelHandler) {
@@ -195,9 +233,11 @@ export function createLimitsController(options: LimitsControllerOptions) {
     }
     a.cancellation = { requestedAt: a.cancellation.requestedAt, result };
     audit({ event, actor: 'system:acc', projectId: a.projectId, admissionId: a.id, decision: 'recorded', reason: `cancellation_${result}` });
+    if (result === 'cancelled') releaseCapacity(a, 'cancellation_confirmed', 'system:acc');
     return result;
   }
 
+  /** Término LÓGICO (estado). Não libera a vaga: isso depende de confirmação (ver `capacity`). */
   function finish(a: Admission, state: Admission['state'], reason: string | null) {
     a.state = state;
     a.reason = reason;
@@ -284,6 +324,28 @@ export function createLimitsController(options: LimitsControllerOptions) {
       audit({ event: operation, actor: ctx.actor, projectId, admissionId: null, decision: 'denied', reason: code });
       throw new LimitsError(code);
     }
+    // Origem: campos válidos não bastam. Sem verificador confiável, a mudança sensível é negada.
+    const verifier = options.approvalVerifier;
+    if (!verifier) {
+      audit({ event: operation, actor: ctx.actor, projectId, admissionId: null, decision: 'denied', reason: 'approval_verifier_unavailable' });
+      throw new LimitsError('approval_verifier_unavailable');
+    }
+    let verification: ReturnType<ApprovalVerifier['verify']>;
+    try {
+      verification = verifier.verify(structuredClone(approval));
+    } catch {
+      verification = { authentic: false, reason: 'approval_verification_failed' };
+    }
+    if (!verification.authentic) {
+      const detail = REASON_TOKEN.test(verification.reason) ? verification.reason : 'approval_not_authentic';
+      audit({ event: operation, actor: ctx.actor, projectId, admissionId: null, decision: 'denied', reason: detail });
+      throw new LimitsError('approval_not_authentic');
+    }
+    // Identidade autenticada pelo verificador deve ser exatamente a declarada, e humana.
+    if (verification.approverId !== approval.approvedBy.id || isAgentId(verification.approverId)) {
+      audit({ event: operation, actor: ctx.actor, projectId, admissionId: null, decision: 'denied', reason: 'approver_identity_mismatch' });
+      throw new LimitsError('approver_identity_mismatch');
+    }
     const problem = humanApprovalProblem(approval, operation, target);
     if (problem) {
       audit({ event: operation, actor: ctx.actor, projectId, admissionId: null, decision: 'denied', reason: problem });
@@ -312,7 +374,7 @@ export function createLimitsController(options: LimitsControllerOptions) {
         return structuredClone(admissions.get(previous.admissionId)!);
       }
 
-      // Libera vagas de admissões vencidas antes de contar a concorrência.
+      // Expira as vencidas e pede o cancelamento; a vaga só volta se ele for confirmado.
       for (const a of sweepOverdue()) void requestCancellation(a, 'admission_cancel_requested');
 
       if (killGlobal.engaged) deny('kill_switch_engaged', ctx);
@@ -328,14 +390,16 @@ export function createLimitsController(options: LimitsControllerOptions) {
       const key = `${input.agentId}|${input.mode}`;
       const profile = providers.get(key);
       if (!profile) deny('provider_unavailable', ctx, null, 'unavailable');
-      if (activeReport(key)) deny('provider_unavailable', ctx, null, 'unavailable');
       if (profile!.status === 'unverified') deny('provider_unverified', ctx, null, 'unavailable');
       if (profile!.status !== 'available') deny('provider_unavailable', ctx, null, 'unavailable');
-      const officialLimit = reports.get(key)?.officialRequestLimit ?? profile!.officialRequestLimit;
-      if (officialLimit) {
-        const since = now() - officialLimit.windowSeconds * 1000;
+      if (activeUnavailability(key)) deny('provider_unavailable', ctx, null, 'unavailable');
+      // Quotas oficiais: o limite do catálogo E todas as quotas relatadas vigentes se aplicam
+      // (cada uma restringe; nenhuma substitui ou amplia outra).
+      const officialLimits = [...(profile!.officialRequestLimit ? [profile!.officialRequestLimit] : []), ...activeQuotas(key)];
+      for (const limit of officialLimits) {
+        const since = now() - limit.windowSeconds * 1000;
         const recent = [...admissions.values()].filter((a) => a.agentId === input.agentId && a.mode === input.mode && Date.parse(a.admittedAt) > since);
-        if (recent.length >= officialLimit.count) deny('provider_request_limit', ctx);
+        if (recent.length >= limit.count) deny('provider_request_limit', ctx);
       }
 
       // Custo: SEMPRE pelo catálogo do servidor. Desconhecido = bloqueado.
@@ -345,8 +409,10 @@ export function createLimitsController(options: LimitsControllerOptions) {
       if (metered && profile!.billing !== 'metered') deny('cost_unknown', ctx);
 
       // Quotas do ACC.
-      const active = [...admissions.values()].filter(isActive).length;
-      if (active >= limits.maxConcurrent) deny('concurrency_limit', ctx);
+      // Concorrência conta VAGAS OCUPADAS, não só estados ativos: operação cancelada ou expirada
+      // sem interrupção confirmada continua potencialmente ativa.
+      const occupied = [...admissions.values()].filter(holdsCapacity).length;
+      if (occupied >= limits.maxConcurrent) deny('concurrency_limit', ctx);
       const windowStart = now() - limits.rateLimit.windowSeconds * 1000;
       if ([...admissions.values()].filter((a) => Date.parse(a.admittedAt) > windowStart).length >= limits.rateLimit.count) deny('rate_limited', ctx);
 
@@ -388,6 +454,7 @@ export function createLimitsController(options: LimitsControllerOptions) {
         cost: { status: metered ? 'estimated' : 'none', reservedMinor: estimate, confirmedMinor: null, currency: BUDGET_CURRENCY },
         tokens: metered ? { ceiling: input.maxTokens!, reported: null } : null,
         cancellation: null,
+        capacity: 'held',
         approvalIds,
       };
       admissions.set(admission.id, admission);
@@ -413,6 +480,8 @@ export function createLimitsController(options: LimitsControllerOptions) {
       if (usage.tokens !== null && (!Number.isInteger(usage.tokens) || usage.tokens < 0)) throw new LimitsError('invalid_usage');
 
       finish(a, outcome, outcome === 'failed' ? 'provider_reported_failure' : null);
+      // Término informado por quem executa: a operação acabou, a vaga pode ser liberada.
+      releaseCapacity(a, 'provider_reported_end', 'system:acc');
       if (cost.kind === 'confirmed') {
         a.cost.status = 'confirmed';
         a.cost.confirmedMinor = cost.amountMinor;
@@ -435,11 +504,39 @@ export function createLimitsController(options: LimitsControllerOptions) {
       return structuredClone(a);
     },
 
+    /**
+     * Cancela uma admissão ativa (término lógico + pedido de interrupção). Em admissão já
+     * encerrada cuja interrupção não foi confirmada (`failed`/`not_supported`), repete o pedido
+     * sem mudar o estado. Pedido em andamento não é duplicado.
+     */
     async cancel(ownerId: string, projectId: string, id: string): Promise<Admission> {
       const a = find(ownerId, projectId, id);
-      if (!isActive(a)) throw new LimitsError('invalid_transition');
-      finish(a, 'cancelled', 'cancelled_by_user');
+      if (isActive(a)) {
+        finish(a, 'cancelled', 'cancelled_by_user');
+      } else if (!(holdsCapacity(a) && a.cancellation !== null && a.cancellation.result !== 'pending')) {
+        throw new LimitsError('invalid_transition');
+      }
       await requestCancellation(a, 'admission_cancel_requested');
+      return structuredClone(a);
+    },
+
+    /**
+     * Confirmação EXPLÍCITA de que uma operação já encerrada logicamente não está mais ativa
+     * (ex.: uso assistido em que a própria pessoa parou, ou o host atesta a parada). Só a pessoa
+     * dona do projeto ou o host (`system`); auditado. Libera a vaga de concorrência.
+     */
+    confirmStopped(actor: ControllerActor, ownerId: string, projectId: string, id: string): Admission {
+      const label = actorLabel(actor ?? ({ kind: 'unknown', id: 'unknown' } as never));
+      const allowed = (actor?.kind === 'human' && actor.id === ownerId) || (actor?.kind === 'system' && actor.id === 'acc');
+      if (!allowed) {
+        audit({ event: 'capacity_released', actor: label, projectId, admissionId: id, decision: 'denied', reason: 'invalid_actor' });
+        throw new LimitsError('invalid_actor');
+      }
+      const a = find(ownerId, projectId, id);
+      // Ativa: use `complete` ou `cancel`. Pedido de cancelamento em andamento: aguarde o resultado.
+      if (isActive(a) || a.cancellation?.result === 'pending') throw new LimitsError('invalid_transition');
+      if (!holdsCapacity(a)) return structuredClone(a);
+      releaseCapacity(a, actor.kind === 'human' ? 'stop_confirmed_by_human' : 'stop_confirmed_by_host', label);
       return structuredClone(a);
     },
 
@@ -468,8 +565,10 @@ export function createLimitsController(options: LimitsControllerOptions) {
       else killProjects.set(scope.projectId, state);
       audit({ event: 'killswitch_engage', actor: label, projectId, admissionId: null, decision: 'recorded', reason: safeReason });
 
-      const targets = [...admissions.values()].filter((a) => isActive(a) && (scope.kind === 'global' || a.projectId === scope.projectId));
-      for (const a of targets) finish(a, 'cancelled', 'kill_switch');
+      // Alvos: ativas no escopo E encerradas cuja interrupção nunca foi confirmada (pede de novo).
+      const inScope = (a: Admission) => scope.kind === 'global' || a.projectId === scope.projectId;
+      const targets = [...admissions.values()].filter((a) => inScope(a) && (isActive(a) || (holdsCapacity(a) && a.cancellation?.result !== 'pending')));
+      for (const a of targets) if (isActive(a)) finish(a, 'cancelled', 'kill_switch');
       const results = await Promise.all(targets.map(async (a) => ({ admissionId: a.id, result: await requestCancellation(a, 'killswitch_cancel_requested') })));
       return { scope, state: structuredClone(state), cancellations: results };
     },
@@ -510,25 +609,46 @@ export function createLimitsController(options: LimitsControllerOptions) {
 
     getLimits: (): ControllerLimits => structuredClone(limits),
 
-    /** Registra relato OFICIAL de indisponibilidade/limite do provedor (só restringe). */
-    reportProviderStatus(provider: AgentRef, mode: UsageMode, report: ProviderReport) {
+    /**
+     * Relato OFICIAL de indisponibilidade temporária. Só restringe: não há relato que torne um
+     * provedor disponível (isso é o catálogo revisado, #028).
+     */
+    reportProviderUnavailable(provider: AgentRef, mode: UsageMode, report: ProviderUnavailability) {
       if (!isAgentId(provider) || !providers.has(`${provider}|${mode}`)) throw new LimitsError('provider_unknown');
-      if (report.status !== 'unavailable' || !REASON_TOKEN.test(report.reason)) throw new LimitsError('invalid_report');
-      if (report.until !== null && !Number.isFinite(Date.parse(report.until))) throw new LimitsError('invalid_report');
-      const limit = report.officialRequestLimit ?? null;
-      if (limit !== null && (!Number.isInteger(limit.count) || limit.count < 1 || !Number.isInteger(limit.windowSeconds) || limit.windowSeconds < 1)) {
+      if (typeof report !== 'object' || report === null || Object.keys(report).some((k) => !['reason', 'until'].includes(k))) throw new LimitsError('invalid_report');
+      validateReport(report.reason, report.until);
+      unavailability.set(`${provider}|${mode}`, { reason: report.reason, until: report.until });
+      audit({ event: 'provider_unavailable_report', actor: 'system:acc', projectId: null, admissionId: null, decision: 'recorded', reason: report.reason });
+    },
+
+    /**
+     * Quota OFICIAL de solicitações, SEM declarar o provedor indisponível. Só restringe: é aplicada
+     * junto com o limite do catálogo e com as demais quotas vigentes; um relato mais "generoso"
+     * não substitui um anterior mais restritivo. Não torna disponível o que não foi verificado.
+     */
+    reportProviderQuota(provider: AgentRef, mode: UsageMode, quota: ProviderQuota) {
+      const key = `${provider}|${mode}`;
+      if (!isAgentId(provider) || !providers.has(key)) throw new LimitsError('provider_unknown');
+      if (typeof quota !== 'object' || quota === null || Object.keys(quota).some((k) => !['reason', 'count', 'windowSeconds', 'until'].includes(k))) {
         throw new LimitsError('invalid_report');
       }
-      reports.set(`${provider}|${mode}`, { status: 'unavailable', reason: report.reason, until: report.until, officialRequestLimit: limit });
-      audit({ event: 'provider_report', actor: 'system:acc', projectId: null, admissionId: null, decision: 'recorded', reason: report.reason });
+      validateReport(quota.reason, quota.until);
+      const positiveInt = (value: unknown, max: number) => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= max;
+      if (!positiveInt(quota.count, 1_000_000) || !positiveInt(quota.windowSeconds, 31 * 24 * 60 * 60)) throw new LimitsError('invalid_report');
+      const list = activeQuotas(key);
+      if (list.length >= MAX_ACTIVE_QUOTAS) throw new LimitsError('too_many_quotas');
+      quotas.set(key, [...list, { reason: quota.reason, count: quota.count, windowSeconds: quota.windowSeconds, until: quota.until }]);
+      audit({ event: 'provider_quota_report', actor: 'system:acc', projectId: null, admissionId: null, decision: 'recorded', reason: quota.reason });
     },
 
     providerStatus(provider: AgentRef, mode: UsageMode) {
       const key = `${provider}|${mode}`;
       const profile = providers.get(key);
       if (!profile) return null;
-      const report = activeReport(key);
-      return { ...structuredClone(profile), effectiveStatus: report ? 'unavailable' : profile.status, report: report ? structuredClone(report) : null };
+      const outage = activeUnavailability(key);
+      // `effectiveStatus` nunca é mais permissivo que o catálogo.
+      const effectiveStatus = profile.status !== 'available' ? profile.status : outage ? 'unavailable' : 'available';
+      return { ...structuredClone(profile), effectiveStatus, unavailability: outage ? structuredClone(outage) : null, quotas: structuredClone(activeQuotas(key)) };
     },
 
     budgetSummary() {
@@ -553,7 +673,11 @@ export function createLimitsController(options: LimitsControllerOptions) {
       return [...admissions.values()].filter((a) => a.ownerId === ownerId && a.projectId === projectId).map((a) => structuredClone(a));
     },
 
+    /** Admissões em estado `admitted` (término lógico ainda não ocorreu). */
     activeCount: () => [...admissions.values()].filter(isActive).length,
+
+    /** Vagas de concorrência ocupadas (inclui operações encerradas sem interrupção confirmada). */
+    capacityInUse: () => [...admissions.values()].filter(holdsCapacity).length,
 
     auditTrail: (): ControllerAuditEntry[] => structuredClone(auditTrail),
   };

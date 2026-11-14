@@ -7,6 +7,7 @@ import { CANARY_TOKEN } from '../test/fixtures.ts';
 import { DEFAULT_LIMITS, HARD_CEILINGS, USAGE_MODES, type CancellationResult, type ControllerLimits, type HumanApproval, type ProviderProfile } from './contracts.ts';
 import { createLimitsController, LimitsError, type ControllerActor } from './controller.ts';
 import { defaultProviderCatalog } from './providers.ts';
+import { createSimulatedApprovalVerifier } from './simulatedApprovalVerifier.ts';
 import { limitsFingerprint, LimitsValidationError } from './validation.ts';
 
 const P1 = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -30,13 +31,18 @@ const testPolicyCatalog = {
   'spend.create': { ...POLICY_ACTIONS['spend.create'], available: true },
 };
 
-function setup(options: { real?: boolean; providers?: ProviderProfile[]; tasks?: Task[]; cancelHandler?: (a: unknown) => Promise<CancellationResult> } = {}) {
+function setup(
+  options: { real?: boolean; providers?: ProviderProfile[]; tasks?: Task[]; cancelHandler?: (a: unknown) => Promise<CancellationResult>; noVerifier?: boolean } = {},
+) {
   let clock = START;
   let counter = 0;
   const projects = new Map([[`admin|${P1}`, project(P1)], [`admin|${P2}`, project(P2)]]);
   const tasks = options.tasks ?? [task(T1, P1), task(T2, P2)];
   const logLines: string[] = [];
+  // Verificador SIMULADO e explícito (o confiável é da #011). `noVerifier` reproduz a produção atual.
+  const verifier = createSimulatedApprovalVerifier();
   const controller = createLimitsController({
+    approvalVerifier: options.noVerifier ? undefined : verifier,
     projects: { get: (owner, id) => projects.get(`${owner}|${id}`) ?? null },
     tasks: { get: (owner, projectId, id) => (projects.has(`${owner}|${projectId}`) ? (tasks.find((t) => t.id === id && t.projectId === projectId) ?? null) : null) },
     policyCatalog: options.real ? undefined : testPolicyCatalog,
@@ -47,7 +53,8 @@ function setup(options: { real?: boolean; providers?: ProviderProfile[]; tasks?:
     logger: createConsoleLogger((line) => logLines.push(line)),
   });
   let approvalSeq = 0;
-  const humanApproval = (operation: HumanApproval['operation'], target: string, overrides: Partial<HumanApproval> = {}): HumanApproval => ({
+  /** Monta uma aprovação SEM registrá-la no verificador (o que um chamador poderia forjar). */
+  const forgeApproval = (operation: HumanApproval['operation'], target: string, overrides: Partial<HumanApproval> = {}): HumanApproval => ({
     id: `human-approval-${++approvalSeq}`,
     operation,
     target,
@@ -56,12 +63,15 @@ function setup(options: { real?: boolean; providers?: ProviderProfile[]; tasks?:
     expiresAt: new Date(clock + 60 * 60 * 1000).toISOString(),
     ...overrides,
   });
+  /** Aprovação "emitida" pelo fluxo (simulado) e, portanto, de origem verificável. */
+  const humanApproval = (operation: HumanApproval['operation'], target: string, overrides: Partial<HumanApproval> = {}): HumanApproval =>
+    verifier.issue(forgeApproval(operation, target, overrides));
   /** Altera limites pelo caminho oficial (aprovação humana para os limites exatos). */
   const approveLimits = (patch: Partial<ControllerLimits>) => {
     const next = { ...structuredClone(DEFAULT_LIMITS), ...patch } as ControllerLimits;
     return controller.updateLimits(HUMAN, next, humanApproval('limits.change', limitsFingerprint(next)));
   };
-  return { controller, logLines, humanApproval, approveLimits, advance: (ms: number) => (clock += ms), now: () => clock };
+  return { controller, logLines, verifier, humanApproval, forgeApproval, approveLimits, advance: (ms: number) => (clock += ms), now: () => clock };
 }
 
 let keySeq = 0;
@@ -160,6 +170,7 @@ describe('orçamento R$ 0 e operações pagas', () => {
       projects: { get: (_o, id) => (id === P1 ? project(P1) : null) },
       tasks: { get: () => task(T1, P1) },
       providers,
+      approvalVerifier: ctx.verifier,
       now: ctx.now,
     });
     const next = { ...structuredClone(DEFAULT_LIMITS), budget: { globalMinor: 10_000, perProjectMinor: {}, perProviderMinor: {} } };
@@ -396,30 +407,88 @@ describe('admissão: permissões, idempotência, concorrência, duração e soli
     const a = controller.admit('admin', subscription());
     await controller.cancel('admin', P1, a.id);
     expect(code(() => controller.complete('admin', P1, a.id, 'completed', { cost: { kind: 'none' }, tokens: null }))).toBe('invalid_transition');
-    await expect(controller.cancel('admin', P1, a.id)).rejects.toMatchObject({ code: 'invalid_transition' });
+    // Repetir o cancelamento só repete o PEDIDO de interrupção; o estado continua terminal.
+    await expect(controller.cancel('admin', P1, a.id)).resolves.toMatchObject({ state: 'cancelled', reason: 'cancelled_by_user' });
     expect(controller.get('admin', P1, a.id)?.state).toBe('cancelled');
+    // Interrupção confirmada: agora sim não há mais o que cancelar.
+    controller.confirmStopped(HUMAN, 'admin', P1, a.id);
+    await expect(controller.cancel('admin', P1, a.id)).rejects.toMatchObject({ code: 'invalid_transition' });
   });
 });
 
 describe('indisponibilidade e limites informados pelo provedor', () => {
   it('relato oficial de indisponibilidade bloqueia até o prazo informado', () => {
     const { controller, advance } = setup();
-    controller.reportProviderStatus('claude-code', 'subscription_assisted', { status: 'unavailable', reason: 'provider_outage', until: '2026-11-14T13:00:00Z' });
+    controller.reportProviderUnavailable('claude-code', 'subscription_assisted', { reason: 'provider_outage', until: '2026-11-14T13:00:00Z' });
     expect(code(() => controller.admit('admin', subscription()))).toBe('provider_unavailable');
-    expect(controller.providerStatus('claude-code', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'unavailable', report: { reason: 'provider_outage' } });
+    expect(controller.providerStatus('claude-code', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'unavailable', unavailability: { reason: 'provider_outage' }, quotas: [] });
     // Outro provedor/modo não é afetado.
-    expect(controller.providerStatus('chatgpt', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'available', report: null });
+    expect(controller.providerStatus('chatgpt', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'available', unavailability: null });
     advance(60 * 60 * 1000);
     expect(controller.admit('admin', subscription()).state).toBe('admitted');
-    expect(controller.providerStatus('claude-code', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'available', report: null });
+    expect(controller.providerStatus('claude-code', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'available', unavailability: null });
   });
 
   it('relato só restringe: nunca torna um provedor disponível; formato inválido é recusado', () => {
     const { controller } = setup({ real: true });
-    expect(code(() => controller.reportProviderStatus('chatgpt', 'subscription_assisted', { status: 'available' as never, reason: 'ok', until: null }))).toBe('invalid_report');
-    expect(code(() => controller.reportProviderStatus('chatgpt', 'subscription_assisted', { status: 'unavailable', reason: `leak ${CANARY_TOKEN}`, until: null }))).toBe('invalid_report');
-    expect(code(() => controller.reportProviderStatus('skynet' as AgentRef, 'metered_api', { status: 'unavailable', reason: 'x', until: null }))).toBe('provider_unknown');
-    expect(controller.providerStatus('chatgpt', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'unverified' });
+    expect(code(() => controller.reportProviderUnavailable('chatgpt', 'subscription_assisted', { reason: 'ok', until: null, status: 'available' } as never))).toBe('invalid_report');
+    expect(code(() => controller.reportProviderUnavailable('chatgpt', 'subscription_assisted', { reason: `leak ${CANARY_TOKEN}`, until: null }))).toBe('invalid_report');
+    expect(code(() => controller.reportProviderUnavailable('skynet' as AgentRef, 'metered_api', { reason: 'x', until: null }))).toBe('provider_unknown');
+    expect(code(() => controller.reportProviderQuota('chatgpt', 'subscription_assisted', { reason: 'quota', count: 10, windowSeconds: 60, until: null, status: 'available' } as never))).toBe('invalid_report');
+    // Quota sobre provedor não verificado: registrada, mas ele continua indisponível para admissão.
+    controller.reportProviderQuota('chatgpt', 'subscription_assisted', { reason: 'official_quota', count: 1000, windowSeconds: 60, until: null });
+    expect(controller.providerStatus('chatgpt', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'unverified', quotas: [{ count: 1000 }] });
+    expect(code(() => controller.admit('admin', subscription({ agentId: 'chatgpt' })))).toBe('provider_unverified');
+  });
+
+  it('quota oficial é registrada SEM declarar o provedor indisponível e é aplicada', () => {
+    const { controller } = setup();
+    controller.reportProviderQuota('claude-code', 'subscription_assisted', { reason: 'official_quota', count: 1, windowSeconds: 3600, until: null });
+    expect(controller.providerStatus('claude-code', 'subscription_assisted')).toMatchObject({ effectiveStatus: 'available', unavailability: null, quotas: [{ count: 1, windowSeconds: 3600 }] });
+    const a = controller.admit('admin', subscription());
+    controller.complete('admin', P1, a.id, 'completed', { cost: { kind: 'none' }, tokens: null });
+    expect(code(() => controller.admit('admin', subscription()))).toBe('provider_request_limit');
+  });
+
+  it('quota oficial expira no prazo informado; janela da quota também libera', () => {
+    const { controller, advance } = setup();
+    controller.reportProviderQuota('claude-code', 'subscription_assisted', { reason: 'official_quota', count: 1, windowSeconds: 24 * 3600, until: '2026-11-14T12:30:00Z' });
+    const a = controller.admit('admin', subscription());
+    controller.complete('admin', P1, a.id, 'completed', { cost: { kind: 'none' }, tokens: null });
+    expect(code(() => controller.admit('admin', subscription()))).toBe('provider_request_limit');
+    advance(30 * 60 * 1000);
+    expect(controller.providerStatus('claude-code', 'subscription_assisted')).toMatchObject({ quotas: [] });
+    expect(controller.admit('admin', subscription()).state).toBe('admitted');
+  });
+
+  it('quota mais generosa não amplia: a mais restritiva vigente e a do catálogo continuam valendo', () => {
+    const providers = verifiedCatalog().map((p) => (p.provider === 'claude-code' && p.mode === 'subscription_assisted' ? { ...p, officialRequestLimit: { count: 2, windowSeconds: 3600 } } : p));
+    const { controller } = setup({ providers });
+    controller.reportProviderQuota('claude-code', 'subscription_assisted', { reason: 'official_quota', count: 1, windowSeconds: 3600, until: null });
+    controller.reportProviderQuota('claude-code', 'subscription_assisted', { reason: 'official_quota_raised', count: 500, windowSeconds: 3600, until: null });
+    const a = controller.admit('admin', subscription());
+    controller.complete('admin', P1, a.id, 'completed', { cost: { kind: 'none' }, tokens: null });
+    expect(code(() => controller.admit('admin', subscription()))).toBe('provider_request_limit');
+
+    // Sem quota relatada, o limite do catálogo (2/h) não é ampliado por uma quota maior.
+    const other = setup({ providers });
+    other.controller.reportProviderQuota('claude-code', 'subscription_assisted', { reason: 'official_quota', count: 500, windowSeconds: 3600, until: null });
+    for (let i = 0; i < 2; i++) {
+      const b = other.controller.admit('admin', subscription());
+      other.controller.complete('admin', P1, b.id, 'completed', { cost: { kind: 'none' }, tokens: null });
+    }
+    expect(code(() => other.controller.admit('admin', subscription()))).toBe('provider_request_limit');
+  });
+
+  it('quota e indisponibilidade são independentes: o fim da indisponibilidade não apaga a quota', () => {
+    const { controller, advance } = setup();
+    controller.reportProviderUnavailable('claude-code', 'subscription_assisted', { reason: 'provider_outage', until: '2026-11-14T12:10:00Z' });
+    controller.reportProviderQuota('claude-code', 'subscription_assisted', { reason: 'official_quota', count: 1, windowSeconds: 3600, until: null });
+    expect(code(() => controller.admit('admin', subscription()))).toBe('provider_unavailable');
+    advance(10 * 60 * 1000);
+    const a = controller.admit('admin', subscription());
+    controller.complete('admin', P1, a.id, 'completed', { cost: { kind: 'none' }, tokens: null });
+    expect(code(() => controller.admit('admin', subscription()))).toBe('provider_request_limit');
   });
 
   it('limite oficial de solicitações do provedor é respeitado', () => {
@@ -573,5 +642,207 @@ describe('proteção de dados e credenciais', () => {
     a.cost.reservedMinor = -1;
     expect(controller.get('admin', P1, a.id)).toMatchObject({ state: 'admitted', cost: { reservedMinor: 0 } });
     expect(controller.get('user-b', P1, a.id)).toBeNull();
+  });
+});
+
+describe('R1: autenticidade das aprovações humanas', () => {
+  it('sem verificador confiável (produção atual), mudanças sensíveis são negadas mesmo com aprovação "perfeita"', async () => {
+    const { controller, forgeApproval } = setup({ noVerifier: true });
+    const next = { ...structuredClone(DEFAULT_LIMITS), maxConcurrent: 2 };
+    expect(code(() => controller.updateLimits(HUMAN, next, forgeApproval('limits.change', limitsFingerprint(next))))).toBe('approval_verifier_unavailable');
+    await controller.engageKillSwitch(HUMAN, { kind: 'global' }, 'emergency_stop');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, forgeApproval('killswitch.release', 'global')))).toBe('approval_verifier_unavailable');
+    expect(controller.getLimits()).toEqual(DEFAULT_LIMITS);
+    expect(controller.killSwitchStatus().global.engaged).toBe(true);
+    expect(controller.auditTrail().filter((e) => e.reason === 'approval_verifier_unavailable')).toHaveLength(2);
+  });
+
+  it('aprovação forjada (campos, datas e alvo válidos, mas não emitida) é recusada', async () => {
+    const { controller, forgeApproval } = setup();
+    const next = { ...structuredClone(DEFAULT_LIMITS), maxConcurrent: 2 };
+    expect(code(() => controller.updateLimits(HUMAN, next, forgeApproval('limits.change', limitsFingerprint(next))))).toBe('approval_not_authentic');
+    await controller.engageKillSwitch(HUMAN, { kind: 'global' }, 'emergency_stop');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, forgeApproval('killswitch.release', 'global')))).toBe('approval_not_authentic');
+    expect(controller.auditTrail().filter((e) => e.reason === 'approval_not_issued')).toHaveLength(2);
+    expect(controller.getLimits().maxConcurrent).toBe(1);
+  });
+
+  it('aprovação emitida e depois adulterada (alvo, validade ou operação) é recusada', async () => {
+    const { controller, humanApproval } = setup();
+    const next = { ...structuredClone(DEFAULT_LIMITS), maxConcurrent: 2 };
+    const genuineForOther = humanApproval('limits.change', limitsFingerprint(DEFAULT_LIMITS));
+    expect(code(() => controller.updateLimits(HUMAN, next, { ...genuineForOther, target: limitsFingerprint(next) }))).toBe('approval_not_authentic');
+    const genuine = humanApproval('limits.change', limitsFingerprint(next));
+    expect(code(() => controller.updateLimits(HUMAN, next, { ...genuine, expiresAt: '2026-11-15T11:00:00.000Z' }))).toBe('approval_not_authentic');
+    await controller.engageKillSwitch(HUMAN, { kind: 'global' }, 'emergency_stop');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, { ...genuine, operation: 'killswitch.release', target: 'global' }))).toBe('approval_not_authentic');
+    expect(controller.auditTrail().filter((e) => e.reason === 'approval_tampered')).toHaveLength(3);
+    // A aprovação original, intacta, ainda vale (as tentativas não a consumiram).
+    expect(controller.updateLimits(HUMAN, next, genuine).maxConcurrent).toBe(2);
+  });
+
+  it('identidade divergente: o aprovador autenticado não é o declarado, ou é um agente', async () => {
+    const { controller, verifier, forgeApproval } = setup();
+    await controller.engageKillSwitch(HUMAN, { kind: 'global' }, 'emergency_stop');
+    const claimsAdmin = verifier.issue(forgeApproval('killswitch.release', 'global'), 'someone-else');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, claimsAdmin))).toBe('approver_identity_mismatch');
+    const reallyAgent = verifier.issue(forgeApproval('killswitch.release', 'global'), 'claude-code');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, reallyAgent))).toBe('approver_identity_mismatch');
+    expect(controller.killSwitchStatus().global.engaged).toBe(true);
+    expect(controller.auditTrail().filter((e) => e.reason === 'approver_identity_mismatch')).toHaveLength(2);
+  });
+
+  it('verificador que falha (exceção) ou devolve motivo fora do formato: recusado, sem vazar dados', async () => {
+    const throwing = createLimitsController({
+      projects: { get: () => null },
+      tasks: { get: () => null },
+      approvalVerifier: {
+        id: 'broken',
+        kind: 'trusted',
+        verify: () => {
+          throw new Error(`db down ${CANARY_TOKEN}`);
+        },
+      },
+    });
+    const ctx = setup();
+    const next = { ...structuredClone(DEFAULT_LIMITS), maxConcurrent: 2 };
+    expect(code(() => throwing.updateLimits(HUMAN, next, ctx.forgeApproval('limits.change', limitsFingerprint(next))))).toBe('approval_not_authentic');
+    const weird = createLimitsController({
+      projects: { get: () => null },
+      tasks: { get: () => null },
+      approvalVerifier: { id: 'weird', kind: 'trusted', verify: () => ({ authentic: false, reason: `Bearer ${CANARY_TOKEN}` }) },
+    });
+    expect(code(() => weird.updateLimits(HUMAN, next, ctx.forgeApproval('limits.change', limitsFingerprint(next))))).toBe('approval_not_authentic');
+    const trail = JSON.stringify(throwing.auditTrail()) + JSON.stringify(weird.auditTrail());
+    expect(trail).not.toContain(CANARY_TOKEN);
+    expect(throwing.auditTrail().at(-1)?.reason).toBe('approval_verification_failed');
+    expect(weird.auditTrail().at(-1)?.reason).toBe('approval_not_authentic');
+  });
+
+  it('uso único, validade máxima e alvo exato continuam valendo com aprovação autêntica', async () => {
+    const { controller, humanApproval, advance } = setup();
+    await controller.engageKillSwitch(HUMAN, { kind: 'global' }, 'emergency_stop');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, humanApproval('killswitch.release', P1)))).toBe('approval_wrong_target');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, humanApproval('killswitch.release', 'global', { expiresAt: '2026-11-20T00:00:00Z' })))).toBe('approval_invalid_validity');
+    const stale = humanApproval('killswitch.release', 'global');
+    advance(2 * 60 * 60 * 1000);
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, stale))).toBe('approval_expired');
+    const ok = humanApproval('killswitch.release', 'global');
+    controller.releaseKillSwitch(HUMAN, { kind: 'global' }, ok);
+    await controller.engageKillSwitch(HUMAN, { kind: 'global' }, 'again');
+    expect(code(() => controller.releaseKillSwitch(HUMAN, { kind: 'global' }, ok))).toBe('approval_already_used');
+  });
+});
+
+describe('R2: vaga de concorrência só é liberada com interrupção confirmada', () => {
+  /** Handler de cancelamento controlável: fica pendente até `settle(resultado)`. */
+  function gatedCancel() {
+    let settle!: (result: CancellationResult) => void;
+    const handler = vi.fn(() => new Promise<CancellationResult>((resolve) => (settle = resolve)));
+    return { handler, settle: (r: CancellationResult) => settle(r) };
+  }
+
+  it.each(['failed', 'not_supported'] as const)('cancelamento "%s": a vaga continua ocupada e nova admissão é recusada', async (result) => {
+    const { controller } = setup({ cancelHandler: async () => result });
+    const a = controller.admit('admin', subscription());
+    const cancelled = await controller.cancel('admin', P1, a.id);
+    expect(cancelled).toMatchObject({ state: 'cancelled', capacity: 'held', cancellation: { result } });
+    expect(controller.activeCount()).toBe(0);
+    expect(controller.capacityInUse()).toBe(1);
+    expect(code(() => controller.admit('admin', subscription()))).toBe('concurrency_limit');
+  });
+
+  it('cancelamento pendente: a vaga só é liberada quando o resultado "cancelled" chega', async () => {
+    const gate = gatedCancel();
+    const { controller } = setup({ cancelHandler: gate.handler });
+    const a = controller.admit('admin', subscription());
+    const cancelling = controller.cancel('admin', P1, a.id);
+    expect(controller.get('admin', P1, a.id)).toMatchObject({ state: 'cancelled', capacity: 'held', cancellation: { result: 'pending' } });
+    expect(code(() => controller.admit('admin', subscription()))).toBe('concurrency_limit');
+    // Pedido em andamento não é duplicado nem confirmado manualmente.
+    await expect(controller.cancel('admin', P1, a.id)).rejects.toMatchObject({ code: 'invalid_transition' });
+    expect(code(() => controller.confirmStopped(HUMAN, 'admin', P1, a.id))).toBe('invalid_transition');
+    gate.settle('cancelled');
+    await cancelling;
+    expect(controller.get('admin', P1, a.id)).toMatchObject({ capacity: 'released', cancellation: { result: 'cancelled' } });
+    expect(controller.admit('admin', subscription()).state).toBe('admitted');
+    expect(gate.handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('nova tentativa de cancelamento após "failed" pode liberar a vaga', async () => {
+    const results: CancellationResult[] = ['failed', 'cancelled'];
+    const { controller } = setup({ cancelHandler: async () => results.shift()! });
+    const a = controller.admit('admin', subscription());
+    await controller.cancel('admin', P1, a.id);
+    expect(controller.capacityInUse()).toBe(1);
+    expect(await controller.cancel('admin', P1, a.id)).toMatchObject({ state: 'cancelled', capacity: 'released', cancellation: { result: 'cancelled' } });
+    expect(controller.admit('admin', subscription()).state).toBe('admitted');
+  });
+
+  it('confirmação explícita de parada (pessoa dona ou host) libera a vaga; agente e outro dono não', async () => {
+    const { controller } = setup();
+    const a = controller.admit('admin', subscription());
+    await controller.cancel('admin', P1, a.id);
+    expect(code(() => controller.confirmStopped({ kind: 'agent', id: 'claude-code' } as never, 'admin', P1, a.id))).toBe('invalid_actor');
+    expect(code(() => controller.confirmStopped({ kind: 'human', id: 'user-b' }, 'admin', P1, a.id))).toBe('invalid_actor');
+    expect(code(() => controller.confirmStopped({ kind: 'human', id: 'user-b' }, 'user-b', P1, a.id))).toBe('not_found');
+    expect(controller.confirmStopped(HUMAN, 'admin', P1, a.id)).toMatchObject({ state: 'cancelled', capacity: 'released' });
+    expect(controller.auditTrail().some((e) => e.event === 'capacity_released' && e.reason === 'stop_confirmed_by_human')).toBe(true);
+    // Admissão ativa não é "confirmada parada": use complete/cancel.
+    const b = controller.admit('admin', subscription());
+    expect(code(() => controller.confirmStopped(SYSTEM, 'admin', P1, b.id))).toBe('invalid_transition');
+  });
+
+  it('expiração sem cancelamento confirmado: a vaga continua ocupada', async () => {
+    const { controller, advance } = setup();
+    const a = controller.admit('admin', subscription({ durationSeconds: 60 }));
+    advance(60_000);
+    const [expired] = await controller.expireOverdue();
+    expect(expired).toMatchObject({ id: a.id, state: 'expired', capacity: 'held', cancellation: { result: 'not_supported' } });
+    expect(code(() => controller.admit('admin', subscription()))).toBe('concurrency_limit');
+    controller.confirmStopped(SYSTEM, 'admin', P1, a.id);
+    expect(controller.admit('admin', subscription()).state).toBe('admitted');
+  });
+
+  it('expiração preguiçosa com cancelamento pendente: admissões concorrentes não passam do limite', async () => {
+    const gate = gatedCancel();
+    const { controller, advance, approveLimits } = setup({ cancelHandler: gate.handler });
+    approveLimits({ maxConcurrent: 2 });
+    controller.admit('admin', subscription({ durationSeconds: 60 }));
+    advance(60_000);
+    // A 1ª expira (vaga ainda ocupada, cancelamento pendente); só cabe mais UMA.
+    const results = await Promise.allSettled([0, 1, 2].map(() => Promise.resolve().then(() => controller.admit('admin', subscription()))));
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(controller.capacityInUse()).toBe(2);
+    gate.settle('cancelled');
+    await vi.waitFor(() => expect(controller.capacityInUse()).toBe(1));
+  });
+
+  it('kill switch com cancelamento não confirmado: a vaga fica ocupada mesmo após reativação', async () => {
+    const { controller, humanApproval } = setup({ cancelHandler: async () => 'failed' });
+    const a = controller.admit('admin', subscription());
+    const { cancellations } = await controller.engageKillSwitch(HUMAN, { kind: 'global' }, 'emergency_stop');
+    expect(cancellations).toEqual([{ admissionId: a.id, result: 'failed' }]);
+    controller.releaseKillSwitch(HUMAN, { kind: 'global' }, humanApproval('killswitch.release', 'global'));
+    expect(code(() => controller.admit('admin', subscription()))).toBe('concurrency_limit');
+    expect(controller.get('admin', P1, a.id)).toMatchObject({ state: 'cancelled', reason: 'kill_switch', capacity: 'held' });
+  });
+
+  it('novo kill switch repete o pedido de cancelamento das operações ainda não interrompidas', async () => {
+    const results: CancellationResult[] = ['not_supported', 'cancelled'];
+    const { controller } = setup({ cancelHandler: async () => results.shift()! });
+    const a = controller.admit('admin', subscription());
+    await controller.cancel('admin', P1, a.id);
+    expect(controller.capacityInUse()).toBe(1);
+    const { cancellations } = await controller.engageKillSwitch(SYSTEM, { kind: 'project', projectId: P1 }, 'project_stop');
+    expect(cancellations).toEqual([{ admissionId: a.id, result: 'cancelled' }]);
+    expect(controller.get('admin', P1, a.id)).toMatchObject({ state: 'cancelled', reason: 'cancelled_by_user', capacity: 'released' });
+  });
+
+  it('término informado pelo provedor (complete) libera a vaga normalmente', () => {
+    const { controller } = setup();
+    const a = controller.admit('admin', subscription());
+    expect(controller.complete('admin', P1, a.id, 'completed', { cost: { kind: 'none' }, tokens: null })).toMatchObject({ capacity: 'released' });
+    expect(controller.capacityInUse()).toBe(0);
   });
 });

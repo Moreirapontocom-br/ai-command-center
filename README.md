@@ -57,7 +57,8 @@ A diretriz do PO é priorizar as assinaturas existentes, com orçamento adiciona
 - **Limites:** 1 execução simultânea, até 10 minutos por tarefa e limite de solicitações por janela.
 - **Custos:** cobrança desconhecida é bloqueada, e custo acima de zero exige a ação crítica `spend.create` da #020 e orçamento aprovado.
 - **Assinaturas:** não há saldo nem quota de tokens presumidos.
-- **Kill switch:** global e por projeto. A reativação e qualquer mudança de limites exigem aprovação humana.
+- **Kill switch:** global e por projeto. A reativação e qualquer mudança de limites exigem aprovação humana de origem verificada. Como o verificador confiável só chega com a #011, hoje essas duas operações ficam negadas.
+- **Vagas:** a vaga de execução só é liberada quando o término ou a interrupção são confirmados.
 
 Nenhum provedor está verificado (verificação na #028), então nada é admitido hoje. Não há conectores de IA, rota HTTP nem execução real. Detalhes em `docs/IMPLEMENTATION_REPORT_022.md`.
 

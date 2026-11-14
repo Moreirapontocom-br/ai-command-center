@@ -7,12 +7,15 @@ import { LoginPage } from './features/auth/LoginPage';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { GitHubDataProvider } from './features/github/GitHubDataProvider';
 import { BranchesPage, IssuesPage, PullRequestsPage } from './features/github/GitHubPages';
+import { ProjectsPage } from './features/projects/ProjectsPage';
+import { ProjectsProvider } from './features/projects/ProjectsProvider';
 import { TasksPage } from './features/tasks/TasksPage';
 import type { ViewId } from './types';
 
 // Navegação simples por estado local — sem biblioteca de roteamento (fora do escopo da Issue #001).
 const VIEWS: Record<ViewId, ComponentType> = {
   dashboard: DashboardPage,
+  projetos: ProjectsPage,
   issues: IssuesPage,
   'pull-requests': PullRequestsPage,
   branches: BranchesPage,
@@ -25,11 +28,14 @@ function Dashboard() {
   const CurrentView = VIEWS[view];
 
   return (
-    <GitHubDataProvider>
-      <AppLayout currentView={view} onNavigate={setView}>
-        <CurrentView />
-      </AppLayout>
-    </GitHubDataProvider>
+    // Os dados do GitHub dependem do projeto ativo: ProjectsProvider fica por fora.
+    <ProjectsProvider>
+      <GitHubDataProvider>
+        <AppLayout currentView={view} onNavigate={setView}>
+          <CurrentView />
+        </AppLayout>
+      </GitHubDataProvider>
+    </ProjectsProvider>
   );
 }
 

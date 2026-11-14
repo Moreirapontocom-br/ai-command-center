@@ -1,6 +1,8 @@
 node_modules
 dist
 coverage
+# Dados locais do ACC (projetos, Issue #004). Nunca versionar.
+data/
 *.log
 .env
 .env.*

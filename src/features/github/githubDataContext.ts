@@ -2,8 +2,16 @@ import { createContext, useContext } from 'react';
 import type { RepoSnapshot } from '../../../shared/contracts.ts';
 import type { ApiClientError, ClientErrorCode } from '../../services/githubApi';
 
-/** Situações em que não há dados reais e a aplicação segue apenas em modo demonstração. */
-export type DemoReason = 'server_unreachable' | 'missing_credentials' | 'no_repositories';
+/**
+ * Situações em que não há dados reais do GitHub. `no_active_project` e `project_without_repository`
+ * não são falhas: projetos existem sem GitHub (Issue #004).
+ */
+export type DemoReason =
+  | 'server_unreachable'
+  | 'missing_credentials'
+  | 'no_repositories'
+  | 'no_active_project'
+  | 'project_without_repository';
 
 export type GitHubDataState =
   | { phase: 'loading' }

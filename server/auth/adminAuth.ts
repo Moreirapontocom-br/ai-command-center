@@ -15,6 +15,12 @@ import { createSessionStore, type Session, type SessionStore, type SessionStoreO
  * fine-grained ou gh-cli), que continua exclusiva do servidor.
  */
 
+/**
+ * Identificador do administrador único. É o dono de todos os projetos no MVP; não deriva do e-mail
+ * para que trocar `ACC_ADMIN_EMAIL` não desvincule os dados já gravados.
+ */
+export const ADMIN_USER_ID = 'admin';
+
 export interface AdminAccount {
   email: string;
   passwordHash: PasswordHash;
@@ -118,7 +124,7 @@ export function createAuthService(options: AuthOptions): AuthService {
       throttle.recordSuccess(client);
       // Sessão administrativa única: o novo login encerra todas as anteriores (qualquer navegador).
       store.revokeAll();
-      const { token, session } = store.create({ email: options.admin.email, scope: options.scope });
+      const { token, session } = store.create({ userId: ADMIN_USER_ID, email: options.admin.email, scope: options.scope });
       return { ok: true, token, session };
     },
 

@@ -7,6 +7,7 @@ import { GH_CLI_ERROR_MESSAGE } from './auth/ghCli.ts';
 import { createGraphQLClient } from './github/client.ts';
 import { createRequestHandler } from './http/app.ts';
 import { createConsoleLogger } from './logger.ts';
+import { openProjectStore, ProjectStoreError } from './projects/projectStore.ts';
 import { createSnapshotService } from './snapshotService.ts';
 
 const logger = createConsoleLogger();
@@ -51,7 +52,16 @@ if (!auth.configured) {
   );
 }
 
-const handler = createRequestHandler({ config, snapshots, auth, logger });
+// Projetos (Issue #004): arquivo local validado na abertura. Corrompido → o servidor não inicia.
+let projects;
+try {
+  projects = await openProjectStore({ filePath: config.projectsFile, allowedRepositories: config.allowedRepositories });
+} catch (error) {
+  logger.log('error', error instanceof ProjectStoreError ? error.message : 'Falha ao abrir o arquivo de projetos.');
+  process.exit(1);
+}
+
+const handler = createRequestHandler({ config, snapshots, auth, projects, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
 });

@@ -7,6 +7,7 @@ import {
   configuredStatus,
   json,
   mockApi,
+  PROJECT_ID,
   snapshotFixture,
   snapshotReply,
 } from '../../test/githubFixtures';
@@ -62,7 +63,7 @@ describe('integração GitHub na interface', () => {
 
     await userEvent.setup().click(within(alert).getByRole('button', { name: 'Tentar novamente' }));
     expect(await screen.findByText('Dados reais do GitHub')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(4); // sessão + status (falha) + status + snapshot
+    expect(fetchMock).toHaveBeenCalledTimes(5); // sessão + projetos + status (falha) + status + snapshot
   });
 
   it.each([
@@ -115,7 +116,7 @@ describe('integração GitHub na interface', () => {
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Atualizar' }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenLastCalledWith(
-        '/api/repos/Moreirapontocom-br/ai-command-center/snapshot?refresh=1',
+        `/api/projects/${PROJECT_ID}/repositories/Moreirapontocom-br/ai-command-center/snapshot?refresh=1`,
         expect.anything(),
       ),
     );

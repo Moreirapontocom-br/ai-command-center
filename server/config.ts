@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { AdminAccount } from './auth/adminAuth.ts';
 import { MIN_CONFIG_SCRYPT_N, parsePasswordHash, PasswordHashFormatError } from './auth/password.ts';
 import { createFineGrainedTokenProvider, type CredentialProvider } from './auth/credentials.ts';
@@ -41,6 +41,8 @@ export interface ServerConfig {
   admin: AdminAccount | null;
   /** Cookie de sessão com `Secure` e prefixo `__Host-` (apenas em `ACC_DEPLOYMENT=production`). */
   secureCookie: boolean;
+  /** Caminho absoluto do arquivo de projetos (`ACC_DATA_DIR`, padrão `./data`, fora do Git). */
+  projectsFile: string;
 }
 
 export class ConfigError extends Error {
@@ -181,6 +183,7 @@ export function loadConfig(
   const deployment = parseDeployment(env.ACC_DEPLOYMENT);
   const credentials = resolveCredentials(env, deployment, ghCliOverrides);
   const admin = resolveAdmin(env);
+  const dataDir = resolve(env.ACC_DATA_DIR?.trim() || 'data');
 
   return {
     deployment,
@@ -200,5 +203,6 @@ export function loadConfig(
     rateLimitPerMinute: 60,
     admin,
     secureCookie: deployment === 'production',
+    projectsFile: join(dataDir, 'projects.json'),
   };
 }

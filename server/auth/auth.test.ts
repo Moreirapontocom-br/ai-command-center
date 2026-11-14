@@ -45,7 +45,7 @@ describe('sessões no servidor', () => {
 
   it('token aleatório de 256 bits; o mapa não guarda o valor do cookie', () => {
     const store = createSessionStore({ ...limits, now: () => 0 });
-    const { token } = store.create({ email: 'a@b.c', scope: ['x/y'] });
+    const { token } = store.create({ userId: 'admin', email: 'a@b.c', scope: ['x/y'] });
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(store.touch(token)?.email).toBe('a@b.c');
     const tampered = `${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}`;
@@ -56,14 +56,14 @@ describe('sessões no servidor', () => {
   it('expira por inatividade e por tempo absoluto', () => {
     let now = 0;
     const store = createSessionStore({ ...limits, now: () => now });
-    const { token } = store.create({ email: 'a@b.c', scope: [] });
+    const { token } = store.create({ userId: 'admin', email: 'a@b.c', scope: [] });
     now = 900;
     expect(store.touch(token)).not.toBeNull(); // renova a inatividade
     now = 1800;
     expect(store.touch(token)).not.toBeNull();
     now = 2900;
     expect(store.touch(token)).toBeNull(); // 1100 ms sem uso
-    const second = store.create({ email: 'a@b.c', scope: [] });
+    const second = store.create({ userId: 'admin', email: 'a@b.c', scope: [] });
     for (now = 3000; now < 7900; now += 900) expect(store.touch(second.token)).not.toBeNull();
     now = 8000; // 5000 ms desde a criação, mesmo com uso contínuo
     expect(store.touch(second.token)).toBeNull();
@@ -71,7 +71,7 @@ describe('sessões no servidor', () => {
 
   it('revogação e limite de sessões simultâneas', () => {
     const store = createSessionStore({ ...limits, now: () => 0 });
-    const tokens = [1, 2, 3, 4].map(() => store.create({ email: 'a@b.c', scope: [] }).token);
+    const tokens = [1, 2, 3, 4].map(() => store.create({ userId: 'admin', email: 'a@b.c', scope: [] }).token);
     expect(store.size()).toBe(3);
     expect(store.touch(tokens[0])).toBeNull(); // a mais antiga foi descartada
     store.revoke(tokens[3]);

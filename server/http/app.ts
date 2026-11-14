@@ -1,11 +1,20 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { ApiErrorBody, ApiErrorCode, SessionResponse, StatusResponse } from '../../shared/contracts.ts';
+import type {
+  ActiveProjectResponse,
+  ApiErrorBody,
+  ApiErrorCode,
+  ProjectListResponse,
+  SessionResponse,
+  StatusResponse,
+} from '../../shared/contracts.ts';
 import { API_SECURITY_HEADERS } from '../../shared/securityHeaders.ts';
 import { readCookie, type AuthService } from '../auth/adminAuth.ts';
 import type { Session } from '../auth/sessions.ts';
 import type { ServerConfig } from '../config.ts';
 import { ERROR_HTTP_STATUS, IntegrationError } from '../github/errors.ts';
 import type { Logger } from '../logger.ts';
+import type { ProjectStore } from '../projects/projectStore.ts';
+import { parseActiveProject, parseProjectCreate, parseProjectUpdate, PROJECT_ID_PATTERN } from '../projects/validation.ts';
 import type { SnapshotService } from '../snapshotService.ts';
 import { createRateLimiter } from './rateLimiter.ts';
 
@@ -17,23 +26,45 @@ export interface AppDeps {
   snapshots: SnapshotService | null;
   /** Autenticação do administrador do ACC. Toda rota fora de `PUBLIC_ROUTES` exige sessão válida. */
   auth: AuthService;
+  /** Projetos (Issue #004). Ausente: as rotas de projetos respondem erro interno. */
+  projects?: ProjectStore | null;
   logger: Logger;
   now?: () => number;
 }
 
-/**
- * Únicas rotas que aceitam POST: login e logout. Elas não alteram dados de negócio nem chegam ao
- * GitHub. Todas as demais rotas continuam somente leitura (GET/HEAD).
- */
-export const POST_ROUTES: readonly string[] = Object.freeze(['/api/auth/login', '/api/auth/logout']);
-/** Rotas acessíveis sem sessão. Nenhuma devolve dados do GitHub nem da configuração. */
-export const PUBLIC_ROUTES: readonly string[] = Object.freeze(['/api/auth/session', ...POST_ROUTES]);
-
+/** Único método de escrita aceito pelo servidor. Não há PUT, PATCH nem DELETE. */
+const WRITE_METHOD = 'POST';
 const READ_METHODS: readonly string[] = Object.freeze(['GET', 'HEAD']);
-const MAX_BODY_BYTES = 4096;
+
+const AUTH_POST_ROUTES: readonly string[] = Object.freeze(['/api/auth/login', '/api/auth/logout']);
+const PROJECTS_ROUTE = '/api/projects';
+const ACTIVE_PROJECT_ROUTE = '/api/projects/active';
+const PROJECT_ITEM_ROUTE = /^\/api\/projects\/([^/]+)$/;
+const PROJECT_SNAPSHOT_ROUTE = /^\/api\/projects\/([^/]+)\/repositories\/([^/]+)\/([^/]+)\/snapshot$/;
+
+/**
+ * Rotas que aceitam POST. Login/logout não alteram dados de negócio; as de projetos (Issue #004)
+ * gravam apenas no armazenamento local do ACC. Nenhuma escrita chega ao GitHub, que continua
+ * somente leitura. `:id` representa o UUID de um projeto.
+ */
+export const POST_ROUTES: readonly string[] = Object.freeze([
+  ...AUTH_POST_ROUTES,
+  PROJECTS_ROUTE,
+  ACTIVE_PROJECT_ROUTE,
+  '/api/projects/:id',
+]);
+/** Rotas acessíveis sem sessão. Nenhuma devolve dados do GitHub, de projetos nem da configuração. */
+export const PUBLIC_ROUTES: readonly string[] = Object.freeze(['/api/auth/session', ...AUTH_POST_ROUTES]);
+
+const MAX_AUTH_BODY_BYTES = 4096;
+const MAX_PROJECT_BODY_BYTES = 16 * 1024;
 
 export function allowedMethods(pathname: string): readonly string[] {
-  return POST_ROUTES.includes(pathname) ? ['POST'] : READ_METHODS;
+  if (AUTH_POST_ROUTES.includes(pathname) || pathname === ACTIVE_PROJECT_ROUTE) return [WRITE_METHOD];
+  // Listar/criar e ler/editar projetos. Um id malformado recebe a mesma resposta de método que um
+  // válido; o formato só é verificado depois da autenticação.
+  if (pathname === PROJECTS_ROUTE || PROJECT_ITEM_ROUTE.test(pathname)) return [...READ_METHODS, WRITE_METHOD];
+  return READ_METHODS;
 }
 
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
@@ -90,7 +121,8 @@ function assertTrustedRequest(req: IncomingMessage, deps: AppDeps) {
 }
 
 /**
- * CSRF nas rotas POST (login/logout), além do cookie `SameSite=Strict`:
+ * CSRF em TODA requisição POST (login, logout e projetos), além do cookie `SameSite=Strict`.
+ * Roda antes da autenticação, para que um pedido forjado não chegue nem a renovar a sessão:
  * - `Origin` obrigatório e igual a uma origem conhecida;
  * - `Sec-Fetch-Site`, se enviado, precisa ser `same-origin` (recusa `same-site`, ex.: outra porta);
  * - corpo `application/json`, que um formulário de outro site não envia sem preflight CORS
@@ -106,18 +138,19 @@ function assertSafePost(req: IncomingMessage, deps: AppDeps) {
 }
 
 /**
- * Lê o corpo JSON com limite de 4 KiB (declarado em `Content-Length` ou contado durante a leitura).
- * O conteúdo nunca é registrado em log nem repetido na resposta. Corpo vazio ou inválido → 400.
+ * Lê o corpo JSON com limite (4 KiB na autenticação, 16 KiB em projetos), declarado em
+ * `Content-Length` ou contado durante a leitura. O conteúdo nunca é registrado em log nem repetido
+ * na resposta. Corpo vazio ou inválido → 400.
  */
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+async function readJsonBody(req: IncomingMessage, maxBytes = MAX_AUTH_BODY_BYTES): Promise<unknown> {
   const declared = Number(req.headers['content-length'] ?? '0');
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) fail('payload_too_large');
+  if (Number.isFinite(declared) && declared > maxBytes) fail('payload_too_large');
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buffer = chunk as Buffer;
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) fail('payload_too_large');
+    if (size > maxBytes) fail('payload_too_large');
     chunks.push(buffer);
   }
   try {
@@ -158,6 +191,78 @@ function assertOnlyParams(url: URL, allowed: string[]) {
 }
 
 export function createRequestHandler(deps: AppDeps) {
+  const linkableRepositories = (session: Session) =>
+    deps.config.allowedRepositories.filter((name) => session.scope.includes(name));
+
+  /**
+   * Rotas de projetos (Issue #004), todas autenticadas. O dono é sempre o `userId` da sessão: o
+   * cliente nunca informa de quem é o projeto. Projeto de outro dono responde 404, igual a um
+   * inexistente.
+   */
+  async function handleProjects(req: IncomingMessage, res: ServerResponse, url: URL, session: Session) {
+    const store = deps.projects ?? fail('internal');
+    const pathname = url.pathname;
+    const ownerId = session.userId;
+    const isWrite = req.method === WRITE_METHOD;
+
+    if (pathname === PROJECTS_ROUTE) {
+      assertOnlyParams(url, []);
+      if (isWrite) {
+        const fields = parseProjectCreate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), linkableRepositories(session));
+        const project = await store.create(ownerId, fields);
+        deps.logger.log('info', 'Projeto criado', { event: 'project_created', projectId: project.id });
+        sendJson(res, 201, project);
+        return;
+      }
+      const body: ProjectListResponse = { ...store.list(ownerId), linkableRepositories: linkableRepositories(session) };
+      sendJson(res, 200, body);
+      return;
+    }
+
+    if (pathname === ACTIVE_PROJECT_ROUTE) {
+      assertOnlyParams(url, []);
+      const projectId = parseActiveProject(await readJsonBody(req, MAX_PROJECT_BODY_BYTES));
+      if (!(await store.setActive(ownerId, projectId))) fail('not_found');
+      const body: ActiveProjectResponse = { activeProjectId: projectId };
+      sendJson(res, 200, body);
+      return;
+    }
+
+    const item = PROJECT_ITEM_ROUTE.exec(pathname);
+    if (item) {
+      assertOnlyParams(url, []);
+      const projectId = item[1];
+      if (!PROJECT_ID_PATTERN.test(projectId)) fail('not_found');
+      if (isWrite) {
+        const patch = parseProjectUpdate(await readJsonBody(req, MAX_PROJECT_BODY_BYTES), linkableRepositories(session));
+        const updated = (await store.update(ownerId, projectId, patch)) ?? fail('not_found');
+        deps.logger.log('info', 'Projeto atualizado', { event: 'project_updated', projectId });
+        sendJson(res, 200, updated);
+        return;
+      }
+      sendJson(res, 200, store.get(ownerId, projectId) ?? fail('not_found'));
+      return;
+    }
+
+    const snapshotMatch = PROJECT_SNAPSHOT_ROUTE.exec(pathname);
+    if (snapshotMatch) {
+      assertOnlyParams(url, ['refresh']);
+      const refreshParam = url.searchParams.get('refresh');
+      if (refreshParam !== null && refreshParam !== '1') fail('bad_request');
+      const [, projectId, owner, repo] = snapshotMatch;
+      if (!PROJECT_ID_PATTERN.test(projectId)) fail('not_found');
+      const project = store.get(ownerId, projectId) ?? fail('not_found');
+      const fullName = resolveAllowedRepository(owner, repo, deps.config.allowedRepositories);
+      // Isolamento: só repositórios vinculados a ESTE projeto, dentro do escopo da sessão.
+      if (!project.repositories.includes(fullName) || !session.scope.includes(fullName)) fail('not_found');
+      if (deps.snapshots === null) fail('missing_credentials');
+      sendJson(res, 200, await deps.snapshots.getSnapshot(fullName, { refresh: refreshParam === '1' }));
+      return;
+    }
+
+    fail('not_found');
+  }
+
   const limiter = createRateLimiter({ limit: deps.config.rateLimitPerMinute, windowMs: 60_000, now: deps.now });
   const { auth } = deps;
 
@@ -181,6 +286,8 @@ export function createRequestHandler(deps: AppDeps) {
       const verdict = limiter.hit(client);
       if (!verdict.allowed) fail('too_many_requests', { retryAfterSeconds: verdict.retryAfterSeconds });
 
+      if (req.method === WRITE_METHOD) assertSafePost(req, deps);
+
       const cookieHeader = req.headers.cookie;
       const presentedCookie = readCookie(cookieHeader, auth.cookieName) !== null;
 
@@ -199,7 +306,6 @@ export function createRequestHandler(deps: AppDeps) {
 
       if (pathname === '/api/auth/login') {
         assertOnlyParams(url, []);
-        assertSafePost(req, deps);
         const credentials = parseLoginBody(await readJsonBody(req));
         const result = await auth.login({ ...credentials, client });
         if (!result.ok) {
@@ -219,7 +325,6 @@ export function createRequestHandler(deps: AppDeps) {
 
       if (pathname === '/api/auth/logout') {
         assertOnlyParams(url, []);
-        assertSafePost(req, deps);
         // O corpo não é usado, mas é validado com o mesmo limite (objeto JSON, normalmente `{}`).
         const logoutBody = await readJsonBody(req);
         if (typeof logoutBody !== 'object' || logoutBody === null || Array.isArray(logoutBody)) fail('bad_request');
@@ -231,7 +336,8 @@ export function createRequestHandler(deps: AppDeps) {
       }
 
       // Rotas protegidas. Já foram verificados, nesta ordem e para qualquer visitante: método (405),
-      // Host/Origin/Sec-Fetch-Site (403) e rate limit (429). Agora vem a autenticação (401) e, só
+      // Host/Origin/Sec-Fetch-Site (403), rate limit (429) e, em POST, CSRF/tipo do corpo (403/415).
+      // Agora vem a autenticação (401) e, só
       // depois dela, as validações específicas da rota (parâmetros 400, allowlist/escopo 404, rota
       // inexistente 404): um visitante não distingue rotas, parâmetros nem repositórios.
       const current = auth.authenticate(cookieHeader);
@@ -249,6 +355,11 @@ export function createRequestHandler(deps: AppDeps) {
           repositories: deps.config.allowedRepositories.filter((name) => session.scope.includes(name)),
         };
         sendJson(res, 200, body);
+        return;
+      }
+
+      if (pathname === PROJECTS_ROUTE || pathname.startsWith(`${PROJECTS_ROUTE}/`)) {
+        await handleProjects(req, res, url, session);
         return;
       }
 

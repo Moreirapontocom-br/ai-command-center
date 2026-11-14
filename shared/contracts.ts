@@ -135,6 +135,8 @@ export type ApiErrorCode =
   | 'auth_not_configured'
   | 'unsupported_media_type'
   | 'payload_too_large'
+  | 'repository_not_allowed'
+  | 'project_limit_reached'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -181,4 +183,61 @@ export type SessionResponse =
 export interface LoginRequest {
   email: string;
   password: string;
+}
+
+/**
+ * Projetos (Issue #004). Um projeto existe sem GitHub: os repositórios são vínculos opcionais,
+ * escolhidos apenas entre os autorizados no servidor (`linkableRepositories`).
+ */
+export const PROJECT_STATUSES = ['planning', 'active', 'paused', 'completed', 'archived'] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+/** Limites validados no servidor (o formulário usa os mesmos valores). Tamanhos em caracteres. */
+export const PROJECT_LIMITS = {
+  nameMax: 100,
+  descriptionMax: 2000,
+  objectiveMax: 1000,
+  repositoriesMax: 10,
+  projectsPerOwnerMax: 100,
+} as const;
+
+export interface Project {
+  /** UUID v4 gerado pelo servidor. */
+  id: string;
+  name: string;
+  description: string;
+  objective: string;
+  status: ProjectStatus;
+  /** `owner/repo` vinculados, sempre contidos na allowlist do servidor. O primeiro é o principal. */
+  repositories: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Corpo de `POST /api/projects`. Só `name` é obrigatório. */
+export interface ProjectCreateRequest {
+  name: string;
+  description?: string;
+  objective?: string;
+  status?: ProjectStatus;
+  repositories?: string[];
+}
+
+/** Corpo de `POST /api/projects/:id` (atualização parcial; ao menos um campo). */
+export type ProjectUpdateRequest = Partial<ProjectCreateRequest>;
+
+export interface ProjectListResponse {
+  projects: Project[];
+  /** Projeto ativo do usuário, persistido no servidor; `null` se nenhum foi selecionado. */
+  activeProjectId: string | null;
+  /** Repositórios que podem ser vinculados (allowlist do servidor ∩ escopo da sessão). */
+  linkableRepositories: string[];
+}
+
+/** Corpo de `POST /api/projects/active` e sua resposta. */
+export interface ActiveProjectRequest {
+  projectId: string | null;
+}
+export interface ActiveProjectResponse {
+  activeProjectId: string | null;
 }

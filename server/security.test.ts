@@ -48,16 +48,42 @@ describe('superfície de escrita do servidor', () => {
     expect([...GH_AUTH_TOKEN_ARGS]).toEqual(['auth', 'token', '--hostname', 'github.com']);
   });
 
-  it('rotas de negócio só aceitam GET e HEAD; POST existe apenas em login e logout (Issue #003, PR 2)', () => {
-    expect([...POST_ROUTES]).toEqual(['/api/auth/login', '/api/auth/logout']);
-    for (const path of ['/api/status', '/api/repos/a/b/snapshot', '/api/auth/session', '/api/qualquer']) {
+  it('POST só em login/logout (Issue #003) e projetos (Issue #004); o resto é GET/HEAD', () => {
+    expect([...POST_ROUTES]).toEqual([
+      '/api/auth/login',
+      '/api/auth/logout',
+      '/api/projects',
+      '/api/projects/active',
+      '/api/projects/:id',
+    ]);
+    const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
+    for (const path of [
+      '/api/status',
+      '/api/repos/a/b/snapshot',
+      `/api/projects/${id}/repositories/a/b/snapshot`,
+      '/api/auth/session',
+      '/api/qualquer',
+    ]) {
       expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);
     }
-    for (const path of POST_ROUTES) expect([...allowedMethods(path)]).toEqual(['POST']);
-    // Nenhum PUT/PATCH/DELETE em nenhuma rota, e a lista de POST é a única fonte de métodos de escrita.
+    for (const path of ['/api/auth/login', '/api/auth/logout', '/api/projects/active']) {
+      expect([...allowedMethods(path)]).toEqual(['POST']);
+    }
+    for (const path of ['/api/projects', `/api/projects/${id}`]) {
+      expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD', 'POST']);
+    }
+    // Nenhum PUT/PATCH/DELETE em nenhuma rota; POST aparece uma única vez (constante WRITE_METHOD).
     const app = server.find((f) => f.path === 'server/http/app.ts')!.code;
     expect(app).not.toMatch(/['"](?:PUT|PATCH|DELETE)['"]/);
     expect(app.match(/['"]POST['"]/g)).toHaveLength(1);
+  });
+
+  it('projetos gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issue #004)', () => {
+    const projectFiles = server.filter((f) => f.path.startsWith('server/projects/'));
+    expect(projectFiles.map((f) => f.path).sort()).toEqual(['server/projects/projectStore.ts', 'server/projects/validation.ts']);
+    for (const file of projectFiles) {
+      expect(file.code).not.toMatch(/github\/client|github\/queries|snapshotService|\bfetch\(|child_process|node:net|node:http/);
+    }
   });
 });
 
@@ -104,14 +130,18 @@ describe('frontend', () => {
     expect(filesMatching(frontend, /https?:\/\/api\.github\.com/)).toEqual([]);
   });
 
-  it('um único ponto de rede; POST só para login/logout do ACC (Issue #003, PR 2)', () => {
+  it('um único ponto de rede; POST só para as rotas de escrita do próprio ACC', () => {
     expect(filesMatching(frontend, /\bfetch\(/)).toEqual(['src/services/apiClient.ts']);
     expect(filesMatching(frontend, /method:\s*['"](?:PUT|PATCH|DELETE)/i)).toEqual([]);
     expect(filesMatching(frontend, /method:\s*['"]POST/)).toEqual(['src/services/apiClient.ts']);
-    // Quem envia corpo (`post:`) é só o cliente de autenticação, e apenas para as rotas de login/logout.
-    expect(filesMatching(frontend, /\bpost:\s/)).toEqual(['src/services/authApi.ts']);
-    const authApi = frontend.find((f) => f.path === 'src/services/authApi.ts')!.code;
-    const posted = [...authApi.matchAll(/requestJson\('([^']+)', \{ post:/g)].map((m) => m[1]);
+    // Quem envia corpo (`post:`) são só os clientes de autenticação e de projetos.
+    expect(filesMatching(frontend, /\bpost:\s/)).toEqual(['src/services/authApi.ts', 'src/services/projectsApi.ts']);
+    const posted = ['src/services/authApi.ts', 'src/services/projectsApi.ts'].flatMap((path) => {
+      const code = frontend.find((f) => f.path === path)!.code;
+      return [...code.matchAll(/requestJson\((['`])([^'`]+)\1, \{ post:/g)].map((m) =>
+        m[2].replace('${encodeURIComponent(projectId)}', ':id'),
+      );
+    });
     expect(posted.sort()).toEqual([...POST_ROUTES].sort());
   });
 

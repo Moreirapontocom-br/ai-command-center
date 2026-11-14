@@ -65,6 +65,23 @@ export function ConnectionPanel({ state, onRetry }: { state: Exclude<GitHubDataS
         </Panel>
       );
     }
+    if (state.reason === 'no_active_project') {
+      return (
+        <Panel role="status" tone="neutral" title="Nenhum projeto selecionado">
+          <p>Selecione ou crie um projeto na página Projetos para ver os dados do GitHub vinculados a ele.</p>
+        </Panel>
+      );
+    }
+    if (state.reason === 'project_without_repository') {
+      return (
+        <Panel role="status" tone="neutral" title="Projeto sem repositório GitHub">
+          <p>
+            Este projeto não tem repositório vinculado. O GitHub é opcional: vincule um repositório
+            autorizado na página Projetos quando quiser acompanhar issues, PRs e CI.
+          </p>
+        </Panel>
+      );
+    }
     if (state.reason === 'no_repositories') {
       return (
         <Panel role="status" tone="warning" title="Sem dados">

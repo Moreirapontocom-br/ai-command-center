@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFineGrainedTokenProvider } from '../auth/credentials.ts';
 import { ALLOWED_REPOSITORIES } from '../config.ts';
 import { createConsoleLogger } from '../logger.ts';
-import { openProjectStore, STORE_FORMAT, STORE_VERSION } from '../projects/projectStore.ts';
+import { openProjectStore, STORE_FORMAT } from '../projects/projectStore.ts';
 import type { SnapshotService } from '../snapshotService.ts';
 import { createTestAuth, sessionCookieFor } from '../test/authFixtures.ts';
 import { CANARY_TOKEN } from '../test/fixtures.ts';
@@ -48,7 +48,7 @@ async function seededFile() {
     filePath,
     JSON.stringify({
       format: STORE_FORMAT,
-      version: STORE_VERSION,
+      version: 1, // formato v1 (Issue #004): exercita a migração para v2
       projects: [
         {
           id: OTHER_OWNER_PROJECT,

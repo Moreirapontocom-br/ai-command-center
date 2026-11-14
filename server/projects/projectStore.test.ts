@@ -189,7 +189,7 @@ describe('armazenamento de projetos', () => {
       updatedAt: '2026-11-13T10:00:00.000Z',
     };
     const wrap = (projects: unknown[], activeProjects: unknown[] = []) =>
-      JSON.stringify({ format: STORE_FORMAT, version: STORE_VERSION, projects, activeProjects });
+      JSON.stringify({ format: STORE_FORMAT, version: 1, projects, activeProjects });
 
     it.each([
       ['JSON ilegível', '{"format":'],

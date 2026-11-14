@@ -7,6 +7,7 @@ import { LoginPage } from './features/auth/LoginPage';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { GitHubDataProvider } from './features/github/GitHubDataProvider';
 import { BranchesPage, IssuesPage, PullRequestsPage } from './features/github/GitHubPages';
+import { AuditPage } from './features/audit/AuditPage';
 import { ProjectsPage } from './features/projects/ProjectsPage';
 import { ProjectsProvider } from './features/projects/ProjectsProvider';
 import { TasksPage } from './features/tasks/TasksPage';
@@ -21,6 +22,7 @@ const VIEWS: Record<ViewId, ComponentType> = {
   branches: BranchesPage,
   agentes: AgentsPage,
   tarefas: TasksPage,
+  auditoria: AuditPage,
 };
 
 function Dashboard() {

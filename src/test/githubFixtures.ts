@@ -249,8 +249,11 @@ export function mockApi(routes: {
   tasks?: Reply[];
   createTask?: Reply[];
   updateTask?: Reply[];
+  /** `GET /api/audit` (padrão: histórico vazio). */
+  audit?: Reply[];
 }) {
   const queues = {
+    audit: [...(routes.audit ?? [json({ events: [], nextBefore: null, retention: { droppedEvents: 0 } })])],
     tasks: [...(routes.tasks ?? [json(taskList())])],
     createTask: [...(routes.createTask ?? [])],
     updateTask: [...(routes.updateTask ?? [])],
@@ -275,6 +278,8 @@ export function mockApi(routes: {
           ? queues.logout
           : url.startsWith('/api/status')
             ? queues.status
+            : url.startsWith('/api/audit')
+              ? queues.audit
             : url.includes('/snapshot')
               ? queues.snapshot
               : /\/tasks$/.test(url)

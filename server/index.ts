@@ -10,6 +10,7 @@ import { createConsoleLogger } from './logger.ts';
 import { openProjectStore } from './projects/projectStore.ts';
 import { DataFileError } from './storage/jsonFile.ts';
 import { openTaskStore } from './tasks/taskStore.ts';
+import { createAuditSequence, openAuditLog } from './audit/auditLog.ts';
 import { createSnapshotService } from './snapshotService.ts';
 
 const logger = createConsoleLogger();
@@ -56,17 +57,21 @@ if (!auth.configured) {
 
 // Projetos (Issue #004) e tarefas (Issue #005): arquivos locais validados na abertura.
 // Corrompido → o servidor não inicia (e o arquivo não é sobrescrito).
+// Auditoria (Issue #006): sequência global compartilhada pelos três arquivos.
+const sequence = createAuditSequence();
 let projects;
 let tasks;
+let audit;
 try {
-  projects = await openProjectStore({ filePath: config.projectsFile, allowedRepositories: config.allowedRepositories });
-  tasks = await openTaskStore({ filePath: config.tasksFile });
+  projects = await openProjectStore({ filePath: config.projectsFile, allowedRepositories: config.allowedRepositories, sequence });
+  tasks = await openTaskStore({ filePath: config.tasksFile, sequence });
+  audit = await openAuditLog({ filePath: config.auditFile, sequence });
 } catch (error) {
   logger.log('error', error instanceof DataFileError ? error.message : 'Falha ao abrir os arquivos de dados.');
   process.exit(1);
 }
 
-const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, logger });
+const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
 });

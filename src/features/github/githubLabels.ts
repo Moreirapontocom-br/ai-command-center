@@ -96,6 +96,10 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
     title: 'Dependências pendentes',
     description: 'Conclua ou cancele as tarefas das quais esta depende antes de iniciar, revisar ou concluir.',
   },
+  audit_unavailable: {
+    title: 'Auditoria indisponível',
+    description: 'Não foi possível registrar a auditoria no servidor; a operação não foi concluída.',
+  },
   dependency_cycle: { title: 'Dependência circular', description: 'Essas dependências formariam um ciclo entre tarefas.' },
   evidence_required: {
     title: 'Evidência obrigatória',

@@ -63,6 +63,11 @@ export interface JsonFileOptions<T> {
   empty: () => T;
   /** Valida o documento (sem `format`/`version`). Chama `corrupt(detalhe)` se inválido. */
   validate: (raw: Record<string, unknown>, corrupt: (detail: string) => never) => T;
+  /**
+   * Versões antigas aceitas e como convertê-las para a atual (só em memória; o arquivo passa a
+   * ter a versão nova na próxima escrita). Qualquer outra versão é recusada.
+   */
+  upgrades?: Record<number, (raw: Record<string, unknown>) => Record<string, unknown>>;
   writeFile?: WriteFile;
 }
 
@@ -99,8 +104,10 @@ export async function openJsonFile<T extends object>(options: JsonFileOptions<T>
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return corrupt('estrutura');
     const { format, version, ...rest } = parsed as Record<string, unknown>;
     if (format !== options.format) corrupt('formato');
-    if (version !== options.version) corrupt('versão não suportada');
-    return options.validate(rest, corrupt);
+    if (version === options.version) return options.validate(rest, corrupt);
+    const upgrade = typeof version === 'number' ? options.upgrades?.[version] : undefined;
+    if (upgrade === undefined) return corrupt('versão não suportada');
+    return options.validate(upgrade(rest), corrupt);
   }
 
   let data = await load();

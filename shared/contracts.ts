@@ -142,6 +142,7 @@ export type ApiErrorCode =
   | 'dependencies_unresolved'
   | 'dependency_cycle'
   | 'evidence_required'
+  | 'audit_unavailable'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -353,4 +354,62 @@ export interface TaskListResponse {
   /** Pessoas que podem receber tarefas (nesta versão, apenas o usuário da sessão). */
   assignableUsers: Array<{ userId: string; label: string }>;
   agents: AgentRef[];
+}
+
+/**
+ * Auditoria (Issue #006). Eventos somente de adição: a API não oferece edição nem exclusão.
+ * O autor vem sempre da sessão ou do próprio servidor, nunca do navegador. `context` só aceita
+ * valores do tipo "token" (ids, enums, nomes de campos), nunca texto livre (títulos, descrições,
+ * e-mails, senhas, cookies ou tokens).
+ */
+export const AUDIT_ACTIONS = [
+  'project.created',
+  'project.updated',
+  'project.activated',
+  'task.created',
+  'task.updated',
+  'task.status_changed',
+  'task.assignee_changed',
+  'task.completion_confirmed',
+  'auth.login',
+  'auth.logout',
+  'auth.login_rejected',
+  'access.denied',
+] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+export const AUDIT_OUTCOMES = ['success', 'failure', 'blocked'] as const;
+export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
+
+/**
+ * `human`: pessoa autenticada (`id` = userId). `system`: o próprio servidor, inclusive em nome de
+ * um cliente NÃO autenticado (`id` = `anonymous`). `agent`: reservado para execuções futuras de
+ * agentes; nenhum evento desta versão usa esse tipo.
+ */
+export type AuditActor = { kind: 'human' | 'agent' | 'system'; id: string };
+
+export type AuditContextValue = string | number | boolean | null | string[];
+
+export interface AuditEvent {
+  id: string;
+  /** Sequência global crescente: define a ordem determinística (pode ter lacunas). */
+  seq: number;
+  at: string;
+  action: AuditAction;
+  actor: AuditActor;
+  projectId: string | null;
+  resource: { type: 'project' | 'task' | 'session' | 'route'; id: string | null };
+  outcome: AuditOutcome;
+  context: Record<string, AuditContextValue>;
+}
+
+export const AUDIT_QUERY_LIMITS = { defaultLimit: 50, maxLimit: 200 } as const;
+
+export interface AuditListResponse {
+  /** Mais recentes primeiro (ordem decrescente de `seq`). */
+  events: AuditEvent[];
+  /** Passe como `before` para a próxima página; `null` quando não há mais eventos. */
+  nextBefore: number | null;
+  /** Eventos antigos já descartados pela política de retenção (por arquivo de origem). */
+  retention: { droppedEvents: number };
 }

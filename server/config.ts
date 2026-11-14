@@ -45,6 +45,8 @@ export interface ServerConfig {
   projectsFile: string;
   /** Caminho absoluto do arquivo de tarefas (Issue #005), na mesma pasta. */
   tasksFile: string;
+  /** Registro de auditoria avulso (Issue #006), na mesma pasta. */
+  auditFile: string;
 }
 
 export class ConfigError extends Error {
@@ -207,5 +209,6 @@ export function loadConfig(
     secureCookie: deployment === 'production',
     projectsFile: join(dataDir, 'projects.json'),
     tasksFile: join(dataDir, 'tasks.json'),
+    auditFile: join(dataDir, 'audit.json'),
   };
 }

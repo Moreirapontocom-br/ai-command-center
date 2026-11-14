@@ -113,7 +113,7 @@ A proteção **no servidor** (branch protection/rulesets) era indisponível dura
 
 ## 8. Pendências, riscos e limitações
 
-1. **Proteção no servidor não ativada.** O repositório agora é público e o Free permite rulesets, mas a `main` não tem nenhuma regra. A proposta está em `docs/BRANCH_POLICY.md` §2.2 e aguarda o PO. Até lá, valem processo, hook e auditoria. Ver seção 11.
+1. ~~Proteção no servidor não ativada.~~ **Resolvido em 14/11/2026:** ruleset `main-protection` ativo (seção 11.1).
 2. **Hooks são locais e opcionais**: cada clone precisa de `npm run hooks:install`; `--no-verify` contorna.
 3. **Primeira execução real** da auditoria e da CI em push na `main` só ocorrerá no merge deste PR. Recomenda-se conferir o run após o merge. O commit de merge deve aparecer como `ok` (PR #N).
 4. **Auditoria limitada** a 2048 commits por evento (limite do payload, sinalizado no relatório), à consistência eventual da API e ao orçamento de 3 min (seção 10). Commits não examinados a tempo aparecem como inconclusivos.
@@ -166,6 +166,8 @@ Evidência: `docs/evidence/issue003-pr1-r1-audit-budget.txt`.
 
 ## 11. Rodada final de governança — proteção da `main` (14/11/2026)
 
+> Situação **anterior** à autorização do PO. O estado atual está na seção 11.1.
+
 Somente leitura no GitHub; nenhuma configuração foi alterada. Evidência: `docs/evidence/issue003-pr1-main-protection.txt`.
 
 | Verificação | Resultado |
@@ -185,3 +187,20 @@ Somente leitura no GitHub; nenhuma configuração foi alterada. Evidência: `doc
 1. Ativar o ruleset da §2.2.
 2. Ativar secret scanning e push protection (gratuitos em repositório público).
 3. **Exposição do commit `c368bbf`** (token da Issue #002, já revogado em 11/11/2026): com o repositório público, ele é acessível por `refs/heads/feature/002-github-integration` e `refs/pull/25/head`. O token revogado não dá acesso, mas o valor está público. Remediação possível: excluir a branch remota antiga (decisão do PO) e pedir ao GitHub Support a remoção de `refs/pull/25/head` e dos objetos em cache.
+
+### 11.1 Execução autorizada pelo PO (14/11/2026)
+
+Evidência: `docs/evidence/issue003-main-protection-active.txt`. Nenhum valor de credencial foi registrado.
+
+| Ação | Resultado |
+| --- | --- |
+| Ruleset `main-protection` | **Ativo**, ID `27242416`, alvo `main` (`~DEFAULT_BRANCH`). Regras: PR obrigatório com **0** aprovações e resolução obrigatória das conversas; 3 checks da CI obrigatórios (Actions, `15368`) com **branch atualizada**; **bloqueio de push forçado e de exclusão**. **Nenhum bypass** (`current_user_can_bypass: never`) |
+| `require_extra_approval_for_unattributed_changes` | `true`, padrão do GitHub. Só afeta PRs não atribuídos abertos pelo Copilot e **não tem efeito com 0 aprovações** (documentação oficial). Confirmado na prática pelo merge do PR #33. Não alterado. Detalhes em `docs/BRANCH_POLICY.md` §2.1 |
+| Secret scanning / push protection | **Ativos** |
+| Merge do PR #33 | Antes do merge: SHA autorizado `7ae3923`, `main` = `0de3903`, 3 checks verdes, sem conflitos, regras efetivas conferidas. Merge commit **`e3d44326bd14c391059a8ebcb095d4fecbfcda4b`**, sem `--admin`, com o head travado no SHA autorizado |
+| Workflows na `main` | CI (push): 3 jobs com sucesso. **Main audit**: OK, com os 6 commits auditados "introduzido pelo PR #33 (mesclado)" |
+| Branch comprometida `feature/002-github-integration` | **Removida**, depois de confirmar: PR #25 CLOSED sem merge; única branch remota contendo `c368bbf`; nenhum PR aberto dependente; árvore idêntica à da v2 já mesclada |
+| `refs/pull/25/head` | **Pendente**: continua expondo `c368bbf` (token revogado) e 8 commits alcançáveis só por ela. A remoção depende do GitHub Support. O texto do chamado foi entregue ao PO |
+| Alerta de secret scanning #1 | Aberto. Tipo `github_personal_access_token`, `.env.example` linha 8, commit `c368bbf`. Corresponde à credencial **revogada** |
+
+**Pendências restantes:** envio do chamado ao GitHub Support pelo PO, e fechamento do alerta #1 como *revoked* depois da remoção. As branches locais `backup/002-original-bcc3c1e` e `rebuild/002-clean` ficam a critério do PO.

@@ -51,6 +51,17 @@ A página **Tarefas** lista as tarefas do projeto ativo, com filtros por status,
 
 A execução real **está desabilitada**. Já existem os contratos, as validações e o ciclo de vida das sandboxes (solicitada, autorizada, em execução, concluída, cancelada, expirada, falhou), integrados à política da #020, com um adaptador **simulado** que não executa nada. Não há rota HTTP para executar comandos. A comparação de opções de isolamento e a recomendação estão em `docs/IMPLEMENTATION_REPORT_021.md`.
 
+### Orçamento, quotas e kill switch (Issue #022, camada preparatória)
+
+A diretriz do PO é priorizar as assinaturas existentes, com orçamento adicional de **R$ 0**. O controlador em `server/limits/` decide o que o ACC admite, independentemente do provedor:
+- **Limites:** 1 execução simultânea, até 10 minutos por tarefa e limite de solicitações por janela.
+- **Custos:** cobrança desconhecida é bloqueada, e custo acima de zero exige a ação crítica `spend.create` da #020 e orçamento aprovado.
+- **Assinaturas:** não há saldo nem quota de tokens presumidos.
+- **Kill switch:** global e por projeto. A reativação e qualquer mudança de limites exigem aprovação humana de origem verificada. Como o verificador confiável só chega com a #011, hoje essas duas operações ficam negadas.
+- **Vagas:** a vaga de execução só é liberada quando o término ou a interrupção são confirmados.
+
+Nenhum provedor está verificado (verificação na #028), então nada é admitido hoje. Não há conectores de IA, rota HTTP nem execução real. Detalhes em `docs/IMPLEMENTATION_REPORT_022.md`.
+
 ### Políticas de autonomia (Issue #020)
 
 O servidor avalia cada ação contra a política (`server/policy/defaultPolicy.ts`). O resultado é **permitido**, **negado**, **exige aprovação** ou **indisponível**. Sem regra explícita, a ação é negada. Push direto na main é sempre proibido, e agentes nunca alteram permissões. Ações críticas (merge, deploy, segredos, permissões, envio de dados a terceiros, despesas) exigem aprovação específica do PO, vinculada a operação, recurso e SHA. Atribuir uma tarefa a um agente não autoriza execução. Mudar a política exige PR aprovado. A página **Políticas** mostra as decisões e os motivos. Detalhes em `docs/IMPLEMENTATION_REPORT_020.md`.

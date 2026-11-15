@@ -99,6 +99,26 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
   policy_denied: { title: 'Negado pela política', description: 'A política de autonomia não permite esta ação.' },
   approval_required: { title: 'Aprovação necessária', description: 'Esta ação exige aprovação específica do Product Owner.' },
   capability_unavailable: { title: 'Indisponível', description: 'Esta operação ainda não existe nesta versão do ACC.' },
+  approvals_unavailable: {
+    title: 'Aprovações indisponíveis',
+    description: 'O subsistema de aprovações está indisponível; nenhuma aprovação pode ser concedida ou usada.',
+  },
+  confirmation_failed: { title: 'Confirmação recusada', description: 'A senha informada não confirmou sua identidade.' },
+  confirmation_required: {
+    title: 'Confirme novamente',
+    description: 'A confirmação de identidade é de uso único, vale por poucos minutos e só nesta sessão.',
+  },
+  confirmation_locked: { title: 'Confirmação bloqueada', description: 'Muitas confirmações recusadas. Aguarde alguns minutos.' },
+  approval_conflict: { title: 'Operação não permitida', description: 'A solicitação não está em um estado que permita esta operação.' },
+  approval_expired: { title: 'Expirada', description: 'A solicitação ou a aprovação expirou.' },
+  approval_binding_mismatch: {
+    title: 'Detalhes divergentes',
+    description: 'Os detalhes exibidos não correspondem à solicitação registrada. Recarregue antes de decidir.',
+  },
+  approval_blocked: {
+    title: 'Bloqueio de emergência ativo',
+    description: 'Nenhuma aprovação de execução pode ser concedida ou usada enquanto o bloqueio estiver ativo.',
+  },
   audit_unavailable: {
     title: 'Auditoria indisponível',
     description: 'Não foi possível registrar a auditoria no servidor; a operação não foi concluída.',

@@ -504,11 +504,23 @@ export interface PolicyEvaluation {
 }
 
 /**
+ * Forma da aprovação (Issue #011, N4):
+ * - `approval`: o PO aprova a ação de OUTRO sujeito (ex.: um agente). Regra padrão.
+ * - `owner_confirmation`: o próprio PO confirma uma operação crítica que ele mesmo iniciou, com
+ *   reautenticação recente (D2). Só vale quando o servidor atestou o grant pelo núcleo de
+ *   aprovações (`PolicyFacts.verifiedOwnerConfirmationId`); nunca para sujeitos agentes.
+ */
+export const APPROVAL_METHODS = ['approval', 'owner_confirmation'] as const;
+export type ApprovalMethod = (typeof APPROVAL_METHODS)[number];
+
+/**
  * Contrato de aprovação (o fluxo completo é da Issue #011). Vale para UMA operação exata:
  * ação, projeto, recurso, alvo (SHA/ref), sujeito, validade e uso único.
  */
 export interface ApprovalGrant {
   id: string;
+  /** Ausente = `approval` (compatível com os grants da #020/#021/#022). */
+  method?: ApprovalMethod;
   action: PolicyAction;
   projectId: string | null;
   resource: { type: string; id: string };

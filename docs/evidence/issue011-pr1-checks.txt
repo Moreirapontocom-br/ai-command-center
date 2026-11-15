@@ -1,0 +1,34 @@
+# Issue #011 PR 1 — checks locais — rodada R1
+# node v24.18.1 · 2026-11-15T20:36:08Z · branch feature/011-approvals-core
+
+$ npm test
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ Test Files  1 failed | 35 passed (36)
+      Tests  1 failed | 913 passed (914)
+
+# Observação: a falha em scripts/main-audit.test.mjs é do ambiente Windows local (core.autocrlf=true:
+# git ls-files --eol → "i/lf w/crlf"). Reproduzida na main limpa (45bd7b5); não ocorre na CI (Linux, LF).
+
+$ npm run lint
+
+> ai-command-center@0.1.0 lint
+> eslint .
+
+
+$ npx tsc -b
+(sem erros)
+
+$ npm run build
+dist/index.html                   0.48 kB │ gzip:  0.31 kB
+dist/assets/index-CCB6_dGx.css   23.36 kB │ gzip:  5.27 kB
+dist/assets/index-DqitJFvr.js   304.48 kB │ gzip: 89.34 kB
+
+✓ built in 255ms
+
+$ npm run check:secrets
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+$ npm run check:csp
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+$ node scripts/check-secrets.mjs tracked
+Nenhuma credencial encontrada (199 arquivo(s) versionado(s)).

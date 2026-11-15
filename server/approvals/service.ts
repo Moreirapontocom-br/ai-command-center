@@ -51,7 +51,9 @@ import type { ApprovalStore, HistoryInput, StoreTransaction } from './store.ts';
  * pendentes. Reserva e validação de recibo consultam a barreira durável, a volátil e o kill switch
  * do controlador #022 (quando informado). Só uma aprovação de configuração consumida a libera.
  *
- * Nada aqui é ligado ao servidor neste PR.
+ * PR 2: ligado ao servidor (rotas de decisão do administrador, `server/http/approvalRoutes.ts`), ao
+ * sandbox (#021) e ao controlador (#022) por `ApprovalCoordinator` + verificador confiável. Nenhuma
+ * dessas ligações executa algo: execução real continua desligada.
  */
 
 export interface ApprovalServiceOptions {
@@ -339,7 +341,7 @@ export function createApprovalService(options: ApprovalServiceOptions) {
     if (binding.paramsDigest !== paramsDigestOf('killswitch.release', { scope: scope ?? 'global' })) throw new ApprovalError('invalid_binding');
   }
 
-  return {
+  const service = {
     /**
      * Pedido de aprovação, feito por um COMPONENTE DO SERVIDOR em nome de uma tarefa (nunca por um
      * agente pela web; agentes não têm credencial nem rota nesta fase). Ações de pessoas usam
@@ -790,7 +792,83 @@ export function createApprovalService(options: ApprovalServiceOptions) {
     },
 
     status: () => store.status(),
+
+    policyVersion: options.policyVersion,
+
+    /** Uma aprovação do dono (cópia), ou `null` (inexistente ou de outro dono: indistinguíveis). */
+    get(ownerId: string, approvalId: string): LedgerApproval | null {
+      const approval = store.ledger().approvals.find((a) => a.id === approvalId && a.ownerId === ownerId);
+      return approval ? structuredClone(approval) : null;
+    },
+
+    /** Tentativas de uso de uma aprovação do dono. */
+    attemptsOf(ownerId: string, approvalId: string): LedgerAttempt[] {
+      const approval = store.ledger().approvals.find((a) => a.id === approvalId && a.ownerId === ownerId);
+      if (!approval) return [];
+      return store.ledger().attempts.filter((t) => t.approvalId === approvalId).map((t) => structuredClone(t));
+    },
+
+    /** Histórico oficial (cópia, sem MACs): itens, preservações e retenção. */
+    history() {
+      const history = store.history();
+      return { retentionDays: history.retentionDays, items: structuredClone(history.items), holds: structuredClone(history.holds) };
+    },
+
+    /**
+     * Operação de configuração do próprio núcleo iniciada pelo PO (D2/N10/D7), em um único passo:
+     * valida os parâmetros, confirma a identidade (prova de uso único desta sessão), cria a
+     * aprovação `owner_confirmation`, reserva-a (componente interno) e aplica. O vínculo é montado
+     * pelo SERVIDOR a partir dos parâmetros recebidos; o sujeito é sempre a pessoa da sessão.
+     */
+    async configure(input: {
+      ownerId: string;
+      operation: 'approvals.retention_change' | 'approvals.history_purge';
+      params: { days?: unknown; before?: unknown };
+      proofId: string;
+      identity: IdentityContext;
+    }): Promise<LedgerApproval> {
+      assertHumanContext(input.identity);
+      let params: { days: number } | { before: string };
+      if (input.operation === 'approvals.retention_change') {
+        const days = input.params.days;
+        if (typeof days !== 'number' || !Number.isSafeInteger(days) || days < HISTORY_RETENTION_DAYS.min || days > HISTORY_RETENTION_DAYS.max) throw new ApprovalError('invalid_retention');
+        params = { days };
+      } else if (input.operation === 'approvals.history_purge') {
+        const before = input.params.before;
+        const ms = typeof before === 'string' ? Date.parse(before) : NaN;
+        if (typeof before !== 'string' || !Number.isFinite(ms) || new Date(ms).toISOString() !== before || ms > now() - PURGE_MIN_AGE_MS) throw new ApprovalError('invalid_purge_window');
+        params = { before };
+      } else {
+        throw new ApprovalError('action_not_approvable');
+      }
+      const binding: ApprovalBinding = {
+        action: input.operation,
+        projectId: null,
+        resource: { type: 'approvals', id: 'history' },
+        target: { sha: null, ref: null },
+        subject: { kind: 'human', id: input.identity.userId },
+        paramsDigest: paramsDigestOf(input.operation, params),
+        policyVersion: options.policyVersion,
+      };
+      const approval = await service.confirmOwner({ ownerId: input.ownerId, binding, bindingDigest: bindingDigest(binding), proofId: input.proofId, identity: input.identity });
+      const reservation = await service.reserve({ ownerId: input.ownerId, approvalId: approval.id, component: 'approvals', binding });
+      if ('days' in params) await service.changeRetention({ attemptId: reservation.attemptId, days: params.days });
+      else await service.purgeHistory({ attemptId: reservation.attemptId, before: params.before });
+      return service.get(input.ownerId, approval.id) ?? approval;
+    },
+
+    /**
+     * Atesta (N4) um grant `owner_confirmation` reservado para o componente `policy`: devolve o id
+     * para `PolicyFacts.verifiedOwnerConfirmationId` só se o recibo for válido. Qualquer outra coisa
+     * (grant forjado, de outro componente, vencido, `approval` comum) → `null`.
+     */
+    attestOwnerConfirmation(grant: ApprovalGrant): string | null {
+      if (grant?.method !== 'owner_confirmation') return null;
+      const verification = service.verifierFor('policy').verifyGrant(grant);
+      return verification.authentic && verification.approverId === grant.approvedBy.id ? grant.id : null;
+    },
   };
+  return service;
 
   /** Compactação (N7): terminais com mais de 30 dias, sem preservação e sem tentativa em aberto. */
   function compact(tx: StoreTransaction) {
@@ -849,3 +927,6 @@ export function createApprovalService(options: ApprovalServiceOptions) {
 }
 
 export type ApprovalService = ReturnType<typeof createApprovalService>;
+
+/** O que um componente do servidor (sandbox #021, controlador #022) usa do núcleo. */
+export type ApprovalCoordinator = Pick<ApprovalService, 'request' | 'reserve' | 'recordOutcome'>;

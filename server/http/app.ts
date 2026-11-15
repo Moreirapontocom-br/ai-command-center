@@ -35,6 +35,7 @@ import { parseActiveProject, parseProjectCreate, parseProjectUpdate, PROJECT_ID_
 import type { TaskStore } from '../tasks/taskStore.ts';
 import { parseTaskCreate, parseTaskUpdate, TASK_ID_PATTERN, type TaskInputContext } from '../tasks/validation.ts';
 import type { SnapshotService } from '../snapshotService.ts';
+import { APPROVAL_POST_ROUTES, approvalMethods, approvalRouteName, createApprovalRoutes, isApprovalPath, type ApprovalsRuntime } from './approvalRoutes.ts';
 import { createRateLimiter } from './rateLimiter.ts';
 
 export interface AppDeps {
@@ -57,6 +58,11 @@ export interface AppDeps {
   audit?: AuditLog | null;
   /** Política de autonomia (Issue #020). Padrão: `DEFAULT_POLICY` (código revisado). */
   policy?: Policy;
+  /**
+   * Aprovações humanas (Issue #011, PR 2). Ausente ou `null`: subsistema não configurado — as rotas
+   * de aprovação respondem indisponível e o restante do ACC funciona normalmente.
+   */
+  approvals?: ApprovalsRuntime | null;
   logger: Logger;
   now?: () => number;
 }
@@ -103,6 +109,8 @@ export const POST_ROUTES: readonly string[] = Object.freeze([
   '/api/projects/:id',
   '/api/projects/:id/tasks',
   '/api/projects/:id/tasks/:taskId',
+  // Issue #011 (PR 2): decisões humanas sobre aprovações (nenhuma executa nada).
+  ...APPROVAL_POST_ROUTES,
 ]);
 /** Rotas acessíveis sem sessão. Nenhuma devolve dados do GitHub, de projetos nem da configuração. */
 export const PUBLIC_ROUTES: readonly string[] = Object.freeze(['/api/auth/session', ...AUTH_POST_ROUTES]);
@@ -111,6 +119,8 @@ const MAX_AUTH_BODY_BYTES = 4096;
 const MAX_PROJECT_BODY_BYTES = 16 * 1024;
 
 export function allowedMethods(pathname: string): readonly string[] {
+  const approvals = approvalMethods(pathname);
+  if (approvals) return approvals;
   if (AUTH_POST_ROUTES.includes(pathname) || pathname === ACTIVE_PROJECT_ROUTE) return [WRITE_METHOD];
   // Listar/criar e ler/editar projetos. Um id malformado recebe a mesma resposta de método que um
   // válido; o formato só é verificado depois da autenticação.
@@ -264,6 +274,7 @@ export function createRequestHandler(deps: AppDeps) {
     if (pathname === AUDIT_ROUTE) return 'audit';
     if (PROJECT_POLICY_ROUTE.test(pathname)) return 'policy';
     if (pathname.startsWith('/api/auth/')) return 'auth';
+    if (isApprovalPath(pathname)) return approvalRouteName(pathname);
     if (pathname === '/api/status') return 'status';
     return 'other';
   }
@@ -346,6 +357,8 @@ export function createRequestHandler(deps: AppDeps) {
       context: { reason: code, route, method: isWrite ? WRITE_METHOD : 'GET' },
     });
     if (isWrite && ['forbidden_origin', 'unsupported_media_type', 'unauthenticated'].includes(code)) return denied(owner);
+    // Escritas de aprovações registram o próprio evento (`approval.*`), sem duplicar aqui.
+    if (isWrite && route.startsWith('approvals')) return null;
     if (session && code === 'not_found' && route !== 'other') return denied(owner);
     if (session && isWrite && WRITE_ACTIONS[route]) {
       const taskId = route === 'tasks.item' ? (ids[1] ?? null) : null;
@@ -587,6 +600,9 @@ export function createRequestHandler(deps: AppDeps) {
     fail('not_found');
   }
 
+  const approvalRoutes = createApprovalRoutes({ approvals: deps.approvals ?? null, audit: deps.audit, projects: deps.projects, logger: deps.logger, now: deps.now });
+  const approvalIo = { readJsonBody, sendJson, assertOnlyParams };
+
   const limiter = createRateLimiter({ limit: deps.config.rateLimitPerMinute, windowMs: 60_000, now: deps.now });
   const { auth } = deps;
 
@@ -674,7 +690,10 @@ export function createRequestHandler(deps: AppDeps) {
         // O corpo não é usado, mas é validado com o mesmo limite (objeto JSON, normalmente `{}`).
         const logoutBody = await readJsonBody(req);
         if (typeof logoutBody !== 'object' || logoutBody === null || Array.isArray(logoutBody)) fail('bad_request');
-        const leaving = auth.authenticate(cookieHeader)?.session ?? null;
+        const leavingAuth = auth.authenticate(cookieHeader);
+        const leaving = leavingAuth?.session ?? null;
+        // Provas de confirmação de identidade (aprovações) morrem com a sessão.
+        if (leavingAuth) approvalRoutes.revokeSession(leavingAuth.token);
         // A sessão é encerrada mesmo que a auditoria falhe (encerrar é a ação segura); nesse caso
         // a resposta é erro, nunca um sucesso sem registro.
         auth.logout(cookieHeader);
@@ -731,6 +750,11 @@ export function createRequestHandler(deps: AppDeps) {
           retention: { droppedEvents: result.droppedEvents },
         };
         sendJson(res, 200, body);
+        return;
+      }
+
+      if (isApprovalPath(pathname)) {
+        await approvalRoutes.handle(req, res, url, session, current.token, approvalIo);
         return;
       }
 

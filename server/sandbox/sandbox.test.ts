@@ -6,6 +6,7 @@ import { CANARY_TOKEN } from '../test/fixtures.ts';
 import { SANDBOX_STATES, SANDBOX_TRANSITIONS, REAL_EXECUTION_ENABLED, type SandboxRecord, type SandboxSpec } from './contracts.ts';
 import type { SandboxProvider } from './provider.ts';
 import { createSandboxService, SandboxError } from './service.ts';
+import { createSimulatedApprovalVerifier } from '../limits/simulatedApprovalVerifier.ts';
 import { createSimulatedProvider } from './simulatedProvider.ts';
 import { assertWorkBranch, assertWorkspaceId, isSafeLogicalName, parseSandboxRequest, SandboxValidationError } from './validation.ts';
 
@@ -32,6 +33,8 @@ function setup(options: { provider?: SandboxProvider; realCatalog?: boolean; tas
   // Catálogo de TESTE em que sandbox.execute "existe": no real ele é indisponível.
   const catalog = options.realCatalog ? undefined : { ...POLICY_ACTIONS, 'sandbox.execute': { ...POLICY_ACTIONS['sandbox.execute'], available: true } };
   const service = createSandboxService({
+    // Dublê de verificador (#011): reconhece só os grants "emitidos" pelo teste (`approvalFor`).
+    approvalVerifier: GRANTS,
     provider,
     projects: { get: (owner, id) => projects.get(`${owner}|${id}`) ?? null },
     tasks: { get: (owner, projectId, id) => (projects.has(`${owner}|${projectId}`) ? (tasks.find((t) => t.id === id && t.projectId === projectId) ?? null) : null) },
@@ -56,7 +59,16 @@ const body = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const approvalFor = (record: SandboxRecord, overrides: Partial<ApprovalGrant> = {}): ApprovalGrant => ({
+/**
+ * Verificador SIMULADO, só para testes: o sandbox nunca confia no grant do chamador (Issue #011),
+ * então os grants dos testes são "emitidos" por este dublê. O verificador real é o recibo de uso
+ * único do núcleo de aprovações (ver `server/approvals/integration.test.ts`).
+ */
+const GRANTS = createSimulatedApprovalVerifier();
+const approvalFor = (record: SandboxRecord, overrides: Partial<ApprovalGrant> = {}): ApprovalGrant =>
+  GRANTS.issueGrant(forgedGrant(record, overrides));
+/** Grant montado pelo chamador, sem emissão: o que um chamador poderia forjar. */
+const forgedGrant = (record: SandboxRecord, overrides: Partial<ApprovalGrant> = {}): ApprovalGrant => ({
   id: `approval-${record.id}`,
   action: 'sandbox.execute',
   projectId: record.projectId,
@@ -376,7 +388,8 @@ describe('prazos vencidos sem depender de expireOverdue (R1)', () => {
     expect((provider as ReturnType<typeof createSimulatedProvider>).calls).toEqual([]);
     // A aprovação não foi consumida: ainda autoriza outra solicitação com o mesmo alvo.
     const fresh = await service.request('admin', body());
-    const reuse = { ...approval, target: approvalFor(fresh).target };
+    // Mesmo id de aprovação, alvo da nova solicitação (emitido pelo dublê: a origem não é o que se testa aqui).
+    const reuse = GRANTS.issueGrant({ ...approval, target: approvalFor(fresh).target });
     await expect(service.authorize('admin', P1, fresh.id, reuse)).resolves.toMatchObject({ state: 'authorized', approvalId: approval.id });
   });
 

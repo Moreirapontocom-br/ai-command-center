@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { POLICY_ACTIONS, type ApprovalGrant, type PolicyAction, type PolicyActionInfo, type PolicyEvaluation } from '../../shared/contracts.ts';
+import { AGENT_IDS, POLICY_ACTIONS, type ApprovalGrant, type PolicyAction, type PolicyActionInfo, type PolicyEvaluation } from '../../shared/contracts.ts';
+import { paramsDigestOf } from '../approvals/binding.ts';
+import type { ApprovalCoordinator } from '../approvals/service.ts';
+import type { ApprovalVerifier } from '../limits/contracts.ts';
 import type { Logger } from '../logger.ts';
 import { DEFAULT_POLICY } from '../policy/defaultPolicy.ts';
 import { evaluatePolicy, type Policy } from '../policy/engine.ts';
@@ -32,6 +35,10 @@ import { assertWorkBranch, assertWorkspaceId, parseSandboxRequest, workBranchFor
  *   depender de `expireOverdue()` ter rodado: o que venceu passa a `expired` e a operação é recusada.
  * - Operações sobre o MESMO registro são serializadas (fila por id): expiração, autorização, início,
  *   resultado e cancelamento nunca se intercalam durante as chamadas assíncronas ao provedor.
+ * - Aprovações (Issue #011, PR 2): um `ApprovalGrant` informado pelo chamador NUNCA basta. A origem é
+ *   verificada pelo verificador confiável (recibo de uso único do núcleo, componente `sandbox`), que
+ *   também consulta as barreiras de emergência; sem verificador, autorizar é negado. O pedido de
+ *   aprovação é registrado no núcleo, e `authorizeWithApproval` reserva a aprovação concedida.
  */
 
 export class SandboxError extends Error {
@@ -52,6 +59,13 @@ export interface SandboxServiceOptions {
   policy?: Policy;
   /** Apenas para testes: catálogo em que `sandbox.execute` está disponível. */
   catalog?: Record<PolicyAction, PolicyActionInfo>;
+  /**
+   * Verificador de ORIGEM dos grants (Issue #011): o confiável é `approvals.verifierFor('sandbox')`.
+   * Ausente → `authorize` é sempre negado (`approval_verifier_unavailable`).
+   */
+  approvalVerifier?: Pick<ApprovalVerifier, 'id' | 'kind' | 'verifyGrant'>;
+  /** Núcleo de aprovações (Issue #011, PR 2): pedidos e reserva de uso único. */
+  approvals?: ApprovalCoordinator;
   now?: () => number;
   generateId?: () => string;
   logger?: Logger;
@@ -60,6 +74,12 @@ export interface SandboxServiceOptions {
 export interface SandboxService {
   request(ownerId: string, raw: unknown): Promise<SandboxRecord>;
   authorize(ownerId: string, projectId: string, id: string, approval: ApprovalGrant): Promise<SandboxRecord>;
+  /**
+   * Autoriza com a aprovação concedida pelo PO no fluxo confiável (#011): reserva (uso único), entrega
+   * o grant à verificação de origem e registra o resultado. Pendente → `approval_pending`. Nunca
+   * inicia nada: iniciar continua sendo `start`, recusado enquanto a execução real estiver desligada.
+   */
+  authorizeWithApproval(ownerId: string, projectId: string, id: string): Promise<SandboxRecord>;
   start(ownerId: string, projectId: string, id: string): Promise<SandboxRecord>;
   /** Resultado informado pelo provedor (na simulação, pelos testes). */
   report(ownerId: string, projectId: string, id: string, outcome: 'completed' | 'failed', reason?: string): Promise<SandboxRecord>;
@@ -186,6 +206,57 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     );
   }
 
+  /** Vínculo exato (#011) da execução pedida: os parâmetros entram pelo resumo do `spec`. */
+  function bindingOf(spec: SandboxSpec) {
+    return {
+      action: 'sandbox.execute' as const,
+      projectId: spec.projectId,
+      resource: { type: 'task', id: spec.taskId },
+      target: { sha: spec.git?.baseSha ?? null, ref: spec.git?.workBranch ?? null },
+      subject: { kind: 'agent' as const, id: spec.agentId },
+      paramsDigest: paramsDigestOf('sandbox', {
+        requestId: spec.requestId,
+        repository: spec.git?.repository ?? null,
+        network: spec.network,
+        credentials: spec.credentials,
+        limits: spec.limits,
+        inputs: spec.inputs,
+      }),
+      policyVersion: policy.version,
+    };
+  }
+
+  /**
+   * Núcleo da autorização (dentro de `serialized`): política com o grant, depois a ORIGEM do grant
+   * (recibo de uso único, sem `await` entre a verificação e a transição) e só então a transição.
+   */
+  async function authorizeRecord(ownerId: string, record: SandboxRecord, approval: ApprovalGrant) {
+    if (record.state !== 'requested') throw new SandboxError('invalid_transition');
+    // Prazo da solicitação vencido: expira antes de avaliar, e a aprovação não é consumida.
+    if (await expireIfOverdue(record)) throw new SandboxError('expired');
+    const evaluation = evaluate(ownerId, record.spec, approval);
+    if (evaluation.decision !== 'ALLOW' || evaluation.approvalId === null) {
+      throw new SandboxError(evaluation.decision === 'REQUIRE_APPROVAL' ? 'approval_invalid' : 'policy_denied', evaluation);
+    }
+    const verifier = options.approvalVerifier;
+    if (!verifier || typeof verifier.verifyGrant !== 'function') throw new SandboxError('approval_verifier_unavailable');
+    let verification: ReturnType<NonNullable<typeof verifier.verifyGrant>>;
+    try {
+      verification = verifier.verifyGrant(structuredClone(approval));
+    } catch {
+      verification = { authentic: false, reason: 'approval_verification_failed' };
+    }
+    if (!verification.authentic) throw new SandboxError('approval_not_authentic');
+    if (verification.approverId !== approval.approvedBy.id || (AGENT_IDS as readonly string[]).includes(verification.approverId)) {
+      throw new SandboxError('approver_identity_mismatch');
+    }
+    usedApprovals.add(evaluation.approvalId);
+    record.approvalId = evaluation.approvalId;
+    const deadline = Math.min(Date.parse(approval.expiresAt), now() + SANDBOX_LIMITS.approvalWindowSeconds * 1000);
+    transition(record, 'authorized', 'approved', deadline);
+    return structuredClone(record);
+  }
+
   return {
     async request(ownerId, raw) {
       const input = parseSandboxRequest(raw);
@@ -226,6 +297,11 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
       if (evaluation.decision === 'DENY' || evaluation.decision === 'UNAVAILABLE') {
         throw new SandboxError(evaluation.decision === 'DENY' ? 'policy_denied' : 'capability_unavailable', evaluation);
       }
+      // Exige aprovação: o pedido é registrado no núcleo (#011) ANTES do registro; sem núcleo
+      // disponível, nada é criado (fail-closed).
+      if (evaluation.decision === 'REQUIRE_APPROVAL' && options.approvals) {
+        await options.approvals.request({ ownerId, requestedBy: 'sandbox', binding: bindingOf(spec) });
+      }
       const at = now();
       const record: SandboxRecord = {
         id,
@@ -251,20 +327,34 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     },
 
     authorize(ownerId, projectId, id, approval) {
+      return serialized(id, async () => authorizeRecord(ownerId, find(ownerId, projectId, id), approval));
+    },
+
+    authorizeWithApproval(ownerId, projectId, id) {
       return serialized(id, async () => {
         const record = find(ownerId, projectId, id);
+        const approvals = options.approvals;
+        if (!approvals) throw new SandboxError('approvals_unavailable');
         if (record.state !== 'requested') throw new SandboxError('invalid_transition');
-        // Prazo da solicitação vencido: expira antes de avaliar, e a aprovação não é consumida.
         if (await expireIfOverdue(record)) throw new SandboxError('expired');
-        const evaluation = evaluate(ownerId, record.spec, approval);
-        if (evaluation.decision !== 'ALLOW' || evaluation.approvalId === null) {
-          throw new SandboxError(evaluation.decision === 'REQUIRE_APPROVAL' ? 'approval_invalid' : 'policy_denied', evaluation);
+        // Indisponível/negado pela política: recusado ANTES de reservar (a aprovação não é gasta).
+        const precheck = evaluate(ownerId, record.spec, null);
+        if (precheck.decision === 'UNAVAILABLE') throw new SandboxError('capability_unavailable', precheck);
+        if (precheck.decision === 'DENY') throw new SandboxError('policy_denied', precheck);
+        const binding = bindingOf(record.spec);
+        const request = await approvals.request({ ownerId, requestedBy: 'sandbox', binding });
+        if (request.state === 'pending') throw new SandboxError('approval_pending');
+        if (request.state !== 'approved') throw new SandboxError('approval_invalid');
+        const reservation = await approvals.reserve({ ownerId, approvalId: request.id, component: 'sandbox', binding });
+        if (!reservation.grant) throw new SandboxError('approval_invalid');
+        try {
+          const authorized = await authorizeRecord(ownerId, record, reservation.grant);
+          await approvals.recordOutcome({ attemptId: reservation.attemptId, outcome: 'succeeded' });
+          return authorized;
+        } catch (error) {
+          await approvals.recordOutcome({ attemptId: reservation.attemptId, outcome: 'failed', reason: 'authorization_denied' }).catch(() => undefined);
+          throw error;
         }
-        usedApprovals.add(evaluation.approvalId);
-        record.approvalId = evaluation.approvalId;
-        const deadline = Math.min(Date.parse(approval.expiresAt), now() + SANDBOX_LIMITS.approvalWindowSeconds * 1000);
-        transition(record, 'authorized', 'approved', deadline);
-        return structuredClone(record);
       });
     },
 

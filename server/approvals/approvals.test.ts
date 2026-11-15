@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { existsSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { copyFile, link as hardLink, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -832,6 +833,10 @@ describe('caminhos protegidos (N2)', () => {
     const synced = join(root, 'MyCloud');
     expect(await openAt(join(synced, 'ledger'), join(root, 'a2'), { OneDrive: synced })).toEqual({ state: 'unavailable', reason: 'path_in_synced_folder' });
     expect(await openAt(join(root, 'Dropbox', 'ledger'), join(root, 'a3'))).toEqual({ state: 'unavailable', reason: 'path_in_synced_folder' });
+    // PR 2: o caminho recusado nunca é criado (nenhuma pasta vazia no repositório ou na nuvem).
+    expect(existsSync(join(repo, 'data'))).toBe(false);
+    expect(existsSync(join(synced, 'ledger'))).toBe(false);
+    expect(existsSync(join(root, 'Dropbox'))).toBe(false);
     const target = join(root, 'OneDrive', 'real');
     await mkdir(target, { recursive: true });
     const link = join(root, 'innocent');

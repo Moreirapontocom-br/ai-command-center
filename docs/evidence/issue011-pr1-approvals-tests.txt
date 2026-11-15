@@ -1,5 +1,5 @@
-# Issue #011 PR 1 — testes do núcleo de aprovações (vitest, modo verboso)
-# node v24.18.1 · 2026-11-15T20:07:09Z
+# Issue #011 PR 1 — testes do núcleo de aprovações (vitest, modo verboso) — rodada R1
+# node v24.18.1 · 2026-11-15T20:35:52Z
 
  RUN  v5.1.0 <repo>
 
@@ -7,57 +7,82 @@
  ✓ server/approvals/approvals.test.ts > contratos e máquina de estados > estados terminais não têm saída; tentativa só se encerra uma vez 1ms
  ✓ server/approvals/approvals.test.ts > contratos e máquina de estados > binding canônico: determinístico e sensível a qualquer campo 1ms
  ✓ server/approvals/approvals.test.ts > contratos e máquina de estados > execução real continua desligada e as capacidades críticas indisponíveis 0ms
- ✓ server/approvals/approvals.test.ts > fluxo de aprovação > aprovação legítima: pedido → decisão → reserva → recibo → resultado 54ms
- ✓ server/approvals/approvals.test.ts > fluxo de aprovação > rejeição explícita bloqueia; decisão é única 36ms
- ✓ server/approvals/approvals.test.ts > fluxo de aprovação > aprova-se exatamente o que foi exibido (bindingDigest divergente é recusado) 24ms
- ✓ server/approvals/approvals.test.ts > fluxo de aprovação > pedido idêntico é idempotente; pedido da mesma operação com outro SHA substitui o anterior 23ms
- ✓ server/approvals/approvals.test.ts > fluxo de aprovação > vínculo inválido: SHA obrigatório no merge, push na main nunca aprovável, campos extras recusados 12ms
- ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > aprovação forjada pelo chamador (sem recibo) não é autêntica 16ms
- ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > objeto adulterado após a reserva é recusado e invalida o recibo 36ms
- ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > prova de step-up: senha errada, bloqueio após 5 falhas, uso único, outra sessão, validade de 5 min 27ms
- ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > identidade divergente e agentes: nunca decidem, nunca confirmam como PO 31ms
- ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > confirmação do PO (D2): só para operação dele, não-execução, com prova; agente não usa 31ms
- ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > #020: owner_confirmation só vale com o id atestado pelo servidor; sujeito agente nunca 0ms
- ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > SHA alterado após a aprovação → superseded, sem consumo 32ms
- ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > parâmetros alterados → superseded 33ms
- ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > política alterada → versão recusada e aprovação antiga deixa de valer 32ms
- ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > expirada (1 h) e pendente (24 h) 40ms
- ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > voltar o relógio do sistema não estende a validade (prazo monotônico) 27ms
- ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > revogada não pode ser consumida; revogar o que já foi consumido é transição inválida e auditada 61ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > reutilização é recusada, inclusive após reinício 50ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > dez consumos concorrentes: exatamente um vence 60ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > decisões concorrentes: uma vence, a outra é recusada 29ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > recibo expira em 30 s; a tentativa vira failed e a aprovação continua consumida 33ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > recibo usado por outro componente é recusado e inutilizado 33ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > succeeded exige recibo validado; o recibo vale uma única vez 27ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > revogação durante a tentativa invalida o recibo 36ms
- ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > falha antes da reserva não consome (pré-checagem recusada mantém approved) 27ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > reinício: nova época, concedidas expiram (N1), pendentes sobrevivem, reservadas viram indeterminate 73ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > falha de escrita: nada muda em memória, armazenamento degradado, tudo negado até reiniciar 34ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > queda entre ledger e anchor: o ledger uma geração à frente e encadeado é aceito 36ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > ledger corrompido, estado desconhecido ou MAC inválido → indisponível; arquivos preservados 45ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > anchor ausente ou divergente → indisponível 33ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > rollback (R6): ledger antigo → bloqueado; histórico antigo → bloqueado; os três restaurados → aprovações antigas inutilizáveis 59ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > chave indisponível, inválida ou diferente → indisponível (nega tudo) 24ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > chave em arquivo: link simbólico recusado 14ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > escritor único: segunda instância recusada; bloqueio abandonado é retomado e registrado 27ms
- ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > recuperação administrativa: exige prova, preserva evidências, não reativa nada e deixa barreira global 55ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > acionar revoga execuções não usadas do escopo, bloqueia novas aprovações (N6) e sobrevive ao reinício 65ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > kill switch durante o consumo: reserva enfileirada é negada; recibo emitido é recusado 33ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > recibo emitido antes do acionamento é recusado na validação 32ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > o acionamento vale de imediato em memória, antes da gravação 37ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > kill switch do controlador (#022) e falha ao consultá-lo bloqueiam (fail-closed) 47ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > liberação exige nova aprovação de configuração; revogadas continuam revogadas 45ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > #022: liberação pelo controlador com o verificador confiável libera também a barreira 34ms
- ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > #022: alteração de limites com confirmação do PO, uso único 28ms
- ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > histórico encadeado: somente acréscimo, verificado ao reabrir 29ms
- ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > retenção: descarta o vencido como lápide, preserva o que tem preservação e o encadeamento continua válido 70ms
- ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > preservação: motivo da lista fechada e texto de até 200 caracteres 25ms
- ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > retenção configurável (30 dias a 5 anos) e descarte administrativo exigem aprovação de configuração 27ms
- ✓ server/approvals/approvals.test.ts > caminhos protegidos (N2) > recusa diretório dentro do Git, de pasta sincronizada (variável ou nome) e junção/link para lá 10ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > aprovação legítima: pedido → decisão → reserva → recibo → resultado 133ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > rejeição explícita bloqueia; decisão é única 62ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > aprova-se exatamente o que foi exibido (bindingDigest divergente é recusado) 99ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > pedido idêntico é idempotente; pedido da mesma operação com outro SHA substitui o anterior 50ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > vínculo inválido: SHA obrigatório no merge, push na main nunca aprovável, campos extras recusados 89ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > aprovação forjada pelo chamador (sem recibo) não é autêntica 44ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > objeto adulterado após a reserva é recusado e invalida o recibo 114ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > prova de step-up: senha errada, bloqueio após 5 falhas, uso único, outra sessão, validade de 5 min 54ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > identidade divergente e agentes: nunca decidem, nunca confirmam como PO 109ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > confirmação do PO (D2): só para operação dele, não-execução, com prova; agente não usa 106ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > #020: owner_confirmation só vale com o id atestado pelo servidor; sujeito agente nunca 1ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > SHA alterado após a aprovação → superseded, sem consumo 65ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > parâmetros alterados → superseded 109ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > política alterada → versão recusada e aprovação antiga deixa de valer 108ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > expirada (1 h) e pendente (24 h) 73ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > voltar o relógio do sistema não estende a validade (prazo monotônico) 105ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > revogada não pode ser consumida; revogar o que já foi consumido é transição inválida e auditada 154ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > reutilização é recusada, inclusive após reinício 131ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > dez consumos concorrentes: exatamente um vence 159ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > decisões concorrentes: uma vence, a outra é recusada 51ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > recibo expira em 30 s; a tentativa vira failed e a aprovação continua consumida 110ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > recibo usado por outro componente é recusado e inutilizado 117ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > succeeded exige recibo validado; o recibo vale uma única vez 52ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > revogação durante a tentativa invalida o recibo 115ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > falha antes da reserva não consome (pré-checagem recusada mantém approved) 51ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > reinício: nova época, concedidas expiram (N1), pendentes sobrevivem, reservadas viram indeterminate 214ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > falha de escrita: nada muda em memória, armazenamento degradado, tudo negado até reiniciar 69ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > queda entre ledger e anchor: o ledger uma geração à frente e encadeado é aceito 129ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > ledger corrompido, estado desconhecido ou MAC inválido → indisponível; arquivos preservados 192ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > anchor ausente ou divergente → indisponível 108ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > rollback (R6): ledger antigo → bloqueado; histórico antigo → bloqueado; os três restaurados → aprovações antigas inutilizáveis 200ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > chave indisponível, inválida ou diferente → indisponível (nega tudo) 76ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > chave em arquivo: link simbólico recusado 106ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > escritor único: segunda instância recusada; bloqueio abandonado é retomado e registrado 63ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > recuperação administrativa: exige prova, preserva evidências, não reativa nada e deixa barreira global 208ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > acionar revoga execuções não usadas do escopo, bloqueia novas aprovações (N6) e sobrevive ao reinício 198ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > kill switch durante o consumo: reserva enfileirada é negada; recibo emitido é recusado 154ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > recibo emitido antes do acionamento é recusado na validação 158ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > o acionamento vale de imediato em memória, antes da gravação 171ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > kill switch do controlador (#022) e falha ao consultá-lo bloqueiam (fail-closed) 139ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > liberação exige nova aprovação de configuração; revogadas continuam revogadas 144ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > #022: liberação pelo controlador com o verificador confiável libera também a barreira 131ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > #022: alteração de limites com confirmação do PO, uso único 140ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > histórico encadeado: somente acréscimo, verificado ao reabrir 89ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > retenção: descarta o vencido como lápide, preserva o que tem preservação e o encadeamento continua válido 213ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > preservação: motivo da lista fechada e texto de até 200 caracteres 112ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > retenção configurável (30 dias a 5 anos) e descarte administrativo exigem aprovação de configuração 136ms
+ ✓ server/approvals/approvals.test.ts > caminhos protegidos (N2) > recusa diretório dentro do Git, de pasta sincronizada (variável ou nome) e junção/link para lá 25ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > manifesto lista cada evidência com SHA-256 que confere com a cópia 192ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > falha ao copiar para a quarentena: nada muda, continua indisponível, sem nova linhagem 103ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > cópia divergente na quarentena é detectada (verificação byte a byte) 171ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > falha ao gravar a nova linhagem: originais restaurados e verificados; continua indisponível 167ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > falha também na restauração → recovery_restore_failed (fail-closed, exige intervenção) 128ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > arquivo não regular (hard link) bloqueia a quarentena 112ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > recuperação recusada com o armazenamento bloqueado por outra instância 59ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > primeira instalação só com inicialização explícita, e sempre com barreira global 91ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > documentos apagados com marcadores presentes → store_missing (mesmo com inicialização explícita) 59ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > tudo apagado mas com vestígios (temporários) → store_missing 77ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > remoção completa (indistinguível da primeira instalação): reinicia COM barreira global — nunca libera 152ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > marcador ausente ou de outra linhagem → indisponível 99ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > store_missing é recuperável: manifesto registra os ausentes e a barreira global volta 65ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > afterCommit: efeito só roda se a gravação der certo 115ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > decisão não gravada: continua pendente, sem prazo de uso; após reinício continua pendente 69ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > reserva não gravada: nenhum recibo é emitido 98ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > liberação de barreira não gravada: barreiras durável e volátil continuam bloqueando 128ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > liberação pelo controlador com resultado não gravado: barreira permanece 126ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > acionamento não gravado: barreira volátil vale e o armazenamento degrada 133ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > dois processos: o segundo é recusado; após encerramento abrupto do primeiro, o bloqueio é retomado 999ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > mesmo processo: segunda aquisição recusada; conteúdo ilegível → recusado 8ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > falha ao remover o bloqueio abandonado → lock_recovery_failed; arquivo de retomada removido 7ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > retomadas concorrentes: exatamente uma vence; a atrasada nunca apaga o bloqueio da outra 21ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > arquivo de retomada abandonado → lock_recovery_stale (intervenção humana) 4ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > pid vivo (ou reutilizado) nunca é retomado; liberação não remove bloqueio de outra instância 7ms
 
  Test Files  1 passed (1)
-      Tests  52 passed (52)
-   Start at  17:07:14
-   Duration  3.01s (tests 88%, setup 7%, transform 3%, import 2%)
+      Tests  77 passed (77)
+   Start at  17:35:57
+   Duration  9.96s (tests 97%, setup 2%, transform 1%)
 

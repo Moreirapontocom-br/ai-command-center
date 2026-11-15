@@ -68,9 +68,20 @@
 N1 época (aprovações concedidas expiram ao reiniciar; pendentes sobrevivem) · N2 caminhos efetivos validados · N3 barreira durável independente do controlador · N4 `method`, exceção controlada e verificador tipado · N5 step-up (sessão, uso único, 5 min, 5 falhas → 15 min) · N6 sem aprovação de pedidos em escopo barrado · N7 compactação segura · N8 preservação · N9 nenhuma rota · N10 faixa de retenção.
 
 ## 5. Testes
-- `server/approvals/approvals.test.ts`: **52 testes**, cobrindo todos os cenários da seção 7 do pedido (válida, forjada, identidade, autoaprovação, SHA, parâmetros, política, expirada, revogada, reutilização, concorrência, reinício, falha de escrita, ledger corrompido, anchor ausente/divergente, rollback, recibo expirado/de outro componente, revogação durante a tentativa, kill switch durante o consumo e após reinício, histórico preservado, compactação, chave indisponível, falha de verificador, compatibilidade #020/#022, execução real desligada, caminhos e bloqueio).
+- `server/approvals/approvals.test.ts`: **77 testes** (52 iniciais + 25 da rodada R1), cobrindo todos os cenários da seção 7 do pedido (válida, forjada, identidade, autoaprovação, SHA, parâmetros, política, expirada, revogada, reutilização, concorrência, reinício, falha de escrita, ledger corrompido, anchor ausente/divergente, rollback, recibo expirado/de outro componente, revogação durante a tentativa, kill switch durante o consumo e após reinício, histórico preservado, compactação, chave indisponível, falha de verificador, compatibilidade #020/#022, execução real desligada, caminhos e bloqueio).
 - `server/security.test.ts`: +1 teste estrutural (núcleo dormente; sem rede, subprocesso, `process.env`, sandbox, controlador ou verificador simulado; senha só em `identity.ts`; nenhuma rota).
 - Evidências: `docs/evidence/issue011-pr1-approvals-tests.txt` e `docs/evidence/issue011-pr1-checks.txt`.
+
+## 5.1 Revisão independente — rodada R1 (correções)
+
+| Ponto | Correção |
+|---|---|
+| **R1 — recuperação/quarentena** | `recover()` não ignora mais nenhuma falha. Cada evidência (ledger, histórico, anchor e os dois marcadores) é COPIADA para `quarantine/<id>/` e verificada byte a byte (SHA-256 e tamanho); um `manifest.json` (presentes/ausentes, SHA-256, tamanho) é gravado e verificado. Só então a nova linhagem é gravada. Falha na quarentena (diretório, leitura, cópia, verificação, arquivo não regular) → `quarantine_*`, nada fora da quarentena é alterado, continua indisponível. Falha ao gravar a nova linhagem → os originais são restaurados e verificados (`recovery_failed`); se a restauração também falhar → `recovery_restore_failed`. Recuperação é recusada quando o motivo não é de integridade/ausência (ex.: `store_locked`, `store_not_initialized`). |
+| **R2 — documentos ausentes** | Marcador de instalação assinado (`approvals-install.json`) nos dois diretórios, gravado antes dos documentos e conferido (MAC, chave, linhagem) em toda abertura. Sem documentos: com marcador ou qualquer vestígio (quarentena, temporários, arquivo de retomada) → `store_missing`; sem vestígios → `store_not_initialized`, salvo `initialize: 'if_absent'` explícito. **Toda instalação nova começa com barreira global** (`initial_install`), que só sai com aprovação de configuração. Limite documentado: sem referência externa confiável, a remoção COMPLETA dos dois diretórios é indistinguível de uma primeira instalação — por isso o bloqueio inicial: apagar o armazenamento nunca libera um bloqueio de emergência. |
+| **R3 — transações** | `StoreTransaction.afterCommit`: efeitos em memória que concedem ou restauram autoridade (prazo monotônico de uso, remoção da barreira volátil) só rodam depois da gravação. Efeitos que só restringem (invalidar recibo, apagar prazo, acionar barreira volátil, encerrar validação) continuam imediatos. Recibos já eram emitidos só depois da gravação. |
+| **R4 — lock** | Retomada serializada por `approvals.lock.takeover` (criação exclusiva) e com releitura: só remove o bloqueio se ainda for exatamente o abandonado (mesmo nonce) — elimina a corrida em que um recuperador atrasado apagava o bloqueio recém-criado por outro. Conteúdo ilegível, link, outra máquina, pid vivo ou reutilizado → `store_locked`; falha na retomada → `lock_recovery_failed` (arquivo de retomada sempre removido); retomada abandonada → `lock_recovery_stale`. Liberação só remove o próprio bloqueio (nonce). |
+
+Testes novos da rodada: 25 (R1: 7, R2: 6, R3: 6, R4: 6), incluindo dois processos reais (o filho é encerrado com `SIGKILL`) e corridas determinísticas de retomada.
 
 ## 6. Limitações e riscos residuais
 - **Windows:** sem fsync de diretório; um `rename` perdido numa queda resulta em bloqueio (*fail-closed*), não em liberação. ACLs do arquivo de chave não são verificadas no Windows (POSIX: exige 0600).
@@ -78,6 +89,7 @@ N1 época (aprovações concedidas expiram ao reiniciar; pendentes sobrevivem) �
 - Atacante com acesso ao usuário (lê a chave e grava ledger e anchor com o processo parado) está fora do alcance local.
 - Histórico em um documento (reescrita atômica, limite de 32 MB). Volumes maiores exigiriam formato incremental.
 - Barreira cuja gravação falhou vale só em memória até reiniciar; depois do reinício não há aprovações utilizáveis (N1), mas o kill switch do controlador #022 continua volátil (D9 → #012).
+- Sem referência externa, remover COMPLETAMENTE os dois diretórios equivale a uma primeira instalação (mitigado pela barreira global inicial). Um processo que reutilize o pid de um dono encerrado impede a retomada automática (fail-closed; exige remoção humana do bloqueio).
 - A falha local de `scripts/main-audit.test.mjs` é do ambiente Windows (`core.autocrlf`); ocorre também na `main` e não na CI.
 
 ## 7. Próximo (PR 2, não iniciado)

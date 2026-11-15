@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, readdir, rename } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, open, readdir, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeFileAtomic, type WriteFile } from '../storage/jsonFile.ts';
 import { canonicalJson, equalHex, macHex, without } from './canonical.ts';
@@ -8,29 +8,33 @@ import {
   ANCHOR_FORMAT,
   checkAnchorDocument,
   checkHistoryDocument,
+  checkInstallDocument,
   checkLedgerDocument,
   DOCUMENT_VERSION,
   DocumentError,
   entryHash,
   HISTORY_FORMAT,
   historyTip,
+  INSTALL_FORMAT,
   LEDGER_FORMAT,
   ledgerHead,
   type AnchorDocument,
   type HistoryBody,
   type HistoryDocument,
   type HistoryEntry,
+  type InstallDocument,
   type LedgerBody,
   type LedgerDocument,
 } from './documents.ts';
 import type { ApprovalKeyProvider } from './keyProvider.ts';
-import { acquireStoreLock, LOCK_FILE, type StoreLock } from './lock.ts';
+import { acquireStoreLock, LOCK_FILE, TAKEOVER_FILE, type LockFileOps, type StoreLock } from './lock.ts';
 import { assertSeparate, checkRegularFile, secureDirectory, type PathEnvironment } from './paths.ts';
 
 /**
  * Armazenamento durável do núcleo de aprovações (R2/R6).
  *
- * Três documentos, cada um com HMAC-SHA256 (chave da `ApprovalKeyProvider`, `keyId` gravado):
+ * Documentos, cada um com HMAC-SHA256 (chave da `ApprovalKeyProvider`, `keyId` gravado):
+ * - `approvals-install.json` — marcador de instalação, nos DOIS diretórios (R2 da revisão);
  * - `approvals-ledger.json` — estado mínimo (aprovações, tentativas, barreiras), com `generation`
  *   monotônica e `prevHead` (hash da versão anterior);
  * - `approvals-history.json` — histórico consultável, encadeado por hash, somente acréscimo;
@@ -38,22 +42,38 @@ import { assertSeparate, checkRegularFile, secureDirectory, type PathEnvironment
  *   histórico, mais a época e a linhagem.
  *
  * Uma alteração (`commit`) grava histórico → ledger → anchor, nessa ordem, cada um por escrita
- * atômica (tmp + fsync + rename). O estado em memória só muda depois das três gravações. Qualquer
- * falha deixa o armazenamento DEGRADADO até reiniciar: nada mais é gravado nem consumido.
+ * atômica (tmp + fsync + rename). O estado em memória — e todo efeito que CONCEDE autoridade
+ * (`afterCommit`) — só muda depois das três gravações. Qualquer falha deixa o armazenamento
+ * DEGRADADO até reiniciar: nada mais é gravado nem consumido.
  *
- * Abertura: valida caminhos, adquire o bloqueio de escritor único, verifica MAC, formato,
- * invariantes, linhagem e a coerência com o anchor (tolerando apenas a queda entre a gravação do
- * ledger/histórico e a do anchor). Inicia uma ÉPOCA nova (N1) e só então aceita operações.
- * Qualquer divergência → INDISPONÍVEL (nega tudo); os arquivos nunca são reescritos nem apagados.
- * A saída é a recuperação administrativa (`recover`), que preserva as evidências em quarentena.
+ * Abertura: valida caminhos, adquire o bloqueio de escritor único, verifica marcadores, MAC,
+ * formato, invariantes, linhagem e a coerência com o anchor (tolerando apenas a queda entre a
+ * gravação do ledger/histórico e a do anchor). Inicia uma ÉPOCA nova (N1) e só então aceita
+ * operações. Qualquer divergência → INDISPONÍVEL (nega tudo); os arquivos nunca são reescritos.
+ *
+ * Primeira instalação × perda (R2 da revisão): sem documentos, sem marcadores e sem vestígios
+ * (quarentena, temporários) só se inicializa com `initialize: 'if_absent'` explícito; havendo
+ * qualquer vestígio → `store_missing`. TODA instalação nova começa com BARREIRA GLOBAL ativa:
+ * apagar o armazenamento nunca libera um bloqueio de emergência. Sem referência externa confiável,
+ * a remoção COMPLETA dos dois diretórios é indistinguível de uma primeira instalação — por isso a
+ * barreira inicial, que exige liberação humana com aprovação de configuração.
+ *
+ * Recuperação administrativa (`recover`): copia e VERIFICA (SHA-256 byte a byte) cada evidência na
+ * quarentena, grava um manifesto verificado e só então inicia a nova linhagem. Falha em qualquer
+ * etapa da quarentena → nada é alterado; falha ao gravar o novo estado → os arquivos originais são
+ * restaurados (e verificados). Em ambos os casos o armazenamento continua INDISPONÍVEL.
  */
 
 export const LEDGER_FILE = 'approvals-ledger.json';
 export const HISTORY_FILE = 'approvals-history.json';
 export const ANCHOR_FILE = 'approvals-anchor.json';
+export const INSTALL_FILE = 'approvals-install.json';
 export const QUARANTINE_DIR = 'quarantine';
+export const MANIFEST_FILE = 'manifest.json';
 const MAX_LEDGER_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORY_BYTES = 32 * 1024 * 1024;
+/** Vestígios de uma instalação anterior (além dos documentos). */
+const TRACE = /^approvals-(ledger|history|anchor|install)\.json(\..+\.tmp)?$/;
 
 export type StoreState = 'available' | 'degraded' | 'unavailable';
 
@@ -79,15 +99,28 @@ export interface StoreTransaction {
   history: HistoryBody;
   epoch: number;
   append(input: HistoryInput): void;
+  /**
+   * Efeito em memória que só pode acontecer se a gravação der certo (R3 da revisão): tudo o que
+   * CONCEDE ou RESTAURA autoridade (prazo de uso, liberação de barreira volátil). Efeitos que só
+   * restringem (invalidar recibo, apagar prazo, acionar barreira) podem ser imediatos.
+   */
+  afterCommit(effect: () => void): void;
 }
+
+/** Gravação de bytes (quarentena e restauração), injetável para testes de falha. */
+export type WriteBytes = (path: string, content: Buffer) => Promise<void>;
 
 export interface OpenStoreOptions {
   approvalsDir: string;
   anchorDir: string;
   keyProvider: ApprovalKeyProvider;
   environment: PathEnvironment;
+  /** `never` (padrão): sem documentos, indisponível. `if_absent`: primeira instalação explícita. */
+  initialize?: 'never' | 'if_absent';
   now?: () => number;
   writeFile?: WriteFile;
+  writeBytes?: WriteBytes;
+  lockOps?: LockFileOps;
 }
 
 export interface ApprovalStore {
@@ -98,9 +131,8 @@ export interface ApprovalStore {
   /** Aplica uma alteração atômica. `change` é síncrona; se lançar, nada é gravado. */
   commit<R>(change: (tx: StoreTransaction) => R): Promise<R>;
   /**
-   * Recuperação ADMINISTRATIVA (só quando indisponível). A autorização humana é verificada pelo
-   * serviço antes de chamar isto. Move os arquivos atuais para a quarentena (nunca apaga), inicia
-   * linhagem e época novas, sem nenhuma aprovação antiga, com BARREIRA GLOBAL ativa.
+   * Recuperação ADMINISTRATIVA (só quando indisponível por integridade/ausência). A autorização
+   * humana é verificada pelo serviço antes de chamar isto.
    */
   recover(input: { actorId: string; reason: RecoveryReason }): Promise<{ quarantineId: string }>;
   close(): Promise<void>;
@@ -117,6 +149,9 @@ interface Loaded {
 }
 
 const emptyLedger = (): LedgerBody => ({ approvals: [], attempts: [], barriers: { global: null, projects: {} }, compaction: { lastAt: null, removed: 0 } });
+const sha = (data: Buffer) => createHash('sha256').update(data).digest('hex');
+/** Recuperação não se aplica a estes motivos (não são de integridade/ausência). */
+const NOT_RECOVERABLE = ['store_locked', 'lock_recovery_stale', 'lock_recovery_failed', 'lock_unavailable', 'store_not_initialized', 'closed', 'opening'];
 
 async function readOptional(path: string): Promise<{ raw: unknown; text: string } | null> {
   if (!(await checkRegularFile(path))) return null;
@@ -133,9 +168,28 @@ async function readOptional(path: string): Promise<{ raw: unknown; text: string 
   }
 }
 
+/** Escrita atômica de bytes (tmp exclusivo + fsync + rename), sem conversão de codificação. */
+export async function writeBytesAtomic(path: string, content: Buffer): Promise<void> {
+  const temporary = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+  const handle = await open(temporary, 'wx', 0o600);
+  try {
+    await handle.writeFile(content);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+
 export async function openApprovalStore(options: OpenStoreOptions): Promise<ApprovalStore> {
   const now = options.now ?? Date.now;
   const write = options.writeFile ?? writeFileAtomic;
+  const writeBytes = options.writeBytes ?? writeBytesAtomic;
   const iso = () => new Date(now()).toISOString();
   let state: StoreState = 'unavailable';
   let reason: string | null = 'opening';
@@ -147,7 +201,13 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
   let current: Loaded | null = null;
   let queue: Promise<unknown> = Promise.resolve();
 
-  const paths = () => ({ ledger: join(approvalsDir, LEDGER_FILE), history: join(approvalsDir, HISTORY_FILE), anchor: join(anchorDir, ANCHOR_FILE) });
+  const paths = () => ({
+    ledger: join(approvalsDir, LEDGER_FILE),
+    history: join(approvalsDir, HISTORY_FILE),
+    anchor: join(anchorDir, ANCHOR_FILE),
+    installA: join(approvalsDir, INSTALL_FILE),
+    installB: join(anchorDir, INSTALL_FILE),
+  });
   const unavailable = (code: string) => {
     state = 'unavailable';
     reason = code;
@@ -158,6 +218,13 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
   }
   function verifyMac(domain: string, doc: { mac: string }) {
     if (!equalHex(doc.mac, macHex(key!, domain, without(doc, 'mac')))) throw new ApprovalError('mac_invalid');
+  }
+
+  async function writeInstallMarkers(lineage: string) {
+    const marker = canonicalJson(sign<InstallDocument>('install', { format: INSTALL_FORMAT, version: DOCUMENT_VERSION, lineage, keyId, createdAt: iso() }));
+    const p = paths();
+    await write(p.installA, marker);
+    await write(p.installB, marker);
   }
 
   /** Monta os novos documentos e grava histórico → ledger → anchor. Lança em qualquer falha. */
@@ -202,14 +269,15 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
   }
 
   /**
-   * Executa `change` sobre rascunhos e devolve os rascunhos + resultado (sem gravar). As entradas
-   * do histórico são montadas DEPOIS, quando se sabe se o ledger muda (e para qual geração).
+   * Executa `change` sobre rascunhos e devolve os rascunhos, o resultado e os efeitos pós-gravação
+   * (sem gravar). As entradas do histórico são montadas DEPOIS, quando se sabe a geração.
    */
   function draft<R>(base: Loaded, epoch: number, change: (tx: StoreTransaction) => R, forceLedger = false) {
     const ledger = structuredClone(base.ledger);
     const history = structuredClone(base.history);
     const pending: HistoryInput[] = [];
-    const result = change({ ledger, history, epoch, append: (input) => pending.push(input) });
+    const effects: Array<() => void> = [];
+    const result = change({ ledger, history, epoch, append: (input) => pending.push(input), afterCommit: (effect) => effects.push(effect) });
     const ledgerChanged = forceLedger || canonicalJson(ledger) !== canonicalJson(base.ledger);
     const generation = ledgerChanged ? base.generation + 1 : base.generation;
     const at = iso();
@@ -236,32 +304,70 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
       };
       history.items.push({ ...entry, hash: entryHash(entry) });
     }
-    return { ledger, history, result };
+    return { ledger, history, result, effects };
+  }
+
+  const runEffects = (effects: Array<() => void>) => {
+    for (const effect of effects) {
+      try {
+        effect();
+      } catch {
+        // Efeitos são operações simples em memória; uma falha não pode desfazer a gravação.
+      }
+    }
+  };
+
+  /** Há vestígio de instalação anterior em algum dos diretórios? */
+  async function hasTraces(): Promise<boolean> {
+    for (const dir of [approvalsDir, anchorDir]) {
+      let entries: string[];
+      try {
+        entries = await readdir(dir);
+      } catch {
+        return true; // Na dúvida, não é uma primeira instalação.
+      }
+      if (entries.some((name) => name === QUARANTINE_DIR || name === TAKEOVER_FILE || TRACE.test(name))) return true;
+    }
+    return false;
   }
 
   async function load(): Promise<Loaded | 'fresh'> {
     const p = paths();
-    const [ledgerFile, historyFile, anchorFile] = [await readOptional(p.ledger), await readOptional(p.history), await readOptional(p.anchor)];
-    if (!ledgerFile && !historyFile && !anchorFile) return 'fresh';
+    const [ledgerFile, historyFile, anchorFile, installA, installB] = [
+      await readOptional(p.ledger),
+      await readOptional(p.history),
+      await readOptional(p.anchor),
+      await readOptional(p.installA),
+      await readOptional(p.installB),
+    ];
+    if (!ledgerFile && !historyFile && !anchorFile) {
+      if (installA || installB || (await hasTraces())) throw new ApprovalError('store_missing');
+      if (options.initialize !== 'if_absent') throw new ApprovalError('store_not_initialized');
+      return 'fresh';
+    }
+    if (!installA || !installB) throw new ApprovalError('install_marker_missing');
     if (!anchorFile) throw new ApprovalError('anchor_missing');
     if (!ledgerFile) throw new ApprovalError('ledger_missing');
     if (!historyFile) throw new ApprovalError('history_missing');
     let anchor: AnchorDocument;
     let ledger: LedgerDocument;
     let history: HistoryDocument;
+    let markers: InstallDocument[];
     try {
       anchor = checkAnchorDocument(anchorFile.raw);
       ledger = checkLedgerDocument(ledgerFile.raw);
       history = checkHistoryDocument(historyFile.raw);
+      markers = [checkInstallDocument(installA.raw), checkInstallDocument(installB.raw)];
     } catch (error) {
       if (error instanceof DocumentError) throw new ApprovalError('document_invalid');
       throw error;
     }
-    if (anchor.keyId !== keyId || ledger.keyId !== keyId || history.keyId !== keyId) throw new ApprovalError('key_mismatch');
+    if ([anchor, ledger, history, ...markers].some((doc) => doc.keyId !== keyId)) throw new ApprovalError('key_mismatch');
     verifyMac('anchor', anchor);
     verifyMac('ledger', ledger);
     verifyMac('history', history);
-    if (ledger.lineage !== anchor.lineage || history.lineage !== anchor.lineage) throw new ApprovalError('lineage_mismatch');
+    for (const marker of markers) verifyMac('install', marker);
+    if ([ledger, history, ...markers].some((doc) => doc.lineage !== anchor.lineage)) throw new ApprovalError('lineage_mismatch');
     // Ledger × anchor: igual, ou exatamente uma geração à frente encadeada (queda antes do anchor).
     const head = ledgerHead(ledger);
     const ledgerOk =
@@ -316,21 +422,31 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
     tx.append({ event: 'approval.store_opened', actor: system, reason: 'epoch_started', detail: `epoch ${tx.epoch}` });
   }
 
+  /** Nova linhagem vazia, SEMPRE com barreira global (instalação nova ou recuperação). */
+  async function startLineage(epoch: number, barrierReason: 'initial_install' | 'recovery', events: (tx: StoreTransaction) => void): Promise<Loaded> {
+    const lineage = randomUUID();
+    const base: Loaded = { lineage, keyId, generation: 0, head: '', epoch, ledger: emptyLedger(), history: { retentionDays: HISTORY_RETENTION_DAYS.default, items: [], holds: [] } };
+    const d = draft(base, epoch, (tx) => {
+      events(tx);
+      tx.ledger.barriers.global = { engagedAt: iso(), epoch, reason: barrierReason };
+      tx.append({ event: 'approval.barrier_engaged', actor: { kind: 'system', id: 'acc-approvals' }, reason: barrierReason, detail: 'scope global' });
+    }, true);
+    await writeInstallMarkers(lineage);
+    return persist(base, { ledger: d.ledger, history: d.history, epoch }, true);
+  }
+
   async function initialize() {
     try {
       approvalsDir = await secureDirectory(options.approvalsDir, options.environment);
       anchorDir = await secureDirectory(options.anchorDir, options.environment);
       assertSeparate(approvalsDir, anchorDir, options.environment.platform);
-      lock = await acquireStoreLock(approvalsDir, now);
+      lock = await acquireStoreLock(approvalsDir, { now, ops: options.lockOps });
       const loadedKey = await options.keyProvider.load();
       key = loadedKey.key;
       keyId = loadedKey.keyId;
       const loaded = await load();
       if (loaded === 'fresh') {
-        const lineage = randomUUID();
-        const base: Loaded = { lineage, keyId, generation: 0, head: '', epoch: 1, ledger: emptyLedger(), history: { retentionDays: HISTORY_RETENTION_DAYS.default, items: [], holds: [] } };
-        const d = draft(base, 1, (tx) => tx.append({ event: 'approval.store_initialized', actor: { kind: 'system', id: 'acc-approvals' }, reason: 'fresh_store', detail: 'epoch 1' }), true);
-        current = await persist(base, { ledger: d.ledger, history: d.history, epoch: 1 }, true);
+        current = await startLineage(1, 'initial_install', (tx) => tx.append({ event: 'approval.store_initialized', actor: { kind: 'system', id: 'acc-approvals' }, reason: 'fresh_store', detail: 'epoch 1' }));
       } else {
         const epoch = loaded.epoch + 1;
         const d = draft(loaded, epoch, (tx) => openEpoch(tx, loaded.generation, lock!.recovered), true);
@@ -365,7 +481,10 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
         if (state !== 'available' || !current) throw new ApprovalError(state === 'degraded' ? 'store_degraded' : 'store_unavailable');
         const base = current;
         const d = draft(base, base.epoch, change);
-        if (canonicalJson(d.ledger) === canonicalJson(base.ledger) && canonicalJson(d.history) === canonicalJson(base.history)) return d.result;
+        if (canonicalJson(d.ledger) === canonicalJson(base.ledger) && canonicalJson(d.history) === canonicalJson(base.history)) {
+          runEffects(d.effects);
+          return d.result;
+        }
         try {
           current = await persist(base, { ledger: d.ledger, history: d.history, epoch: base.epoch });
         } catch (error) {
@@ -374,6 +493,7 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
           reason = 'write_failed';
           throw new ApprovalError('store_write_failed');
         }
+        runEffects(d.effects);
         return d.result;
       });
       queue = run.catch(() => undefined);
@@ -382,41 +502,112 @@ export async function openApprovalStore(options: OpenStoreOptions): Promise<Appr
     recover(input) {
       const run = queue.then(async () => {
         if (state !== 'unavailable') throw new ApprovalError('recovery_not_needed');
-        if (!key || !lock) throw new ApprovalError(reason ?? 'store_unavailable');
+        if (!key || !lock || NOT_RECOVERABLE.includes(reason ?? '')) throw new ApprovalError(reason && NOT_RECOVERABLE.includes(reason) ? `recovery_refused_${reason}`.slice(0, 64) : 'store_unavailable');
+        const p = paths();
         const quarantineId = `${iso().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
         const target = join(approvalsDir, QUARANTINE_DIR, quarantineId);
-        await mkdir(target, { recursive: true, mode: 0o700 });
-        const p = paths();
-        // Evidências: ledger e histórico são MOVIDOS (nunca apagados); o anchor é copiado e depois
-        // substituído pela gravação atômica do novo estado.
+        const evidence = [
+          { name: LEDGER_FILE, path: p.ledger },
+          { name: HISTORY_FILE, path: p.history },
+          { name: ANCHOR_FILE, path: p.anchor },
+          { name: `approvals-dir-${INSTALL_FILE}`, path: p.installA },
+          { name: `anchor-dir-${INSTALL_FILE}`, path: p.installB },
+        ];
+        const originals = new Map<string, Buffer | null>();
+
+        // 1) Quarentena verificada. Qualquer falha aqui: nada foi alterado fora da quarentena.
+        try {
+          await mkdir(join(approvalsDir, QUARANTINE_DIR), { recursive: true, mode: 0o700 });
+          await mkdir(target, { mode: 0o700 });
+        } catch {
+          throw new ApprovalError('quarantine_failed');
+        }
+        const manifest: Array<{ name: string; present: boolean; sha256: string | null; bytes: number }> = [];
+        for (const item of evidence) {
+          let present: boolean;
+          try {
+            present = await checkRegularFile(item.path);
+          } catch {
+            throw new ApprovalError('quarantine_unsupported_file');
+          }
+          if (!present) {
+            originals.set(item.path, null);
+            manifest.push({ name: item.name, present: false, sha256: null, bytes: 0 });
+            continue;
+          }
+          let data: Buffer;
+          try {
+            data = await readFile(item.path);
+          } catch {
+            throw new ApprovalError('quarantine_read_failed');
+          }
+          try {
+            await writeBytes(join(target, item.name), data);
+          } catch {
+            throw new ApprovalError('quarantine_write_failed');
+          }
+          let copy: Buffer;
+          try {
+            copy = await readFile(join(target, item.name));
+          } catch {
+            throw new ApprovalError('quarantine_verification_failed');
+          }
+          if (sha(copy) !== sha(data) || copy.length !== data.length) throw new ApprovalError('quarantine_verification_failed');
+          originals.set(item.path, data);
+          manifest.push({ name: item.name, present: true, sha256: sha(data), bytes: data.length });
+        }
+        const manifestBytes = Buffer.from(canonicalJson({ format: 'acc-approvals-quarantine', version: 1, quarantineId, createdAt: iso(), reason: input.reason, actor: input.actorId, files: manifest }), 'utf8');
+        try {
+          await writeBytes(join(target, MANIFEST_FILE), manifestBytes);
+          if (sha(await readFile(join(target, MANIFEST_FILE))) !== sha(manifestBytes)) throw new Error('mismatch');
+        } catch {
+          throw new ApprovalError('quarantine_verification_failed');
+        }
+
+        // 2) Época anterior (melhor esforço; só serve para continuar crescendo).
         let previousEpoch = 0;
         let previousLineage: string | null = null;
-        for (const file of [p.ledger, p.anchor]) {
+        for (const path of [p.ledger, p.anchor]) {
+          const data = originals.get(path);
+          if (!data) continue;
           try {
-            const parsed = JSON.parse(await readFile(file, 'utf8')) as { epoch?: unknown; lineage?: unknown };
+            const parsed = JSON.parse(data.toString('utf8')) as { epoch?: unknown; lineage?: unknown };
             if (typeof parsed.epoch === 'number' && Number.isSafeInteger(parsed.epoch) && parsed.epoch > previousEpoch) previousEpoch = parsed.epoch;
             if (typeof parsed.lineage === 'string' && /^[0-9a-f-]{36}$/.test(parsed.lineage)) previousLineage = parsed.lineage;
           } catch {
-            // Ilegível: a evidência é preservada mesmo assim.
+            // Ilegível: a evidência já está preservada e verificada.
           }
         }
-        for (const [file, name] of [[p.ledger, LEDGER_FILE], [p.history, HISTORY_FILE]] as const) {
-          if (await checkRegularFile(file).catch(() => true)) await rename(file, join(target, name)).catch(() => undefined);
-        }
-        if (await checkRegularFile(p.anchor).catch(() => true)) await copyFile(p.anchor, join(target, ANCHOR_FILE)).catch(() => undefined);
-        const lineage = randomUUID();
-        const epoch = previousEpoch + 1;
-        const base: Loaded = { lineage, keyId, generation: 0, head: '', epoch, ledger: emptyLedger(), history: { retentionDays: HISTORY_RETENTION_DAYS.default, items: [], holds: [] } };
-        const d = draft(base, epoch, (tx) => {
-          tx.ledger.barriers.global = { engagedAt: iso(), epoch, reason: 'recovery' };
-          tx.append({ event: 'approval.store_recovered', actor: { kind: 'human', id: input.actorId }, reason: input.reason, detail: `quarantine ${quarantineId}${previousLineage ? ` lineage ${previousLineage}` : ''}`.slice(0, 300) });
-          tx.append({ event: 'approval.barrier_engaged', actor: { kind: 'system', id: 'acc-approvals' }, reason: 'recovery', detail: 'scope global' });
-        }, true);
+
+        // 3) Nova linhagem. Falha → restaura os originais (verificados) e continua indisponível.
         try {
-          current = await persist(base, { ledger: d.ledger, history: d.history, epoch }, true);
+          const manifestSha = sha(manifestBytes);
+          current = await startLineage(previousEpoch + 1, 'recovery', (tx) =>
+            tx.append({
+              event: 'approval.store_recovered',
+              actor: { kind: 'human', id: input.actorId },
+              reason: input.reason,
+              detail: `quarantine ${quarantineId} manifest ${manifestSha.slice(0, 16)}${previousLineage ? ` lineage ${previousLineage}` : ''}`,
+            }),
+          );
         } catch {
-          unavailable('recovery_write_failed');
-          throw new ApprovalError('recovery_write_failed');
+          current = null;
+          let restored = true;
+          for (const item of evidence) {
+            const data = originals.get(item.path);
+            try {
+              if (data) {
+                await writeBytes(item.path, data);
+                if (sha(await readFile(item.path)) !== sha(data)) restored = false;
+              } else {
+                await rm(item.path, { force: true });
+              }
+            } catch {
+              restored = false;
+            }
+          }
+          unavailable(restored ? 'recovery_failed' : 'recovery_restore_failed');
+          throw new ApprovalError(restored ? 'recovery_failed' : 'recovery_restore_failed');
         }
         state = 'available';
         reason = null;
@@ -444,4 +635,4 @@ export async function listQuarantine(approvalsDir: string): Promise<string[]> {
   }
 }
 
-export { LOCK_FILE };
+export { LOCK_FILE, TAKEOVER_FILE };

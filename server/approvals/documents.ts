@@ -309,6 +309,28 @@ export function checkAnchorDocument(raw: unknown): AnchorDocument {
   return d as unknown as AnchorDocument;
 }
 
+export const INSTALL_FORMAT = 'acc-approvals-install';
+
+/**
+ * Marcador de instalação (R2), gravado nos DOIS diretórios antes dos documentos: distingue a
+ * primeira instalação de uma instalação existente cujos documentos sumiram.
+ */
+export interface InstallDocument {
+  format: typeof INSTALL_FORMAT;
+  version: typeof DOCUMENT_VERSION;
+  lineage: string;
+  keyId: string;
+  createdAt: string;
+  mac: string;
+}
+
+export function checkInstallDocument(raw: unknown): InstallDocument {
+  const d = keys(raw, ['format', 'version', 'lineage', 'keyId', 'createdAt', 'mac'], 'marcador');
+  if (d.format !== INSTALL_FORMAT || d.version !== DOCUMENT_VERSION) fail('marcador');
+  if (!isUuid(d.lineage) || typeof d.keyId !== 'string' || !KEY_ID.test(d.keyId) || !isIso(d.createdAt) || !isHex64(d.mac)) fail('marcador');
+  return d as unknown as InstallDocument;
+}
+
 /**
  * Texto opcional de preservação (N8): remove caracteres de controle e formatação invisível,
  * normaliza (NFC) e colapsa espaços. O chamador recusa se passar de 200 caracteres.

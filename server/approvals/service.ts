@@ -324,7 +324,8 @@ export function createApprovalService(options: ApprovalServiceOptions) {
     const key = scopeKey(scope);
     if (scope.kind === 'global') tx.ledger.barriers.global = null;
     else delete tx.ledger.barriers.projects[scope.projectId];
-    volatileBarriers.delete(key);
+    // Restaura autoridade: a barreira volátil só sai depois que a liberação foi gravada (R3).
+    tx.afterCommit(() => volatileBarriers.delete(key));
     tx.append({ event: 'approval.barrier_released', actor: { kind: 'human', id: actorId }, projectId: scope.kind === 'project' ? scope.projectId : null, reason: 'human_approved', detail: `scope ${scope.kind}` });
   }
 
@@ -434,7 +435,9 @@ export function createApprovalService(options: ApprovalServiceOptions) {
             approval.epoch = tx.epoch;
             approval.validUntil = iso(at + APPROVAL_TTL_MS[approval.class]);
             transition(tx, approval, 'approved', 'approved_by_owner', { kind: 'human', id: deciderId });
-            monoDeadlines.set(approval.id, mono() + (Date.parse(approval.validUntil) - at));
+            // Concede autoridade: só depois da gravação (R3 da revisão).
+            const deadline = mono() + APPROVAL_TTL_MS[approval.class];
+            tx.afterCommit(() => monoDeadlines.set(approval.id, deadline));
             return structuredClone(approval);
           });
         },
@@ -492,7 +495,8 @@ export function createApprovalService(options: ApprovalServiceOptions) {
             approval.validUntil = iso(at + APPROVAL_TTL_MS[cls]);
             transition(tx, approval, 'approved', 'owner_confirmed', { kind: 'human', id: userId });
             tx.append(event(approval, { event: 'approval.owner_confirmed', actor: { kind: 'human', id: userId }, reason: confirmation.method }));
-            monoDeadlines.set(approval.id, mono() + APPROVAL_TTL_MS[cls]);
+            const deadline = mono() + APPROVAL_TTL_MS[cls];
+            tx.afterCommit(() => monoDeadlines.set(approval.id, deadline));
             return structuredClone(approval);
           });
         },

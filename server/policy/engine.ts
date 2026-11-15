@@ -67,6 +67,12 @@ export interface PolicyFacts {
   now: number;
   /** Ids de aprovações já consumidas (uso único). */
   usedApprovals: ReadonlySet<string>;
+  /**
+   * Issue #011 (N4): id do grant `owner_confirmation` cuja origem o SERVIDOR atestou pelo núcleo
+   * de aprovações (recibo validado). Sem isto, `owner_confirmation` é recusado como antes
+   * (`self_approval`). Nunca vem do cliente.
+   */
+  verifiedOwnerConfirmationId?: string | null;
 }
 
 export class PolicyValidationError extends Error {
@@ -147,8 +153,17 @@ export function approvalProblem(grant: ApprovalGrant, request: PolicyRequest, fa
   if (grant.approvedBy.kind !== 'human') return 'approver_not_human';
   // Um id de agente nunca vale como aprovador, mesmo rotulado como "human".
   if ((AGENT_IDS as readonly string[]).includes(grant.approvedBy.id)) return 'approver_not_human';
-  // Ninguém aprova a própria ação; agente nunca aprova.
-  if (request.subject.kind === 'human' && grant.approvedBy.id === request.subject.id) return 'self_approval';
+  const method = grant.method ?? 'approval';
+  if (method !== 'approval' && method !== 'owner_confirmation') return 'invalid_method';
+  // Ninguém aprova a própria ação; agente nunca aprova. Exceção ÚNICA (D2/N4): confirmação do
+  // próprio PO, atestada pelo servidor, para operação crítica que ele iniciou.
+  if (method === 'owner_confirmation') {
+    if (request.subject.kind !== 'human' || grant.approvedBy.id !== request.subject.id) return 'invalid_owner_confirmation';
+    if (!POLICY_ACTIONS[grant.action].critical) return 'invalid_owner_confirmation';
+    if (!facts.verifiedOwnerConfirmationId || facts.verifiedOwnerConfirmationId !== grant.id) return 'self_approval';
+  } else if (request.subject.kind === 'human' && grant.approvedBy.id === request.subject.id) {
+    return 'self_approval';
+  }
   const approvedAt = Date.parse(grant.approvedAt);
   const expiresAt = Date.parse(grant.expiresAt);
   if (!Number.isFinite(approvedAt) || !Number.isFinite(expiresAt)) return 'invalid_dates';

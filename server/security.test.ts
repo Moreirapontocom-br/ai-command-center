@@ -130,6 +130,35 @@ describe('superfície de escrita do servidor', () => {
     expect(POST_ROUTES.some((route) => /limit|budget|quota|kill|spend|admission/.test(route))).toBe(false);
   });
 
+  it('aprovações (Issue #011, PR 1): núcleo dormente, sem rede, sem execução, sem rota e sem verificador simulado', () => {
+    const files = server.filter((f) => f.path.startsWith('server/approvals/'));
+    expect(files.map((f) => f.path).sort()).toEqual([
+      'server/approvals/binding.ts',
+      'server/approvals/canonical.ts',
+      'server/approvals/contracts.ts',
+      'server/approvals/documents.ts',
+      'server/approvals/identity.ts',
+      'server/approvals/keyProvider.ts',
+      'server/approvals/lock.ts',
+      'server/approvals/paths.ts',
+      'server/approvals/service.ts',
+      'server/approvals/store.ts',
+    ]);
+    for (const file of files) {
+      expect(file.code).not.toMatch(/node:child_process|node:net|node:http|node:https|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
+      // O núcleo não lê o ambiente (a configuração é injetada), não usa o sandbox nem o controlador
+      // da #022 (só os TIPOS do contrato) e nunca o verificador simulado.
+      expect(file.code).not.toMatch(/process\.env|sandbox\/(service|simulatedProvider|provider)|limits\/(controller|providers)|simulatedApprovalVerifier/);
+    }
+    // Só o módulo de identidade toca a verificação de senha (nenhum outro caminho cria prova humana).
+    expect(filesMatching(files, /auth\/password|verifyPassword/)).toEqual(['server/approvals/identity.ts']);
+    // O verificador entregue aos componentes é sempre o confiável.
+    expect(files.find((f) => f.path === 'server/approvals/service.ts')!.code).toMatch(/kind: 'trusted' as const/);
+    // Dormente: nada fora de server/approvals o importa neste PR (a integração é o PR 2).
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts)/)).toEqual([]);
+    expect(POST_ROUTES.some((route) => /approv|step-up|stepup|confirm|barrier|kill/.test(route))).toBe(false);
+  });
+
   it('auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006)', () => {
     expect(POST_ROUTES.some((route) => route.startsWith('/api/audit'))).toBe(false);
     for (const path of ['/api/audit', '/api/audit/x']) expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD']);

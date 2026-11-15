@@ -1,0 +1,368 @@
+# Issue #011 PR 2 — testes (local, v24.18.1)
+
+## Novos e ajustados (verbose)
+ ✓ server/approvals/sharedDigest.test.ts > resumo do vínculo no navegador > SHA-256 local coincide com o do Node para textos variados (inclusive UTF-8 e blocos-limite) 8ms
+ ✓ server/approvals/sharedDigest.test.ts > resumo do vínculo no navegador > resumo do vínculo é o mesmo do servidor; qualquer campo alterado muda o resumo 2ms
+ ✓ server/sandbox/sandbox.test.ts > execução real desabilitada e negação por padrão > constante de execução real é false 3ms
+ ✓ server/sandbox/sandbox.test.ts > execução real desabilitada e negação por padrão > com o catálogo real, a política responde UNAVAILABLE e nada é criado 6ms
+ ✓ server/sandbox/sandbox.test.ts > execução real desabilitada e negação por padrão > provedor que executa código é recusado ao iniciar, mesmo autorizado 6ms
+ ✓ server/sandbox/sandbox.test.ts > execução real desabilitada e negação por padrão > o adaptador simulado declara que não executa nem isola 1ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > sem aprovação fica em "requested"; aprovação exata autoriza (uso único) 2ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > aprovação inválida (outro SHA) não autoriza 1ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > aprovação inválida (outra tarefa) não autoriza 1ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > aprovação inválida (outro agente) não autoriza 1ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > aprovação inválida (aprovada pelo próprio agente) não autoriza 1ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > aprovação inválida (expirada) não autoriza 1ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > agente sem a tarefa atribuída: negado pela invariante da #020 1ms
+ ✓ server/sandbox/sandbox.test.ts > política da #020 > tarefa concluída ou cancelada não abre sandbox 1ms
+ ✓ server/sandbox/sandbox.test.ts > isolamento lógico por projeto e tarefa > projeto de outro dono ou tarefa de outro projeto: not_found 1ms
+ ✓ server/sandbox/sandbox.test.ts > isolamento lógico por projeto e tarefa > repositório não vinculado ao projeto é recusado 1ms
+ ✓ server/sandbox/sandbox.test.ts > isolamento lógico por projeto e tarefa > consultar ou operar com outro dono/projeto é indistinguível de inexistente 2ms
+ ✓ server/sandbox/sandbox.test.ts > isolamento lógico por projeto e tarefa > workspace exclusivo e branch dedicada derivados pelo servidor; main nunca gravável 2ms
+ ✓ server/sandbox/sandbox.test.ts > isolamento lógico por projeto e tarefa > entrada de issue/PR é marcada como não confiável e não muda branch, rede nem decisão 1ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa projeto inválido 1ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa tarefa inválida 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa agente desconhecido 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa campo extra (branch escolhida pelo chamador) 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa campo extra (caminho do host) 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa comando arbitrário 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa repositório sem SHA 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa SHA inválido 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa host com curinga 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa IP de metadados da nuvem 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa localhost 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa host de metadados 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa host com porta 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa URL em vez de host 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa escopo de segredos 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa escopo de produção 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa escrita sem repositório 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa tempo acima do limite 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa memória acima do limite 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa limite fracionário 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > recusa entrada com caminho 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > branch de trabalho inválida ou protegida: main 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > branch de trabalho inválida ou protegida: master 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > branch de trabalho inválida ou protegida: acc/main/6f1e8b2a-00000001 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > branch de trabalho inválida ou protegida: refs/heads/main 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > branch de trabalho inválida ou protegida: acc/claude-code/../main 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > branch de trabalho inválida ou protegida: feature/x 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > branch de trabalho inválida ou protegida: acc/claude-code/HEAD 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > workspace inválido: ../x 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > workspace inválido: C:\Windows 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > workspace inválido: /etc/passwd 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > workspace inválido: ws-.. 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > workspace inválido: ws-abc 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > workspace inválido: ws-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > workspace inválido: ws- 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > nomes lógicos: só tokens simples 0ms
+ ✓ server/sandbox/sandbox.test.ts > validação de identificadores, caminhos, rede e credenciais > sem repositório (projeto sem GitHub) a spec não tem git 0ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > matriz de transições: estados terminais não têm saída 1ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > fluxo completo: requested → authorized → running → completed, com descarte 2ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > transições proibidas são recusadas 1ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > cancelar em execução para e descarta o workspace 1ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > cancelar antes de iniciar não chama o provedor 1ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > expira solicitação não autorizada a tempo e execução que passou do limite 1ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > falha do provedor ao preparar/iniciar: "failed" com código, descarte tentado 1ms
+ ✓ server/sandbox/sandbox.test.ts > ciclo de vida, cancelamento e expiração (simulados) > falha no descarte deixa cleanup "pending" (não finge que limpou) 1ms
+ ✓ server/sandbox/sandbox.test.ts > ausência de segredos > mensagem do provedor com token nunca vai para registro nem log 1ms
+ ✓ server/sandbox/sandbox.test.ts > ausência de segredos > registros devolvidos são cópias (não alteram o estado interno) 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > authorize com solicitação vencida: expira, recusa e não consome a aprovação 2ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > authorize ainda dentro do prazo (1 ms antes) é aceito 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > start com autorização vencida: expira sem preparar nem iniciar o provedor 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > start respeita o prazo da aprovação quando ele é menor que a janela padrão 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > start ainda dentro do prazo inicia normalmente 2ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > prazo que vence durante o preparo: não inicia e descarta o workspace 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > dois start concorrentes: só um prepara e inicia 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > cancelar durante o preparo: espera o start e então para e descarta (sem workspace órfão) 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > expireOverdue durante o preparo de um start vencido: expira uma única vez 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > start e expireOverdue concorrentes com prazo já vencido: um só "expired", provedor intocado 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > authorize e cancel concorrentes: aplicados em ordem, sem estado intermediário inválido 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > authorize vencido concorrente com expireOverdue: expira uma única vez 2ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > report antes do vencimento (1 ms antes) é aceito 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > report exatamente no instante do vencimento (completed): expira com timeout, para e descarta 2ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > report exatamente no instante do vencimento (failed): expira com timeout, para e descarta 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > report depois do vencimento: recusado; nova tentativa não sobrescreve o estado terminal 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > resultado atrasado depois de expireOverdue não sobrescreve "expired" 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > report vencido concorrente com expireOverdue e cancel: um só "expired", descarte uma vez 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > autorização vence durante provider.start(): expira, para, descarta e não renova o prazo 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > provider.start() que retorna ainda dentro do prazo (1 ms antes): running 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > cancel concorrente com vencimento durante provider.start(): expira uma vez; cancel recusado 2ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > cancel durante provider.start() ainda no prazo: aguarda, então para e descarta 1ms
+ ✓ server/sandbox/sandbox.test.ts > prazos vencidos sem depender de expireOverdue (R1) > expireOverdue concorrente com vencimento durante provider.start(): expira uma única vez 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > prepare() cria o workspace parcialmente e lança: failed com código seguro, descarte confirmado 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > prepare() parcial com destroy() falhando: cleanup fica "pending" (nunca "done" sem confirmação) 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > código de erro fora do formato de token vira "provider_error" 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > start() inicia parcialmente e lança: stop() e depois destroy(), razão original preservada 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > start() parcial + stop() falhando: destroy() ainda é tentado e confirma o descarte 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > start() parcial + stop() e destroy() falhando: pending; a recuperação para e descarta 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > cancelar em execução com stop() falhando: destroy() ainda confirma o descarte 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > destroy() falha e a recuperação confirma depois, sem reabrir nem mudar o desfecho 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > nova tentativa que também falha mantém "pending"; a seguinte confirma 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > sem pendência, a recuperação não chama o provedor 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > registro não terminal é recusado (o descarte pertence ao ciclo de vida); outro dono: not_found 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > duas recuperações concorrentes: um único destroy() 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > recuperação concorrente com cancel() e expireOverdue(): estado terminal preservado, um único destroy() 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > recuperação de registro expirado com descarte pendente mantém "expired"/"timeout" 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > mensagens do provedor com segredos em falhas parciais e na recuperação nunca vão para registro nem log 1ms
+ ✓ server/sandbox/sandbox.test.ts > falhas parciais do provedor e recuperação de descarte (R3) > provedor que executa código: recusado antes de prepare(); nada para recuperar 1ms
+ ✓ server/limits/limits.test.ts > padrões aprovados pelo PO e catálogo real > limites iniciais: R$ 0, 1 simultânea, 10 min, teto de tokens só para API 5ms
+ ✓ server/limits/limits.test.ts > padrões aprovados pelo PO e catálogo real > catálogo real: nenhum provedor verificado; NENHUMA admissão em nenhum modo 16ms
+ ✓ server/limits/limits.test.ts > padrões aprovados pelo PO e catálogo real > classificação de cobrança conservadora: créditos gratuitos não presumidos, Nemotron sem assinatura 1ms
+ ✓ server/limits/limits.test.ts > padrões aprovados pelo PO e catálogo real > execução real continua desabilitada (#021) 1ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > orçamento R$ 0: API cobrada é recusada mesmo com gasto aprovado; nada é reservado 3ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > operação paga sem autorização de gasto: exige aprovação de spend.create (#020) 2ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > com o catálogo real da #020, gasto é indisponível mesmo com orçamento aprovado 3ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > não confia no chamador: campo "free" declarado pelo chamador 1ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > não confia no chamador: campo "billing" declarado pelo chamador 1ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > não confia no chamador: API com estimativa zero (alegação de gratuidade) 1ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > não confia no chamador: API sem estimativa (custo desconhecido) 1ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > não confia no chamador: custo em fração de centavo 1ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > não confia no chamador: assinatura com custo informado 0ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > custo desconhecido é bloqueado: Nemotron sem assinatura e integrações oficiais não apuradas 2ms
+ ✓ server/limits/limits.test.ts > orçamento R$ 0 e operações pagas > catálogo inconsistente (modo de assinatura marcado como cobrado) também é custo desconhecido 2ms
+ ✓ server/limits/limits.test.ts > reserva, reconciliação e concorrência de orçamento > reservas concorrentes não ultrapassam o orçamento (uma passa, a outra é recusada) 4ms
+ ✓ server/limits/limits.test.ts > reserva, reconciliação e concorrência de orçamento > reconciliação: confirmado menor libera a diferença; confirmado maior gera alerta de estouro 3ms
+ ✓ server/limits/limits.test.ts > reserva, reconciliação e concorrência de orçamento > custo não informado pelo provedor fica "desconhecido" e a reserva continua contando 2ms
+ ✓ server/limits/limits.test.ts > reserva, reconciliação e concorrência de orçamento > restrições opcionais por projeto e por provedor só restringem 2ms
+ ✓ server/limits/limits.test.ts > reserva, reconciliação e concorrência de orçamento > teto de tokens da API: pedido acima do teto é recusado 1ms
+ ✓ server/limits/limits.test.ts > assinaturas: sem saldo de tokens presumido e sem cobrança adicional > admissão por assinatura não tem tokens nem custo; pedir teto de tokens é recusado 1ms
+ ✓ server/limits/limits.test.ts > assinaturas: sem saldo de tokens presumido e sem cobrança adicional > encerramento por assinatura não aceita consumo de tokens inventado e não gera custo 1ms
+ ✓ server/limits/limits.test.ts > assinaturas: sem saldo de tokens presumido e sem cobrança adicional > cobrança inesperada informada numa assinatura é registrada como alerta (sem esconder) 1ms
+ ✓ server/limits/limits.test.ts > assinaturas: sem saldo de tokens presumido e sem cobrança adicional > fluxo completo por assinatura não consome aprovação de gasto nem orçamento 2ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > permissões da #020: agente sem a tarefa atribuída é negado; ferramenta exige aprovação de uso único 3ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > ação crítica da #020 nunca é liberada por admissão (push na main) 1ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > projeto de outro dono, tarefa inexistente ou inativa: recusados 1ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > idempotência: mesmo pedido devolve a mesma admissão; mesma chave com outro conteúdo é conflito 2ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > idempotência com reserva: repetir um pedido pago não reserva de novo 1ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > uma execução simultânea: a segunda é recusada até a primeira terminar 2ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > duração acima de 10 minutos é recusada 0ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > a única chamada de rede do servidor é a do cliente GraphQL 3ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > o único endpoint da API do GitHub é o GraphQL fixo 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > só o provedor gh-cli cria subprocessos, e sempre com os argumentos congelados 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > POST só em login/logout (Issue #003), projetos (Issue #004), tarefas (Issue #005) e decisões de aprovação (Issue #011); o resto é GET/HEAD 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > políticas: sem rota de escrita, e o motor não grava nada nem usa I/O (Issue #020) 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > sandbox (Issue #021): sem execução real, sem I/O e sem rota HTTP 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > limites (Issue #022): sem I/O, sem rede, sem execução, sem conectores de IA e sem rota HTTP 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > aprovações (Issue #011): núcleo sem rede, sem execução e sem verificador simulado; ligado só pelos pontos revisados 3ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006) 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > projetos e tarefas gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issues #004/#005) 1ms
+ ✓ server/security.test.ts > GraphQL somente leitura > todo documento exportado é uma query sem mutation/subscription 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > a allowlist tem exatamente os documentos de queries.ts 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > nenhum arquivo do servidor declara uma operação mutation/subscription 2ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (0) 2ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (1) 2ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (2) 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (3) 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (4) 0ms
+ ✓ server/security.test.ts > frontend > nunca fala diretamente com a API do GitHub 0ms
+ ✓ server/security.test.ts > frontend > um único ponto de rede; POST só para as rotas de escrita do próprio ACC 1ms
+ ✓ server/security.test.ts > frontend > não guarda sessão nem senha no navegador 0ms
+ ✓ server/config.test.ts > configuração > sem token, inicia em modo demonstração 8ms
+ ✓ server/config.test.ts > configuração > aceita token fine-grained 1ms
+ ✓ server/config.test.ts > configuração > recusa tokens que não são fine-grained, sem repetir o valor na mensagem 2ms
+ ✓ server/config.test.ts > configuração > recusa credenciais em variáveis VITE_ (seriam embutidas no frontend) 2ms
+ ✓ server/config.test.ts > configuração > recusa expor o servidor fora do loopback 1ms
+ ✓ server/config.test.ts > configuração > valida a porta 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > sem GITHUB_AUTH, mantém o comportamento fine-grained 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > GITHUB_AUTH=gh-cli ativa o GitHub CLI sem executar nada ao carregar a configuração 2ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > gh-cli não detecta nada automaticamente: sem GITHUB_AUTH, sem token, é modo demonstração 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > recusa GITHUB_AUTH=gh-cli junto com GITHUB_TOKEN (configuração ambígua) 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > recusa valores desconhecidos sem repetir o valor 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > gh-cli é exclusivo para desenvolvimento local 0ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > GH_PATH precisa ser absoluto e só vale com gh-cli 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > recusa gh-cli sem ACC_DEPLOYMENT, sem executar o gh 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > recusa gh-cli com ACC_DEPLOYMENT=production 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > recusa valores desconhecidos de ACC_DEPLOYMENT sem repetir o valor (inclusive variações de "local") 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > aceita gh-cli com ACC_DEPLOYMENT=local (espaços nas pontas ignorados) e registra o ambiente 0ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > ACC_DEPLOYMENT=local não relaxa as demais restrições do gh-cli 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > fine-grained continua funcionando com ou sem ACC_DEPLOYMENT 1ms
+ ✓ server/config.test.ts > proteção contra exposição de credenciais > o provedor de credencial não revela o token ao ser serializado ou inspecionado 1ms
+ ✓ server/config.test.ts > proteção contra exposição de credenciais > o logger mascara tokens e chaves privadas 7ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > sem administrador: admin=null (login indisponível); cookie não Secure fora de produção 1ms
+ ✓ server/approvals/approvals.test.ts > contratos e máquina de estados > classes, TTLs e ações nunca aprováveis 4ms
+ ✓ server/approvals/approvals.test.ts > contratos e máquina de estados > estados terminais não têm saída; tentativa só se encerra uma vez 2ms
+ ✓ server/approvals/approvals.test.ts > contratos e máquina de estados > binding canônico: determinístico e sensível a qualquer campo 2ms
+ ✓ server/approvals/approvals.test.ts > contratos e máquina de estados > execução real continua desligada e as capacidades críticas indisponíveis 1ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > expiração do prazo: encerrar depois do prazo é recusado; a vaga é liberada e o cancelamento pedido 65ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > expireOverdue expira e libera a vaga mesmo sem nova admissão; reserva não confirmada fica "desconhecida" 2ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > limite de solicitações do ACC por janela 2ms
+ ✓ server/limits/limits.test.ts > admissão: permissões, idempotência, concorrência, duração e solicitações > estado terminal não é reaberto 3ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > relato oficial de indisponibilidade bloqueia até o prazo informado 2ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > relato só restringe: nunca torna um provedor disponível; formato inválido é recusado 2ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > quota oficial é registrada SEM declarar o provedor indisponível e é aplicada 2ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > quota oficial expira no prazo informado; janela da quota também libera 1ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > quota mais generosa não amplia: a mais restritiva vigente e a do catálogo continuam valendo 1ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > quota e indisponibilidade são independentes: o fim da indisponibilidade não apaga a quota 1ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > limite oficial de solicitações do provedor é respeitado 1ms
+ ✓ server/limits/limits.test.ts > indisponibilidade e limites informados pelo provedor > provedor explicitamente indisponível no catálogo 1ms
+ ✓ server/limits/limits.test.ts > kill switch > global: bloqueia novas admissões imediatamente e pede cancelamento das ativas 3ms
+ ✓ server/limits/limits.test.ts > kill switch > por projeto: bloqueia só aquele projeto 1ms
+ ✓ server/limits/limits.test.ts > kill switch > cancelamento sem suporte ou com falha é registrado honestamente (sem prometer interrupção) 1ms
+ ✓ server/limits/limits.test.ts > kill switch > agente não aciona nem reativa; projeto de outro dono: not_found 0ms
+ ✓ server/limits/limits.test.ts > kill switch > reativação sem aprovação humana válida é recusada (e auditada) 1ms
+ ✓ server/limits/limits.test.ts > kill switch > reativação com aprovação humana exata; aprovação é de uso único; global e projeto independentes 1ms
+ ✓ server/limits/limits.test.ts > alteração de limites exige aprovação humana > sem aprovação, aprovação para outros limites, ator não humano ou acima do teto: recusada 1ms
+ ✓ server/limits/limits.test.ts > alteração de limites exige aprovação humana > com aprovação exata, aplica; a mesma aprovação não serve duas vezes 1ms
+ ✓ server/limits/limits.test.ts > alteração de limites exige aprovação humana > limites devolvidos são cópias (não alteram o estado interno) 0ms
+ ✓ server/limits/limits.test.ts > proteção de dados e credenciais > segredos em motivos, chaves e aprovações nunca chegam ao registro auditável nem aos logs 1ms
+ ✓ server/limits/limits.test.ts > proteção de dados e credenciais > erros carregam só códigos; o registro auditável só tem tokens 1ms
+ ✓ server/limits/limits.test.ts > proteção de dados e credenciais > admissões devolvidas são cópias 1ms
+ ✓ server/limits/limits.test.ts > R1: autenticidade das aprovações humanas > sem verificador confiável (produção atual), mudanças sensíveis são negadas mesmo com aprovação "perfeita" 1ms
+ ✓ server/limits/limits.test.ts > R1: autenticidade das aprovações humanas > aprovação forjada (campos, datas e alvo válidos, mas não emitida) é recusada 1ms
+ ✓ server/limits/limits.test.ts > R1: autenticidade das aprovações humanas > aprovação emitida e depois adulterada (alvo, validade ou operação) é recusada 1ms
+ ✓ server/limits/limits.test.ts > R1: autenticidade das aprovações humanas > identidade divergente: o aprovador autenticado não é o declarado, ou é um agente 1ms
+ ✓ server/limits/limits.test.ts > R1: autenticidade das aprovações humanas > verificador que falha (exceção) ou devolve motivo fora do formato: recusado, sem vazar dados 1ms
+ ✓ server/limits/limits.test.ts > R1: autenticidade das aprovações humanas > uso único, validade máxima e alvo exato continuam valendo com aprovação autêntica 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > cancelamento "failed": a vaga continua ocupada e nova admissão é recusada 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > cancelamento "not_supported": a vaga continua ocupada e nova admissão é recusada 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > cancelamento pendente: a vaga só é liberada quando o resultado "cancelled" chega 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > nova tentativa de cancelamento após "failed" pode liberar a vaga 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > confirmação explícita de parada (pessoa dona ou host) libera a vaga; agente e outro dono não 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > expiração sem cancelamento confirmado: a vaga continua ocupada 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > expiração preguiçosa com cancelamento pendente: admissões concorrentes não passam do limite 52ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > kill switch com cancelamento não confirmado: a vaga fica ocupada mesmo após reativação 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > novo kill switch repete o pedido de cancelamento das operações ainda não interrompidas 1ms
+ ✓ server/limits/limits.test.ts > R2: vaga de concorrência só é liberada com interrupção confirmada > término informado pelo provedor (complete) libera a vaga normalmente 1ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > aprovação legítima: pedido → decisão → reserva → recibo → resultado 149ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > pedido aparece para o PO; sem aprovação fica pendente; aprovado → autorizado uma única vez 161ms
+ ✓ server/http/approvals.test.ts > autenticação, CSRF e identidade (grupo A) > sem sessão ou com sessão inválida: 401, em leitura e em decisão 157ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > rejeição explícita bloqueia; decisão é única 114ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > aceita e-mail + hash scrypt forte; cookie Secure em produção 296ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > recusa senha em texto puro no ambiente, sem repetir o valor 1ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > grant forjado, de outro componente ou já usado é recusado; o sandbox nunca confia nos campos 124ms
+ ✓ server/http/approvals.test.ts > autenticação, CSRF e identidade (grupo A) > CSRF: sem Origin, origem não autorizada, cross-site e corpo que não é JSON são recusados antes da sessão 122ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > aprova-se exatamente o que foi exibido (bindingDigest divergente é recusado) 86ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > pedido idêntico é idempotente; pedido da mesma operação com outro SHA substitui o anterior 82ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > sujeito ou projeto incompatível com o grant é recusado pela política antes de gastar o recibo 99ms
+ ✓ server/http/approvals.test.ts > autenticação, CSRF e identidade (grupo A) > campos inesperados e identidade declarada pelo cliente são recusados (400); cabeçalhos não mudam quem aprova 119ms
+ ✓ server/approvals/approvals.test.ts > fluxo de aprovação > vínculo inválido: SHA obrigatório no merge, push na main nunca aprovável, campos extras recusados 75ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > exige e-mail e hash juntos e válidos, sem repetir valores 321ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > recusa hash com custo scrypt abaixo do mínimo 3ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > variáveis VITE_ de senha, sessão ou administrador são recusadas (iriam para o bundle) 0ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > sem variáveis: desligado; o restante da configuração continua válido 0ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > configuração completa: caminhos absolutos, anchor separado, chave por ambiente ou arquivo, inicialização explícita 1ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > incompleta, ambígua ou insegura: inválida com motivo-token (nunca repete valores) 1ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > chave com prefixo VITE_ é recusada (seria exposta ao navegador) 0ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > autorizado não significa executado: provedor que executa código continua recusado 123ms
+ ✓ server/http/approvals.test.ts > autenticação, CSRF e identidade (grupo A) > senha incorreta é recusada; 5 falhas bloqueiam a confirmação mesmo com a senha certa 154ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > aprovação forjada pelo chamador (sem recibo) não é autêntica 72ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > capacidade indisponível (catálogo real): nada é pedido e aprovação válida não a torna disponível 99ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > falha depois da reserva: a aprovação continua consumida e repetir exige nova aprovação 81ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > objeto adulterado após a reserva é recusado e invalida o recibo 101ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > prova de step-up: senha errada, bloqueio após 5 falhas, uso único, outra sessão, validade de 5 min 83ms
+ ✓ server/http/approvals.test.ts > autenticação, CSRF e identidade (grupo A) > confirmações simultâneas são limitadas (scrypt), sem afetar as seguintes 96ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > admissão que exige aprovação: pedido pendente → PO aprova → admitida; nova admissão exige nova aprovação 119ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > identidade divergente e agentes: nunca decidem, nunca confirmam como PO 101ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > grant forjado ou de outro componente é recusado pelo controlador 108ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > orçamento R$ 0: nenhuma aprovação autoriza gasto (spend indisponível no catálogo real) 63ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > confirmação do PO (D2): só para operação dele, não-execução, com prova; agente não usa 99ms
+ ✓ server/approvals/approvals.test.ts > autenticidade, identidade e autoaprovação > #020: owner_confirmation só vale com o id atestado pelo servidor; sujeito agente nunca 1ms
+ ✓ server/http/approvals.test.ts > autenticação, CSRF e identidade (grupo A) > prova expirada (5 min), reutilizada ou de outra sessão é recusada; logout encerra as provas 201ms
+ ✓ server/http/approvals.test.ts > aprovações pelo administrador (grupo B) > lista e detalhe mostram o vínculo exato; o resumo do navegador coincide com o do servidor 86ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > SHA alterado após a aprovação → superseded, sem consumo 101ms
+ ✓ server/http/approvals.test.ts > aprovações pelo administrador (grupo B) > aprovação válida: estado approved, validade por classe (execução 1 h), histórico oficial e espelho na #006 113ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > parâmetros alterados → superseded 100ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > kill switch: bloqueia, revoga aprovações de execução não usadas e invalida recibos; a liberação exige aprovação de configuração e não reativa nada 204ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > liberação vencida (15 min) é recusada; agentes e o sistema nunca liberam 92ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > política alterada → versão recusada e aprovação antiga deixa de valer 100ms
+ ✓ server/http/approvals.test.ts > aprovações pelo administrador (grupo B) > rejeição e revogação ficam registradas; revogada não volta a aprovada 225ms
+ ✓ server/approvals/integration.test.ts > política (#020): exceção owner_confirmation só com atestado do servidor (D2/N4) > operação crítica do próprio PO: só o grant reservado e atestado vale; forjado ou de agente não 104ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > expirada (1 h) e pendente (24 h) 117ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > voltar o relógio do sistema não estende a validade (prazo monotônico) 86ms
+ ✓ server/approvals/integration.test.ts > política (#020): exceção owner_confirmation só com atestado do servidor (D2/N4) > agente não se autoaprova: identidade de agente nunca confirma nem decide 76ms
+ ✓ server/http/approvals.test.ts > aprovações pelo administrador (grupo B) > expiração: merge vale 15 min; execução 1 h; pedido pendente vence em 24 h e não pode mais ser aprovado 151ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > a barreira durável sobrevive ao reinício e continua bloqueando 101ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > bloqueio de escritor único: um segundo servidor sobre os mesmos arquivos fica indisponível 74ms
+ ✓ server/http/approvals.test.ts > aprovações pelo administrador (grupo B) > SHA ou parâmetros alterados: o pedido anterior é substituído; resumo divergente nunca aprova 153ms
+ ✓ server/approvals/approvals.test.ts > vínculo: SHA, parâmetros, política e validade > revogada não pode ser consumida; revogar o que já foi consumido é transição inválida e auditada 150ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > lista solicitações com projeto, operação, solicitante, estado, data e prazo 205ms
+ ✓ server/http/approvals.test.ts > aprovações pelo administrador (grupo B) > acesso a registro inexistente ou de outro contexto é indistinguível (404) 102ms
+ ✓ server/http/approvals.test.ts > aprovações pelo administrador (grupo B) > bloqueio de emergência: instalação nova começa bloqueada; aprovar execução é recusado (423), rejeitar continua possível 91ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > chave errada ou anchor inconsistente: indisponível, nada é liberado 95ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > reutilização é recusada, inclusive após reinício 136ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > detalhes exatos do vínculo, com o resumo conferido no navegador 125ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > recuperação administrativa: quarentena verificada e nova instalação com barreira global 117ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > dez consumos concorrentes: exatamente um vence 150ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > falha de gravação: nada é concedido e o armazenamento degrada (nega o resto) 124ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > manutenção: nunca roda duas vezes ao mesmo tempo e falhas não interrompem os ciclos 1ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > a manutenção expira pedidos de 24 h e aprovações vencidas (por classe) 106ms
+ ✓ server/http/approvals.test.ts > histórico, preservação, retenção e tentativas (grupos B/D) > retenção: só pela confirmação do PO, dentro de 30 dias a 5 anos; operações de kill switch/limites não são aceitas 178ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > decisões concorrentes: uma vence, a outra é recusada 117ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > recibo expira em 30 s; a tentativa vira failed e a aprovação continua consumida 100ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > aprovação com senha: confirma a identidade, envia o resumo calculado e atualiza o estado 456ms
+ ✓ server/http/approvals.test.ts > histórico, preservação, retenção e tentativas (grupos B/D) > preservação impede o descarte; descarte exige janela de 30 dias; remoção da preservação é auditada 202ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > recibo usado por outro componente é recusado e inutilizado 98ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > succeeded exige recibo validado; o recibo vale uma única vez 93ms
+ ✓ server/http/approvals.test.ts > histórico, preservação, retenção e tentativas (grupos B/D) > reinício: aprovação concedida expira (N1); tentativa reservada vira indeterminada e só o PO a reconhece 198ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > revogação durante a tentativa invalida o recibo 102ms
+ ✓ server/approvals/approvals.test.ts > consumo único, recibos e concorrência (R1) > falha antes da reserva não consome (pré-checagem recusada mantém approved) 90ms
+ ✓ server/http/approvals.test.ts > histórico, preservação, retenção e tentativas (grupos B/D) > armazenamento corrompido: o subsistema fica indisponível (503), nunca libera 103ms
+ ✓ server/http/approvals.test.ts > histórico, preservação, retenção e tentativas (grupos B/D) > subsistema não configurado: lista informa indisponível e qualquer decisão responde 503 16ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > rejeição com senha 281ms
+ ✓ server/http/approvals.test.ts > segurança e governança (grupos E/F) > senha, prova, cookie e chave nunca aparecem em logs, auditoria ou respostas de erro 117ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > apresentação não validada (resumo divergente): aprovar fica bloqueado 114ms
+ ✓ server/http/approvals.test.ts > segurança e governança (grupos E/F) > nenhuma rota executa, admite ou libera algo; aprovar não torna nada disponível 146ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > reinício: nova época, concedidas expiram (N1), pendentes sobrevivem, reservadas viram indeterminate 180ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > falha de escrita: nada muda em memória, armazenamento degradado, tudo negado até reiniciar 98ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > queda entre ledger e anchor: o ledger uma geração à frente e encadeado é aceito 66ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > mensagens de erro seguras: senha recusada, sem detalhes internos 329ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > subsistema indisponível e bloqueio de emergência são exibidos; aprovada nunca aparece como executada 75ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > ledger corrompido, estado desconhecido ou MAC inválido → indisponível; arquivos preservados 105ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > bloqueio global ativo em instalação nova é informado 61ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > anchor ausente ou divergente → indisponível 138ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > rollback (R6): ledger antigo → bloqueado; histórico antigo → bloqueado; os três restaurados → aprovações antigas inutilizáveis 132ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > chave indisponível, inválida ou diferente → indisponível (nega tudo) 90ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > chave em arquivo: link simbólico recusado 51ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > escritor único: segunda instância recusada; bloqueio abandonado é retomado e registrado 100ms
+ ✓ server/approvals/approvals.test.ts > persistência, reinício e recuperação (R2) > recuperação administrativa: exige prova, preserva evidências, não reativa nada e deixa barreira global 119ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > acionar revoga execuções não usadas do escopo, bloqueia novas aprovações (N6) e sobrevive ao reinício 144ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > kill switch durante o consumo: reserva enfileirada é negada; recibo emitido é recusado 62ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > recibo emitido antes do acionamento é recusado na validação 80ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > o acionamento vale de imediato em memória, antes da gravação 64ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > kill switch do controlador (#022) e falha ao consultá-lo bloqueiam (fail-closed) 105ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > liberação exige nova aprovação de configuração; revogadas continuam revogadas 134ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > #022: liberação pelo controlador com o verificador confiável libera também a barreira 90ms
+ ✓ server/approvals/approvals.test.ts > barreiras e kill switch (R3) > #022: alteração de limites com confirmação do PO, uso único 56ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > histórico encadeado: somente acréscimo, verificado ao reabrir 75ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > retenção: descarta o vencido como lápide, preserva o que tem preservação e o encadeamento continua válido 142ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > preservação: motivo da lista fechada e texto de até 200 caracteres 91ms
+ ✓ server/approvals/approvals.test.ts > histórico, retenção e compactação (R5) > retenção configurável (30 dias a 5 anos) e descarte administrativo exigem aprovação de configuração 87ms
+ ✓ server/approvals/approvals.test.ts > caminhos protegidos (N2) > recusa diretório dentro do Git, de pasta sincronizada (variável ou nome) e junção/link para lá 23ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > manifesto lista cada evidência com SHA-256 que confere com a cópia 104ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > falha ao copiar para a quarentena: nada muda, continua indisponível, sem nova linhagem 79ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > cópia divergente na quarentena é detectada (verificação byte a byte) 66ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > falha ao gravar a nova linhagem: originais restaurados e verificados; continua indisponível 99ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > falha também na restauração → recovery_restore_failed (fail-closed, exige intervenção) 79ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > arquivo não regular (hard link) bloqueia a quarentena 61ms
+ ✓ server/approvals/approvals.test.ts > revisão R1 — recuperação e quarentena verificada > recuperação recusada com o armazenamento bloqueado por outra instância 42ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > primeira instalação só com inicialização explícita, e sempre com barreira global 23ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > documentos apagados com marcadores presentes → store_missing (mesmo com inicialização explícita) 47ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > tudo apagado mas com vestígios (temporários) → store_missing 40ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > remoção completa (indistinguível da primeira instalação): reinicia COM barreira global — nunca libera 67ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > marcador ausente ou de outra linhagem → indisponível 50ms
+ ✓ server/approvals/approvals.test.ts > revisão R2 — documentos ausentes nunca liberam bloqueio > store_missing é recuperável: manifesto registra os ausentes e a barreira global volta 65ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > afterCommit: efeito só roda se a gravação der certo 52ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > decisão não gravada: continua pendente, sem prazo de uso; após reinício continua pendente 79ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > reserva não gravada: nenhum recibo é emitido 65ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > liberação de barreira não gravada: barreiras durável e volátil continuam bloqueando 123ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > liberação pelo controlador com resultado não gravado: barreira permanece 99ms
+ ✓ server/approvals/approvals.test.ts > revisão R3 — falha de gravação nunca concede autoridade > acionamento não gravado: barreira volátil vale e o armazenamento degrada 94ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > dois processos: o segundo é recusado; após encerramento abrupto do primeiro, o bloqueio é retomado 1015ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > mesmo processo: segunda aquisição recusada; conteúdo ilegível → recusado 8ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > falha ao remover o bloqueio abandonado → lock_recovery_failed; arquivo de retomada removido 8ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > retomadas concorrentes: exatamente uma vence; a atrasada nunca apaga o bloqueio da outra 25ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > arquivo de retomada abandonado → lock_recovery_stale (intervenção humana) 6ms
+ ✓ server/approvals/approvals.test.ts > revisão R4 — bloqueio de escritor único > pid vivo (ou reutilizado) nunca é retomado; liberação não remove bloqueio de outra instância 8ms
+ Test Files  9 passed (9)
+      Tests  353 passed (353)
+
+## Suíte completa
+     × a auditoria roda em push na main e manualmente, só com permissões de leitura 7ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ Test Files  1 failed | 39 passed (40)
+      Tests  1 failed | 967 passed (968)
+
+Falha conhecida (CRLF local, passa na CI):
+i/lf    w/crlf  attr/                 	.github/workflows/main-audit.yml

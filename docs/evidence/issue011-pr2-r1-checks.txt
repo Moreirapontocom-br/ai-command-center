@@ -1,0 +1,60 @@
+# Issue #011 PR 2 — correção R1 (apresentação verificável) e R2 — verificações
+
+$ npx tsc -b
+(sem erros)
+
+$ npx eslint .
+(sem problemas)
+
+$ npm run build
+dist/index.html                   0.48 kB │ gzip:  0.31 kB
+dist/assets/index-ChAGrzV0.css   23.84 kB │ gzip:  5.37 kB
+dist/assets/index-CXqKk43E.js   334.50 kB │ gzip: 98.63 kB
+✓ built in 184ms
+
+$ npm run check:secrets
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+$ npm run check:csp
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+$ npm run check:secrets:repo
+Nenhuma credencial encontrada (214 arquivo(s) versionado(s)).
+
+$ npx vitest run
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ Test Files  1 failed | 40 passed (41)
+      Tests  1 failed | 991 passed (992)
+
+## Execução real e kill switch (R2)
+13:export const REAL_EXECUTION_ENABLED = false as const;
+rotas de aprovação com kill|release no caminho: 0
+
+Única falha: a conhecida de CRLF local (core.autocrlf=true; git ls-files --eol → i/lf w/crlf). Reproduz-se na main limpa e passa na CI (LF).
+
+## Testes da correção R1 (verbose)
+ ✓ server/approvals/presentation.test.ts > R1 — formato e resumo compartilhados > as listas espelhadas no navegador são as mesmas do servidor 3ms
+ ✓ server/approvals/presentation.test.ts > R1 — formato e resumo compartilhados > resumo dos parâmetros e da apresentação: navegador = servidor (node:crypto) 3ms
+ ✓ server/approvals/presentation.test.ts > R1 — formato e resumo compartilhados > o resumo da apresentação muda com QUALQUER parâmetro e com o vínculo 1ms
+ ✓ server/approvals/presentation.test.ts > R1 — formato e resumo compartilhados > coerência com o vínculo: tipo pelo SOLICITANTE, tarefa/agente/projeto/ação da admissão, SHA × repositório 2ms
+ ✓ server/approvals/presentation.test.ts > R1 — formato e resumo compartilhados > representação incompleta, campo extra, tipo errado ou valor fora da lista → inválida 1ms
+ ✓ server/approvals/presentation.test.ts > R1 — formato e resumo compartilhados > valores com aparência de credencial nunca são aceitos para exibição 1ms
+ ✓ server/approvals/presentation.test.ts > R1 — pedido e decisão no núcleo > pedido com parâmetros divergentes do resumo é recusado e nada é criado 63ms
+ ✓ server/approvals/presentation.test.ts > R1 — pedido e decisão no núcleo > aprovação legítima: parâmetros apresentados + resumo da apresentação → approved; persistem após reinício 75ms
+ ✓ server/approvals/presentation.test.ts > R1 — pedido e decisão no núcleo > ausência de parâmetros: o pedido existe, mas aprovar é recusado (mesmo com bindingDigest correto); rejeitar funciona 65ms
+ ✓ server/approvals/presentation.test.ts > R1 — pedido e decisão no núcleo > tentativa de aprovação com apresentação inválida: sem resumo, resumo de outros parâmetros ou só o do vínculo → recusada 107ms
+ ✓ server/approvals/presentation.test.ts > R1 — pedido e decisão no núcleo > admissão (#022): parâmetros completos (custo, tokens, modo) apresentados e conferidos 49ms
+ ✓ server/approvals/presentation.test.ts > R1 — pedido e decisão no núcleo > configuração do PO guarda os parâmetros digitados (retenção), conferidos contra o vínculo 67ms
+ ✓ server/http/approvals.test.ts > R1 — apresentação verificável dos parâmetros (HTTP) > detalhe traz os parâmetros exatos conferidos pelo servidor; o navegador reproduz os dois resumos 50ms
+ ✓ server/http/approvals.test.ts > R1 — apresentação verificável dos parâmetros (HTTP) > aprovar sem o resumo da apresentação → 400; com resumo de outros parâmetros → 409, nada aprovado 80ms
+ ✓ server/http/approvals.test.ts > R1 — apresentação verificável dos parâmetros (HTTP) > pedido sem parâmetros apresentados: exibido como não conferível, aprovar 409, rejeitar 200 69ms
+ ✓ server/http/approvals.test.ts > R1 — apresentação verificável dos parâmetros (HTTP) > os valores dos parâmetros não vão para logs nem para a auditoria 58ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — parâmetros ausentes: aprovar bloqueado, rejeitar disponível 126ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — divergência: parâmetros exibidos não reproduzem o resumo do vínculo (mesmo que o servidor diga "conferido") 127ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — representação incompleta (campo ausente) ou com campo desconhecido: bloqueia 110ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — campo extra na apresentação: bloqueia 109ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — resumo da apresentação do servidor diferente do recalculado: bloqueia (digest coincidente do vínculo não basta) 108ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — tipo de apresentação incompatível com o solicitante: bloqueia 77ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — valor com aparência de credencial nos parâmetros: não é exibido e bloqueia 107ms
+ ✓ src/features/approvals/Approvals.test.tsx > página de aprovações > R1 — rejeição de solicitação com apresentação incompleta envia só o vínculo registrado 277ms
+ Test Files  3 passed (3)
+      Tests  52 passed (52)

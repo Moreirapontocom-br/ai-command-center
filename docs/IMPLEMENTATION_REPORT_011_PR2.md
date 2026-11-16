@@ -46,10 +46,10 @@ Todos exigem a sessão do administrador. Os POST passam antes por Host/Origin, `
 | Método | Rota | Corpo | Observação |
 |---|---|---|---|
 | GET | `/api/approvals` | — | Lista do dono e estado do subsistema: disponibilidade, barreiras e `realExecutionEnabled: false` |
-| GET | `/api/approvals/:id` | — | Vínculo exato, `bindingDigest`, `presentable`, tentativas e preservações |
+| GET | `/api/approvals/:id` | — | Vínculo exato, `bindingDigest`, parâmetros exatos conferidos (`presentation`, `presentationDigest`, `presentationIssue`), `presentable`, tentativas e preservações |
 | POST | `/api/approvals/step-up` | `{password}` | Gera a prova `{proofId, expiresAt}`. Bloqueia após 5 falhas por 15 min. No máximo 2 verificações scrypt simultâneas |
-| POST | `/api/approvals/:id/approve` | `{bindingDigest, proofId}` | O resumo enviado é o recalculado pelo navegador |
-| POST | `/api/approvals/:id/reject` | `{bindingDigest, proofId}` | |
+| POST | `/api/approvals/:id/approve` | `{bindingDigest, presentationDigest, proofId}` | Os dois resumos são os recalculados pelo navegador a partir do que exibiu (correção R1) |
+| POST | `/api/approvals/:id/reject` | `{bindingDigest, proofId}` | Não depende da apresentação: pedido incompleto pode ser rejeitado |
 | POST | `/api/approvals/:id/revoke` | `{proofId}` | `approved → revoked`. Um recibo pendente é invalidado |
 | POST | `/api/approvals/owner-confirmations` | `{operation:'approvals.retention_change', days, proofId}` | Só retenção (30 dias a 5 anos) |
 | POST | `/api/approvals/attempts/:id/acknowledge` | `{proofId}` | Tentativa `indeterminate → acknowledged_by_owner`. Nada é repetido |
@@ -60,7 +60,7 @@ Todos exigem a sessão do administrador. Os POST passam antes por Host/Origin, `
 
 **Nenhuma rota** executa agentes, admite operações, inicia sandbox, aciona ou libera o kill switch (N9), recupera o armazenamento, altera limites ou ativa capacidades. O teste estrutural garante isso pela lista exata de POST e por padrões proibidos.
 
-**Erros.** A resposta leva só um código público e uma mensagem fixa: `approvals_unavailable` 503, `confirmation_failed` 403, `confirmation_required` 403, `confirmation_locked` 429, `approval_conflict` 409, `approval_expired` 409, `approval_binding_mismatch` 409, `approval_blocked` 423, `not_found` 404 ou `bad_request` 400. O código interno do núcleo nunca é exposto.
+**Erros.** A resposta leva só um código público e uma mensagem fixa: `approvals_unavailable` 503, `confirmation_failed` 403, `confirmation_required` 403, `confirmation_locked` 429, `approval_conflict` 409, `approval_expired` 409, `approval_binding_mismatch` 409, `approval_presentation_invalid` 409, `approval_blocked` 423, `not_found` 404 ou `bad_request` 400. O código interno do núcleo nunca é exposto.
 
 ## 4. Fluxos de autenticação e confirmação
 
@@ -74,8 +74,8 @@ Todos exigem a sessão do administrador. Os POST passam antes por Host/Origin, `
 ## 5. Interface (página Aprovações)
 
 - **Lista.** Mostra projeto, operação, solicitante (componente do servidor ou pessoa), sujeito, estado, data da solicitação e prazo de expiração. Pendentes aparecem primeiro.
-- **Detalhes.** Mostram projeto, recurso, operação e classe, sujeito, SHA, ref, resumo dos parâmetros, versão da política, prazos e resumo do vínculo. Os parâmetros aparecem apenas como resumo, com aviso explícito de que não há descrição legível confiável: nada é inventado.
-- **Conferência da apresentação.** O navegador recalcula o resumo do vínculo a partir dos campos que exibe (`shared/approvalDigest.ts`, SHA-256 local, sem dependência). A decisão só é liberada se esse resumo for igual ao do servidor e se `presentable` for `true`. Do contrário, aprovar fica bloqueado. O teste `sharedDigest.test.ts` garante que o cálculo do navegador é idêntico ao do núcleo.
+- **Detalhes.** Mostram projeto, recurso, operação e classe, sujeito, SHA, ref, resumo dos parâmetros, versão da política, prazos e resumo do vínculo, e — desde a correção R1 — os **parâmetros exatos** da operação, somente leitura (seção 11).
+- **Conferência da apresentação.** O navegador recalcula o resumo do vínculo (`shared/approvalDigest.ts`) e verifica os parâmetros exibidos contra o `paramsDigest` (`shared/approvalPresentation.ts`), ambos com SHA-256 local, sem dependência. Aprovar só é liberado se tudo conferir; rejeitar continua sempre possível. Os testes `sharedDigest.test.ts` e `presentation.test.ts` garantem que os cálculos do navegador são idênticos aos do núcleo.
 - **Decisões.** Aprovar, rejeitar, revogar, reconhecer tentativas, preservar ou retirar preservação, alterar retenção e descartar: todos usam o mesmo formulário de senha. A senha é apagada do campo logo após o envio e nunca é guardada no navegador.
 - **Estados.** Os 8 estados aparecem com o nome técnico entre parênteses. "Aprovada, não utilizada" e "Consumida — uso reservado" nunca são apresentados como execução. O aviso fixo diz que aprovar não executa nada.
 - **Avisos.** A página indica quando o subsistema está indisponível ou degradado e quando o bloqueio global de emergência está ativo.
@@ -183,7 +183,7 @@ Todos exigem a sessão do administrador. Os POST passam antes por Host/Origin, `
 ## 10. Riscos residuais e limitações intencionais
 
 1. **A liberação da barreira inicial não está exposta na web** (N9). Em produção, aprovações de **execução** ficam bloqueadas até uma decisão do PO sobre como expor essa liberação. Hoje não há quem peça execução em produção.
-2. **Os parâmetros são exibidos só como resumo.** Uma descrição legível confiável exigiria guardar os parâmetros canônicos no pedido, o que é uma decisão de formato para uma fase futura.
+2. ~~Os parâmetros são exibidos só como resumo.~~ **Resolvido na correção R1** (seção 11): os parâmetros canônicos são guardados no pedido e exibidos após conferência.
 3. **Single admin.** As rotas exigem `ADMIN_USER_ID`. Com múltiplos usuários, a visibilidade do histórico da instância precisará ser revista.
 4. **Provas e recibos ficam só em memória.** Reiniciar invalida provas, e tentativas em curso viram `indeterminate`. Esse é o comportamento desejado (N1).
 5. **Espelho da #006 é de melhor esforço.** Se o espelho falhar, o oficial permanece e o log registra a falha.
@@ -191,3 +191,80 @@ Todos exigem a sessão do administrador. Os POST passam antes por Host/Origin, `
 7. **A interface é mínima,** sem paginação do histórico (o servidor pagina).
 
 **Dependências da #012:** persistência do controlador (limites, kill switch e admissões), filas, e a integração com o Agent Gateway (#028) para que sandbox e controlador tenham instâncias reais. **Limitações de execução real:** `REAL_EXECUTION_ENABLED = false`, nenhum provedor real, e nenhum endpoint que execute, admita ou inicie qualquer coisa.
+
+## 11. Correção R1 da revisão independente — apresentação verificável da operação aprovada
+
+**Problema apontado.** A interface mostrava `paramsDigest` e recalculava `bindingDigest`. Isso prova a integridade do vínculo, mas não permite ao administrador conferir os parâmetros reais: um resumo coincidente não é prova de que os parâmetros foram apresentados.
+
+**1. Quais pedidos precisam apresentar parâmetros.** Todos os que podem ser aprovados. Não há exceção por classe: a regra vale para `execution`, `merge`, `publication`, `cost` e `configuration`. O tipo esperado é decidido pelo **servidor**, a partir do solicitante e da ação, nunca pelo chamador:
+
+| Solicitante | Ação | Tipo de apresentação | Campos exibidos |
+|---|---|---|---|
+| componente `sandbox` (#021) | `sandbox.execute` | `sandbox` | id da solicitação, repositório, rede (padrão negar + hosts), escopos e validade da credencial, segredos e banco de produção (sempre negados), limites, entradas não confiáveis |
+| componente `limits` (#022) | qualquer ação da #020 admitida (inclusive `spend.create` em modo cobrado) | `admission` | ação, agente, tarefa, projeto, modo de uso, duração, custo estimado, teto de tokens |
+| PO (confirmação própria) | `approvals.retention_change` / `approvals.history_purge` | o próprio nome | dias de retenção / data de corte |
+| qualquer outro | — | nenhum | **nunca aprovável** (`presentation_unsupported`) |
+
+`limits.change` e `killswitch.release` não têm rota nesta fase (N9, R2) e não entram na tabela.
+
+**2. Fonte confiável.** Os parâmetros vêm do **componente do servidor** que montou o vínculo — exatamente o mesmo objeto cujo resumo é o `paramsDigest` (`paramsOf(spec)` no sandbox, `admissionParams(input)` no controlador). Eles são gravados no ledger (MAC, encadeado) junto do pedido. Nada vem do navegador.
+
+**3. Vínculo criptográfico.**
+- No pedido, o núcleo exige que `kind:SHA-256(JSON canônico dos parâmetros)` seja igual ao `paramsDigest` do vínculo e que os parâmetros sejam coerentes com os outros campos (projeto, tarefa, agente e ação da admissão; SHA × repositório no sandbox). Se não forem, o pedido é recusado (`presentation_mismatch`) e nada é criado.
+- `presentationDigest = SHA-256("acc-approval-presentation:v1\n" + JSON canônico de {bindingDigest, kind, params})` prende o vínculo inteiro aos parâmetros exibidos.
+- Aprovar exige esse resumo, recalculado no navegador. O núcleo recalcula e compara **dentro da mesma gravação atômica** da decisão (autoridade final).
+
+**4. Exibição.** A seção "Parâmetros exatos (somente leitura)" mostra a cópia **verificada** no navegador, com rótulos legíveis. Todo campo do formato fechado é exibido; não há campo editável.
+
+**5–7. Bloqueio, rejeição segura e digest coincidente.**
+- Apresentação ausente, incompleta, com campo extra, tipo errado, valor fora da lista, de tipo incompatível com o solicitante ou que não reproduz o `paramsDigest` → `presentable: false`, `presentation: null` e um motivo em forma de token. **Nenhum valor não conferido é exibido.**
+- Nesses casos aprovar fica bloqueado: no navegador (botão desabilitado), na rota (409 `approval_presentation_invalid`) e no núcleo (`decide` recusa e registra `approval.decision_denied`).
+- **Rejeitar nunca depende da apresentação.** Usa só o `bindingDigest` registrado e a prova de senha.
+- Pedidos antigos sem parâmetros (PR 1) continuam legíveis, mas só podem ser rejeitados. Isso inclui um cliente que "adivinhe" os parâmetros e calcule um resumo coincidente: sem parâmetros gravados no pedido, a aprovação é recusada (`presentation_missing`).
+
+**8. Segredos.** Os formatos são fechados e só contêm identificadores, números e valores de lista fechada. Não há campo livre onde caiba um segredo. Como defesa extra, valores com aparência de credencial (tokens do GitHub, chaves de API, AWS, Slack, PEM, JWT) tornam a apresentação inválida e não são exibidos. Os parâmetros não vão para logs, para o histórico oficial nem para o espelho da #006: um teste verifica isso com valores canário.
+
+**9. Parâmetros apresentados incorretamente nunca são autorizados.** A mesma verificação, em `shared/approvalPresentation.ts`, roda no pedido, na exibição, no navegador, na rota e na decisão. O núcleo é a autoridade.
+
+**Controles preservados.** SHA, versão da política, identidade da sessão, CSRF, prova de uso único, consumo único e barreira global continuam com as mesmas regras e ordem. A verificação da apresentação vem **depois** delas, e por isso os códigos existentes (`binding_mismatch`, `killswitch_engaged`, `identity_*`, `step_up_*`) não mudam.
+
+**Persistência.** `presentation` é o único campo opcional do registro de aprovação no ledger. Registros do PR 1 continuam válidos. Quando o campo existe, o formato fechado é obrigatório, senão o documento é inválido e o armazenamento fica indisponível, como em qualquer outra adulteração.
+
+### Arquivos
+
+- **Novos:**
+  - `shared/approvalPresentation.ts`: formatos fechados, tipo esperado, coerência e resumos (navegador e servidor);
+  - `server/approvals/presentation.ts`: a mesma verificação no servidor, com `node:crypto`;
+  - `server/approvals/presentation.test.ts`.
+- **Núcleo:**
+  - `server/approvals/contracts.ts`: campo `presentation`;
+  - `server/approvals/documents.ts`: validação estrita;
+  - `server/approvals/service.ts`: `request`/`confirmOwner`/`configure` gravam a apresentação verificada; `decide('approve')` exige `presentationDigest`.
+- **Componentes:**
+  - `server/sandbox/service.ts` e `server/limits/controller.ts`: entregam os mesmos parâmetros do resumo.
+- **HTTP:**
+  - `server/http/approvalRoutes.ts`: detalhe com a apresentação, corpo do `approve`, mapeamento `presentation_*` → `approval_presentation_invalid`;
+  - `server/github/errors.ts` e `shared/contracts.ts`: novo código público e campos do detalhe.
+- **Interface:**
+  - `src/features/approvals/ApprovalsPage.tsx`: `PresentationView`, bloqueio e rejeição sempre disponível;
+  - `src/services/approvalsApi.ts` e `src/features/github/githubLabels.ts`.
+
+### Testes da correção R1 (+24)
+
+| Arquivo | Novos | Cobertura |
+|---|---|---|
+| `server/approvals/presentation.test.ts` | 12 | listas espelhadas iguais às do servidor; resumos do navegador iguais aos do `node:crypto`; resumo muda com qualquer parâmetro e com o vínculo; tipo decidido pelo solicitante; coerência tarefa/ação/modo/SHA; representação incompleta, campo extra e valores fora da lista; aparência de credencial; pedido divergente recusado sem criar nada; aprovação legítima persistida após reinício; ausência → aprovar recusado (mesmo com digest coincidente) e rejeitar aceito; aprovação sem resumo, com resumo de outros parâmetros ou só com o do vínculo → recusada; admissão com custo/tokens; configuração do PO |
+| `server/http/approvals.test.ts` | 4 | detalhe com parâmetros conferidos e resumos reproduzíveis; `approve` sem `presentationDigest` → 400 e com resumo errado → 409; pedido sem parâmetros: 409 ao aprovar e 200 ao rejeitar; parâmetros fora de logs e auditoria |
+| `src/features/approvals/Approvals.test.tsx` | 8 (+1 ampliado) | parâmetros reais exibidos e somente leitura; ausência; divergência (mesmo com o servidor dizendo "conferido"); representação incompleta; campo extra; resumo do servidor diferente; tipo incompatível com o solicitante; aparência de credencial não exibida; rejeição de pedido incompleto envia só o vínculo |
+
+**Testes existentes ajustados (sem enfraquecer):**
+- As fixtures de `approvals.test.ts`, `integration.test.ts` e `approvals.test.ts` (HTTP) passaram a pedir como os componentes reais, com os parâmetros cujo resumo está no vínculo, e a aprovar com o `presentationDigest`. As asserções não mudaram.
+- `security.test.ts` passou a incluir `presentation.ts` na lista exata de arquivos do núcleo e no conjunto de importações revisadas.
+- Em `integration.test.ts`, os pedidos reais do sandbox e do controlador agora também provam que as apresentações produzidas pelos componentes sobrevivem à gravação e são aprovadas.
+
+## 12. R2 — barreira global inicial mantida
+
+- **Nenhuma rota de liberação do kill switch** foi criada neste PR. O teste estrutural (`security.test.ts`) continua garantindo que nenhuma rota POST de aprovações contém `kill`, `barrier`, `release`, `recover`, `limit`, `reserve` ou `execute`, e que as rotas não chamam `releaseBarrier`.
+- **A barreira global inicial continua ativa** em toda instalação nova (PR 1). Com ela, aprovações de execução são recusadas (423 `approval_blocked`), enquanto rejeitar, retenção, preservação e descarte continuam funcionando.
+- **A liberação operacional depende de etapa futura aprovada pelo Product Owner.** Este PR não define como, quando nem por qual interface a barreira será liberada, e não antecipa nada da Issue #012. Os métodos internos `releaseKillSwitchWithApproval` e `releaseBarrier` continuam sem rota (N9).
+

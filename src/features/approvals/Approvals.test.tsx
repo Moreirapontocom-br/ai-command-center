@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { approvalBindingDigest } from '../../../shared/approvalDigest.ts';
-import { approvalPresentationDigest, presentationParamsDigest, type ApprovalPresentation } from '../../../shared/approvalPresentation.ts';
+import { approvalPresentationDigest, presentationParamsDigest, sandboxWorkBranchFor, sandboxWorkspaceIdFor, type ApprovalPresentation } from '../../../shared/approvalPresentation.ts';
 import type { ApprovalDetail, ApprovalListResponse, ApprovalSummary } from '../../../shared/contracts.ts';
 import App from '../../App';
 import { apiError, configuredStatus, json, mockApi, PROJECT_ID, snapshotReply } from '../../test/githubFixtures';
@@ -28,12 +28,19 @@ const summary = (overrides: Partial<ApprovalSummary> = {}): ApprovalSummary => (
   ...overrides,
 });
 
-/** Parâmetros exatos entregues pelo componente do servidor (correção R1). */
+const REQUEST_ID = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+const TASK_ID = '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b';
+const WORK_BRANCH = sandboxWorkBranchFor('claude-code', TASK_ID, REQUEST_ID);
+/** Especificação completa entregue pelo componente do servidor (correções R1/R3). */
 const presentation: ApprovalPresentation = {
   kind: 'sandbox',
   params: {
-    requestId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
-    repository: 'Moreirapontocom-br/ai-command-center',
+    requestId: REQUEST_ID,
+    projectId: PROJECT_ID,
+    taskId: TASK_ID,
+    agentId: 'claude-code',
+    workspace: { id: sandboxWorkspaceIdFor(REQUEST_ID), exclusive: true, hostPathAccess: 'none' },
+    git: { repository: 'Moreirapontocom-br/ai-command-center', baseSha: SHA, workBranch: WORK_BRANCH, mainWritable: false },
     network: { default: 'deny', allow: ['registry.npmjs.org'] },
     credentials: { scopes: ['repo.read'], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
     limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
@@ -45,8 +52,8 @@ const PARAMS_DIGEST = presentationParamsDigest(presentation);
 const binding = {
   action: 'sandbox.execute',
   projectId: PROJECT_ID,
-  resource: { type: 'task', id: '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b' },
-  target: { sha: SHA, ref: 'agent/claude-code/6f1e8b2a' },
+  resource: { type: 'task', id: TASK_ID },
+  target: { sha: SHA, ref: WORK_BRANCH },
   subject: { kind: 'agent' as const, id: 'claude-code' as const },
   paramsDigest: PARAMS_DIGEST,
   policyVersion: '2026-11-14.1',
@@ -102,7 +109,7 @@ describe('página de aprovações', () => {
     await openApprovals();
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Ver detalhes' }));
     const panel = await screen.findByRole('region', { name: 'Detalhes da solicitação' });
-    for (const text of [SHA, 'agent/claude-code/6f1e8b2a', PARAMS_DIGEST, '2026-11-14.1', 'task:6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b', 'Claude Code (agente)']) {
+    for (const text of [SHA, WORK_BRANCH, PARAMS_DIGEST, '2026-11-14.1', 'task:6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b', 'Claude Code (agente)']) {
       expect(panel).toHaveTextContent(text);
     }
     // Correção R1: os parâmetros REAIS aparecem, legíveis e somente leitura.
@@ -116,7 +123,12 @@ describe('página de aprovações', () => {
       'memória 512 MB',
       'disco 1024 MB',
       'acc#11',
-      '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+      REQUEST_ID,
+      PROJECT_ID,
+      TASK_ID,
+      sandboxWorkspaceIdFor(REQUEST_ID),
+      WORK_BRANCH,
+      'main não gravável',
     ]) {
       expect(params).toHaveTextContent(text);
     }

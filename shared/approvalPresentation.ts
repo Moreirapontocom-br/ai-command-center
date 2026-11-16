@@ -33,9 +33,18 @@ export const PRESENTATION_SANDBOX_MAX = { timeoutSeconds: 30 * 60, cpu: 2, memor
 /** Tamanho máximo da apresentação canônica (bytes UTF-8). */
 export const PRESENTATION_MAX_BYTES = 8192;
 
+/**
+ * Especificação COMPLETA do sandbox que seria autorizada (correção R3): todos os campos do
+ * `SandboxSpec` do servidor, exceto `ownerId` (o dono é o próprio administrador da sessão e é
+ * conferido pelo núcleo em toda leitura, decisão e reserva). Nenhum campo pode ser omitido.
+ */
 export interface SandboxPresentationParams {
   requestId: string;
-  repository: string | null;
+  projectId: string;
+  taskId: string;
+  agentId: string;
+  workspace: { id: string; exclusive: true; hostPathAccess: 'none' };
+  git: { repository: string; baseSha: string; workBranch: string; mainWritable: false } | null;
   network: { default: 'deny'; allow: string[] };
   credentials: {
     scopes: Array<(typeof PRESENTATION_CREDENTIAL_SCOPES)[number]>;
@@ -85,6 +94,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const INPUT_REF = /^[A-Za-z0-9._/#:-]{1,200}$/;
+const SHA = /^[0-9a-f]{40}$/;
+const WORKSPACE_ID = /^ws-[0-9a-f]{32}$/;
+const WORK_BRANCH = /^acc\/[a-z0-9-]{1,32}\/[0-9a-f]{8}-[0-9a-f]{8}$/;
+
+/** Derivações determinísticas do sandbox (#021) — as mesmas de `server/sandbox`; um teste compara. */
+export const sandboxWorkspaceIdFor = (requestId: string) => `ws-${requestId.replaceAll('-', '')}`;
+export const sandboxWorkBranchFor = (agentId: string, taskId: string, requestId: string) => `acc/${agentId}/${taskId.slice(0, 8)}-${requestId.slice(0, 8)}`;
 /** Aparência de credencial (defesa extra): tokens do GitHub, chaves de API, AWS, Slack, PEM. */
 const SECRET_LIKE = /(gh[pousr]_[A-Za-z0-9]{8,}|github_pat_|sk-[A-Za-z0-9_-]{8,}|sk_(live|test)_|AKIA[0-9A-Z]{12,}|xox[abprs]-|-----BEGIN|eyJ[A-Za-z0-9_-]{10,}\.)/;
 
@@ -128,14 +144,26 @@ function uniqueList<T>(value: unknown, max: number, item: (v: unknown) => T): T[
 }
 
 function parseSandbox(raw: unknown): SandboxPresentationParams {
-  const p = exact(raw, ['requestId', 'repository', 'network', 'credentials', 'limits', 'inputs']);
+  const p = exact(raw, ['requestId', 'projectId', 'taskId', 'agentId', 'workspace', 'git', 'network', 'credentials', 'limits', 'inputs']);
+  const workspace = exact(p.workspace, ['id', 'exclusive', 'hostPathAccess']);
+  if (workspace.exclusive !== true) fail();
+  let git: SandboxPresentationParams['git'] = null;
+  if (p.git !== null) {
+    const g = exact(p.git, ['repository', 'baseSha', 'workBranch', 'mainWritable']);
+    if (g.mainWritable !== false) fail();
+    git = { repository: str(g.repository, REPOSITORY), baseSha: str(g.baseSha, SHA), workBranch: str(g.workBranch, WORK_BRANCH), mainWritable: false };
+  }
   const network = exact(p.network, ['default', 'allow']);
   const credentials = exact(p.credentials, ['scopes', 'ttlSeconds', 'productionSecrets', 'productionDatabase']);
   const limits = exact(p.limits, ['timeoutSeconds', 'cpu', 'memoryMb', 'diskMb']);
   const max = PRESENTATION_SANDBOX_MAX;
   return {
     requestId: str(p.requestId, UUID),
-    repository: p.repository === null ? null : str(p.repository, REPOSITORY),
+    projectId: str(p.projectId, UUID),
+    taskId: str(p.taskId, UUID),
+    agentId: oneOf(p.agentId, AGENT_IDS),
+    workspace: { id: str(workspace.id, WORKSPACE_ID), exclusive: true, hostPathAccess: literal(workspace.hostPathAccess, 'none') },
+    git,
     network: {
       default: literal(network.default, 'deny'),
       allow: uniqueList(network.allow, max.networkHosts, (h) => str(h, HOSTNAME)),
@@ -235,9 +263,26 @@ export function expectedPresentationKind(binding: Pick<ApprovalBindingView, 'act
 /** Coerência da apresentação com os demais campos do vínculo (além do resumo dos parâmetros). */
 function consistent(binding: ApprovalBindingView, p: ApprovalPresentation): boolean {
   switch (p.kind) {
-    case 'sandbox':
-      // Sem repositório não há SHA; com repositório, o SHA é obrigatório.
-      return binding.action === 'sandbox.execute' && binding.subject.kind === 'agent' && (p.params.repository === null) === (binding.target.sha === null);
+    case 'sandbox': {
+      // Correção R3: TODO identificador do vínculo precisa ser o da especificação apresentada, e
+      // os campos derivados precisam ser exatamente os que o sandbox deriva do id da solicitação.
+      const s = p.params;
+      const targetOk = s.git === null ? binding.target.sha === null && binding.target.ref === null : binding.target.sha === s.git.baseSha && binding.target.ref === s.git.workBranch;
+      return (
+        binding.action === 'sandbox.execute' &&
+        binding.projectId === s.projectId &&
+        binding.resource.type === 'task' &&
+        binding.resource.id === s.taskId &&
+        binding.subject.kind === 'agent' &&
+        binding.subject.id === s.agentId &&
+        targetOk &&
+        s.workspace.id === sandboxWorkspaceIdFor(s.requestId) &&
+        (s.git === null || s.git.workBranch === sandboxWorkBranchFor(s.agentId, s.taskId, s.requestId)) &&
+        // Credencial vale só pelo tempo da execução, e escrita só existe com repositório.
+        s.credentials.ttlSeconds === s.limits.timeoutSeconds &&
+        (s.git !== null || !s.credentials.scopes.includes('repo.write_work_branch'))
+      );
+    }
     case 'admission': {
       const a = p.params;
       const actionOk = a.action === binding.action || (binding.action === 'spend.create' && a.mode === 'metered_api');
@@ -247,12 +292,23 @@ function consistent(binding: ApprovalBindingView, p: ApprovalPresentation): bool
         binding.resource.type === 'task' &&
         binding.resource.id === a.taskId &&
         binding.subject.kind === 'agent' &&
-        binding.subject.id === a.agentId
+        binding.subject.id === a.agentId &&
+        // A admissão não tem SHA nem ref: um vínculo com alvo não é representado pelos parâmetros.
+        binding.target.sha === null &&
+        binding.target.ref === null
       );
     }
     case 'approvals.retention_change':
     case 'approvals.history_purge':
-      return binding.action === p.kind && binding.subject.kind === 'human' && binding.projectId === null;
+      return (
+        binding.action === p.kind &&
+        binding.subject.kind === 'human' &&
+        binding.projectId === null &&
+        binding.resource.type === 'approvals' &&
+        binding.resource.id === 'history' &&
+        binding.target.sha === null &&
+        binding.target.ref === null
+      );
   }
 }
 

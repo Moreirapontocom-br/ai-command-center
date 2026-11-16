@@ -171,7 +171,27 @@ function PresentationView({ presentation }: { presentation: ApprovalPresentation
           <Field label="Solicitação do sandbox">
             <code>{p.requestId}</code>
           </Field>
-          <Field label="Repositório">{p.repository ? <code>{p.repository}</code> : 'Nenhum (sem código)'}</Field>
+          <Field label="Projeto">
+            <code>{p.projectId}</code>
+          </Field>
+          <Field label="Tarefa">
+            <code>{p.taskId}</code>
+          </Field>
+          <Field label="Agente">{AGENT_LABELS[p.agentId as keyof typeof AGENT_LABELS] ?? p.agentId}</Field>
+          <Field label="Workspace">
+            <code>{p.workspace.id}</code> (exclusivo, sem acesso a caminhos do host)
+          </Field>
+          <Field label="Repositório">{p.git ? <code>{p.git.repository}</code> : 'Nenhum (sem código)'}</Field>
+          {p.git && (
+            <>
+              <Field label="SHA base (somente leitura)">
+                <code>{p.git.baseSha}</code>
+              </Field>
+              <Field label="Branch de trabalho">
+                <code>{p.git.workBranch}</code> (main não gravável)
+              </Field>
+            </>
+          )}
           <Field label="Rede">Negada por padrão; hosts liberados: {listOrNone(p.network.allow, 'nenhum')}</Field>
           <Field label="Escopos de credencial">{listOrNone(p.credentials.scopes, 'nenhum')}</Field>
           <Field label="Validade da credencial">{p.credentials.ttlSeconds} s</Field>

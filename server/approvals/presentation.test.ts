@@ -17,12 +17,15 @@ import {
   PRESENTATION_SANDBOX_MAX,
   PRESENTATION_USAGE_MODES,
   presentationParamsDigest,
+  sandboxWorkBranchFor,
+  sandboxWorkspaceIdFor,
   type ApprovalPresentation,
 } from '../../shared/approvalPresentation.ts';
 import { parsePasswordHash } from '../auth/password.ts';
 import { USAGE_MODES } from '../limits/contracts.ts';
 import { DEFAULT_POLICY } from '../policy/defaultPolicy.ts';
 import { CREDENTIAL_SCOPES, SANDBOX_LIMITS } from '../sandbox/contracts.ts';
+import { assertWorkspaceId, workBranchFor } from '../sandbox/validation.ts';
 import { TEST_ADMIN_PASSWORD, testPasswordHash } from '../test/authFixtures.ts';
 import { bindingDigest, paramsDigestOf } from './binding.ts';
 import { sha256Hex } from './canonical.ts';
@@ -41,9 +44,19 @@ const START = Date.parse('2026-11-15T12:00:00Z');
 const VERSION = DEFAULT_POLICY.version;
 const CTX: IdentityContext = { userId: 'admin', sessionKey: createHash('sha256').update('session-r1').digest('hex') };
 
+const REQ = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+const OTHER_REQ = '8b7c6d5e-4f3a-4b2c-9d1e-0f9a8b7c6d5e';
+const P2 = '1b4e28ba-2fa1-41d2-883f-0016d3cca427';
+const REPO = 'Moreirapontocom-br/ai-command-center';
+const BRANCH = sandboxWorkBranchFor('claude-code', TASK, REQ);
+/** Especificação COMPLETA (correção R3): tudo do `SandboxSpec`, exceto `ownerId`. */
 const sandboxParams = () => ({
-  requestId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
-  repository: 'Moreirapontocom-br/ai-command-center',
+  requestId: REQ,
+  projectId: P1,
+  taskId: TASK,
+  agentId: 'claude-code',
+  workspace: { id: sandboxWorkspaceIdFor(REQ), exclusive: true, hostPathAccess: 'none' },
+  git: { repository: REPO, baseSha: SHA, workBranch: BRANCH, mainWritable: false } as { repository: string; baseSha: string; workBranch: string; mainWritable: boolean } | null,
   network: { default: 'deny', allow: ['registry.npmjs.org'] },
   credentials: { scopes: ['repo.read'], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
   limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
@@ -64,7 +77,7 @@ const sandboxBinding = (params: unknown = sandboxParams(), overrides: Partial<Ap
   action: 'sandbox.execute',
   projectId: P1,
   resource: { type: 'task', id: TASK },
-  target: { sha: SHA, ref: null },
+  target: { sha: SHA, ref: BRANCH },
   subject: { kind: 'agent', id: 'claude-code' },
   paramsDigest: paramsDigestOf('sandbox', params),
   policyVersion: VERSION,
@@ -300,5 +313,158 @@ describe('R1 — pedido e decisão no núcleo', () => {
     const approval = await t.svc.configure({ ownerId: 'admin', operation: 'approvals.retention_change', params: { days: 90 }, proofId: await t.proof(), identity: CTX });
     expect(approval.presentation).toEqual({ kind: 'approvals.retention_change', params: { days: 90 } });
     expect(verifyApprovalPresentation(approval)).toMatchObject({ ok: true });
+  });
+});
+
+/**
+ * Correção R3: coerência semântica COMPLETA do sandbox. Cada caso abaixo é "criptograficamente
+ * válido" — o `paramsDigest` do vínculo é calculado a partir dos próprios parâmetros apresentados —
+ * mas semanticamente incompatível com o vínculo ou com a especificação derivada. Todos bloqueiam.
+ */
+describe('R3 — coerência semântica completa do sandbox', () => {
+  type Params = ReturnType<typeof sandboxParams>;
+  /** Vínculo legítimo (o de `sandboxBinding`), mas com `paramsDigest` dos parâmetros dados. */
+  const consistentDigest = (params: unknown, overrides: Partial<ApprovalBinding> = {}) => sandboxBinding(params, overrides);
+  const verdict = (params: unknown, overrides: Partial<ApprovalBinding> = {}) => {
+    const binding = consistentDigest(params, overrides);
+    return checkPresentation({ binding, bindingDigest: bindingDigest(binding), requestedBy: { kind: 'system', id: 'sandbox' }, presentation: { kind: 'sandbox', params } }, sha256Hex);
+  };
+  const withParams = (change: (p: Params) => void) => {
+    const p = sandboxParams();
+    change(p);
+    return p;
+  };
+  const MISMATCH = { ok: false, reason: 'presentation_mismatch' };
+
+  it('derivações compartilhadas são as mesmas do sandbox do servidor', () => {
+    expect(sandboxWorkBranchFor('claude-code', TASK, REQ)).toBe(workBranchFor('claude-code', TASK, REQ));
+    expect(sandboxWorkspaceIdFor(REQ)).toBe(assertWorkspaceId(`ws-${REQ.replaceAll('-', '')}`));
+  });
+
+  it('fluxo legítimo completo: especificação coerente é aceita (com e sem repositório)', () => {
+    expect(verdict(sandboxParams())).toMatchObject({ ok: true });
+    const noGit = withParams((p) => {
+      p.git = null;
+    });
+    expect(verdict(noGit, { target: { sha: null, ref: null } })).toMatchObject({ ok: true });
+  });
+
+  it('projeto divergente', () => {
+    expect(verdict(withParams((p) => (p.projectId = P2)))).toEqual(MISMATCH);
+    expect(verdict(sandboxParams(), { projectId: P2 })).toEqual(MISMATCH);
+  });
+
+  it('tarefa divergente (inclusive recurso que não é tarefa)', () => {
+    expect(verdict(withParams((p) => (p.taskId = OTHER_TASK)))).toEqual(MISMATCH);
+    expect(verdict(sandboxParams(), { resource: { type: 'task', id: OTHER_TASK } })).toEqual(MISMATCH);
+    expect(verdict(sandboxParams(), { resource: { type: 'sandbox', id: TASK } })).toEqual(MISMATCH);
+  });
+
+  it('agente divergente', () => {
+    expect(verdict(withParams((p) => (p.agentId = 'gemini')))).toEqual(MISMATCH);
+    expect(verdict(sandboxParams(), { subject: { kind: 'agent', id: 'gemini' } })).toEqual(MISMATCH);
+  });
+
+  it('ação diferente de sandbox.execute', () => {
+    // O tipo `sandbox` só serve para `sandbox.execute`; para outra ação, o pedido não é apresentável.
+    expect(verdict(sandboxParams(), { action: 'tool.use' })).toEqual({ ok: false, reason: 'presentation_unsupported' });
+  });
+
+  it('identificador da solicitação divergente: workspace e branch precisam derivar do MESMO id', () => {
+    // Troca só o id: workspace e branch continuam do id antigo.
+    expect(verdict(withParams((p) => (p.requestId = OTHER_REQ)))).toEqual(MISMATCH);
+    // Troca id e workspace, mas não a branch (e o vínculo aponta para a branch antiga).
+    expect(
+      verdict(
+        withParams((p) => {
+          p.requestId = OTHER_REQ;
+          p.workspace.id = sandboxWorkspaceIdFor(OTHER_REQ);
+        }),
+      ),
+    ).toEqual(MISMATCH);
+    // Workspace de outra solicitação.
+    expect(verdict(withParams((p) => (p.workspace.id = sandboxWorkspaceIdFor(OTHER_REQ))))).toEqual(MISMATCH);
+  });
+
+  it('SHA divergente (no vínculo ou na especificação)', () => {
+    expect(verdict(sandboxParams(), { target: { sha: 'd'.repeat(40), ref: BRANCH } })).toEqual(MISMATCH);
+    expect(verdict(withParams((p) => (p.git!.baseSha = 'd'.repeat(40))))).toEqual(MISMATCH);
+  });
+
+  it('referência divergente: branch do vínculo ≠ especificação, ou branch que não é a derivada', () => {
+    expect(verdict(sandboxParams(), { target: { sha: SHA, ref: 'feature/x' } })).toEqual(MISMATCH);
+    const otherBranch = sandboxWorkBranchFor('claude-code', OTHER_TASK, REQ);
+    expect(verdict(withParams((p) => (p.git!.workBranch = otherBranch)), { target: { sha: SHA, ref: otherBranch } })).toEqual(MISMATCH);
+    // Formato fora do contrato (ex.: main) é recusado já no parse.
+    expect(verdict(withParams((p) => (p.git!.workBranch = 'main')), { target: { sha: SHA, ref: 'main' } })).toEqual({ ok: false, reason: 'presentation_invalid' });
+  });
+
+  it('repositório incompatível: sem git com SHA no vínculo, git sem SHA, main gravável, repositório inválido', () => {
+    expect(
+      verdict(
+        withParams((p) => {
+          p.git = null;
+        }),
+      ),
+    ).toEqual(MISMATCH);
+    expect(verdict(sandboxParams(), { target: { sha: null, ref: null } })).toEqual(MISMATCH);
+    expect(verdict(withParams((p) => (p.git!.mainWritable = true)))).toEqual({ ok: false, reason: 'presentation_invalid' });
+    expect(verdict(withParams((p) => (p.git!.repository = '../../etc')))).toEqual({ ok: false, reason: 'presentation_invalid' });
+    // Escrita na branch de trabalho sem repositório.
+    expect(
+      verdict(
+        withParams((p) => {
+          p.git = null;
+          p.credentials.scopes = ['repo.write_work_branch'];
+        }),
+        { target: { sha: null, ref: null } },
+      ),
+    ).toEqual(MISMATCH);
+  });
+
+  it('campos substituídos ou omitidos: workspace, credencial além da execução, campos obrigatórios', () => {
+    expect(verdict(withParams((p) => ((p.workspace as { exclusive: boolean }).exclusive = false)))).toEqual({ ok: false, reason: 'presentation_invalid' });
+    expect(verdict(withParams((p) => ((p.workspace as { hostPathAccess: string }).hostPathAccess = 'read')))).toEqual({ ok: false, reason: 'presentation_invalid' });
+    expect(verdict(withParams((p) => (p.credentials.ttlSeconds = 1200)))).toEqual(MISMATCH);
+    for (const key of ['requestId', 'projectId', 'taskId', 'agentId', 'workspace', 'git', 'network', 'credentials', 'limits', 'inputs'] as const) {
+      const partial: Record<string, unknown> = sandboxParams();
+      delete partial[key];
+      expect(verdict(partial)).toEqual({ ok: false, reason: 'presentation_invalid' });
+    }
+  });
+
+  it('no núcleo: pedido criptograficamente válido mas semanticamente incompatível é recusado e nada é criado', async () => {
+    const t = await setup();
+    const cases: Array<[Params, Partial<ApprovalBinding>]> = [
+      [withParams((p) => (p.projectId = P2)), {}],
+      [withParams((p) => (p.taskId = OTHER_TASK)), {}],
+      [withParams((p) => (p.agentId = 'gemini')), {}],
+      [withParams((p) => (p.requestId = OTHER_REQ)), {}],
+      [withParams((p) => (p.git!.baseSha = 'd'.repeat(40))), {}],
+      [sandboxParams(), { target: { sha: SHA, ref: 'feature/x' } }],
+    ];
+    for (const [params, overrides] of cases) {
+      const binding = consistentDigest(params, overrides);
+      expect(await code(t.svc.request({ ownerId: 'admin', requestedBy: 'sandbox', binding, presentation: { kind: 'sandbox', params } }))).toBe('presentation_mismatch');
+    }
+    expect(t.svc.list('admin').filter((a) => a.state === 'pending')).toEqual([]);
+  });
+
+  it('admissão e configuração também exigem coerência completa (alvo vazio; recurso fixo)', () => {
+    const params = admissionParams();
+    const withTarget = admissionBinding(params, { target: { sha: SHA, ref: 'feature/x' } });
+    expect(checkPresentation({ binding: withTarget, bindingDigest: bindingDigest(withTarget), requestedBy: { kind: 'system', id: 'limits' }, presentation: { kind: 'admission', params } })).toEqual(MISMATCH);
+    const retention: ApprovalBinding = {
+      action: 'approvals.retention_change',
+      projectId: null,
+      resource: { type: 'limits', id: 'controller' },
+      target: { sha: null, ref: null },
+      subject: { kind: 'human', id: 'admin' },
+      paramsDigest: paramsDigestOf('approvals.retention_change', { days: 90 }),
+      policyVersion: VERSION,
+    };
+    expect(
+      checkPresentation({ binding: retention, bindingDigest: bindingDigest(retention), requestedBy: { kind: 'human', id: 'admin' }, presentation: { kind: 'approvals.retention_change', params: { days: 90 } } }),
+    ).toEqual(MISMATCH);
   });
 });

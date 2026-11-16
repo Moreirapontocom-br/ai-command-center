@@ -206,11 +206,18 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     );
   }
 
-  /** Parâmetros exatos da execução (o que o administrador vê e o que o resumo cobre). */
+  /**
+   * Parâmetros exatos da execução (o que o administrador vê e o que o resumo cobre): a
+   * especificação inteira, exceto `ownerId` (conferido pelo núcleo). Correção R3.
+   */
   function paramsOf(spec: SandboxSpec) {
     return {
       requestId: spec.requestId,
-      repository: spec.git?.repository ?? null,
+      projectId: spec.projectId,
+      taskId: spec.taskId,
+      agentId: spec.agentId,
+      workspace: spec.workspace,
+      git: spec.git,
       network: spec.network,
       credentials: spec.credentials,
       limits: spec.limits,

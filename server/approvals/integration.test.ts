@@ -21,7 +21,7 @@ import { createSandboxService } from '../sandbox/service.ts';
 import { createSimulatedProvider } from '../sandbox/simulatedProvider.ts';
 import { TEST_ADMIN_PASSWORD, testPasswordHash } from '../test/authFixtures.ts';
 import { bindingDigest, paramsDigestOf } from './binding.ts';
-import { approvalPresentationDigest, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
+import { approvalPresentationDigest, sandboxWorkBranchFor, sandboxWorkspaceIdFor, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
 import type { ApprovalBinding, LedgerApproval } from './contracts.ts';
 import { createPasswordConfirmer, createStepUpRegistry, type IdentityContext } from './identity.ts';
 import { createEnvKeyProvider } from './keyProvider.ts';
@@ -209,6 +209,29 @@ describe('sandbox (#021) com o gate da #011', () => {
     expect(REAL_EXECUTION_ENABLED).toBe(false);
   });
 
+  it('R3: o que o PO vê é exatamente a especificação que será autorizada (tudo exceto ownerId), coerente com o vínculo', async () => {
+    const ctx = await setup();
+    const record = await ctx.sandbox.request('admin', ctx.sandboxBody());
+    const pending = ctx.service.list('admin').find((a) => a.state === 'pending')!;
+    const { ownerId, ...expected } = record.spec;
+    expect(ownerId).toBe('admin');
+    expect(pending.ownerId).toBe(ownerId);
+    expect(pending.presentation).toEqual({ kind: 'sandbox', params: expected });
+    expect(pending.binding).toMatchObject({
+      projectId: record.spec.projectId,
+      resource: { type: 'task', id: record.spec.taskId },
+      subject: { kind: 'agent', id: record.spec.agentId },
+      target: { sha: record.spec.git!.baseSha, ref: record.spec.git!.workBranch },
+    });
+    // Outra solicitação idêntica gera OUTRO id (e outro workspace/branch): a aprovação de uma não serve à outra.
+    const second = await ctx.sandbox.request('admin', ctx.sandboxBody());
+    expect(second.id).not.toBe(record.id);
+    expect(ctx.service.get('admin', pending.id)!.state).toBe('superseded');
+    const approved = await ctx.approvePending();
+    expect(approved.presentation).toEqual({ kind: 'sandbox', params: (({ ownerId: _o, ...rest }) => rest)(second.spec) }); // eslint-disable-line @typescript-eslint/no-unused-vars
+    expect(await ctx.sandbox.authorizeWithApproval('admin', P1, second.id)).toMatchObject({ state: 'authorized', approvalId: approved.id });
+  });
+
   it('grant forjado, de outro componente ou já usado é recusado; o sandbox nunca confia nos campos', async () => {
     const ctx = await setup();
     const record = await ctx.sandbox.request('admin', ctx.sandboxBody());
@@ -250,9 +273,14 @@ describe('sandbox (#021) com o gate da #011', () => {
     await expect(ctx.sandbox.request('admin', ctx.sandboxBody())).rejects.toMatchObject({ code: 'capability_unavailable' });
     expect(ctx.service.list('admin').filter((a) => a.state === 'pending')).toEqual([]);
     // Mesmo com uma aprovação concedida e reservada para sandbox.execute, a política diz UNAVAILABLE.
+    const requestId = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
     const params = {
-      requestId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
-      repository: REPO,
+      requestId,
+      projectId: P1,
+      taskId: T1,
+      agentId: 'claude-code',
+      workspace: { id: sandboxWorkspaceIdFor(requestId), exclusive: true, hostPathAccess: 'none' },
+      git: { repository: REPO, baseSha: SHA, workBranch: sandboxWorkBranchFor('claude-code', T1, requestId), mainWritable: false },
       network: { default: 'deny', allow: [] },
       credentials: { scopes: ['repo.read'], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
       limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
@@ -262,7 +290,7 @@ describe('sandbox (#021) com o gate da #011', () => {
       action: 'sandbox.execute',
       projectId: P1,
       resource: { type: 'task', id: T1 },
-      target: { sha: SHA, ref: null },
+      target: { sha: SHA, ref: params.git.workBranch },
       subject: { kind: 'agent', id: 'claude-code' },
       paramsDigest: paramsDigestOf('sandbox', params),
       policyVersion: VERSION,

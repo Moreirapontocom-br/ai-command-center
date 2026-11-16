@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { approvalBindingDigest } from '../../shared/approvalDigest.ts';
-import { approvalPresentationDigest, checkPresentation, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
+import { approvalPresentationDigest, checkPresentation, sandboxWorkBranchFor, sandboxWorkspaceIdFor, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
 import type { ApprovalDetail, ApprovalListResponse } from '../../shared/contracts.ts';
 import { bindingDigest, paramsDigestOf } from '../approvals/binding.ts';
 import type { ApprovalBinding, LedgerApproval } from '../approvals/contracts.ts';
@@ -38,10 +38,21 @@ const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 const VERSION = DEFAULT_POLICY.version;
 const TASK = '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b';
-/** Parâmetros exatos do sandbox (correção R1); `n` distingue dois conjuntos de parâmetros. */
-const sandboxParams = (n = 1) => ({
-  requestId: n === 1 ? '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' : '8b7c6d5e-4f3a-4b2c-9d1e-0f9a8b7c6d5e',
-  repository: 'Moreirapontocom-br/ai-command-center',
+const requestIdOf = (n: number) => (n === 1 ? '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' : '8b7c6d5e-4f3a-4b2c-9d1e-0f9a8b7c6d5e');
+/**
+ * Especificação completa do sandbox (correções R1/R3), coerente com o vínculo; `n` distingue dois
+ * conjuntos de parâmetros (outro id de solicitação → outro workspace e outra branch de trabalho).
+ */
+const sandboxParams = (b: Pick<ApprovalBinding, 'projectId' | 'resource' | 'subject' | 'target'>, n = 1) => ({
+  requestId: requestIdOf(n),
+  projectId: b.projectId,
+  taskId: b.resource.id,
+  agentId: b.subject.id,
+  workspace: { id: sandboxWorkspaceIdFor(requestIdOf(n)), exclusive: true, hostPathAccess: 'none' },
+  git:
+    b.target.sha === null
+      ? null
+      : { repository: 'Moreirapontocom-br/ai-command-center', baseSha: b.target.sha, workBranch: sandboxWorkBranchFor(b.subject.id, b.resource.id, requestIdOf(n)), mainWritable: false },
   network: { default: 'deny', allow: n === 1 ? [] : ['registry.npmjs.org'] },
   credentials: { scopes: ['repo.read'], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
   limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
@@ -173,31 +184,44 @@ async function startApp(options: { approvals?: boolean; releaseBarrier?: boolean
     return reply.json().proofId as string;
   }
   /** Pedido de um componente confiável do servidor (sandbox) em nome de um agente. */
-  const agentBinding = (overrides: Partial<ApprovalBinding> = {}): ApprovalBinding => ({
-    action: 'sandbox.execute',
-    projectId: project.id,
-    resource: { type: 'task', id: TASK },
-    target: { sha: SHA_A, ref: null },
-    subject: { kind: 'agent', id: 'claude-code' },
-    paramsDigest: paramsDigestOf('sandbox', sandboxParams(1)),
-    policyVersion: VERSION,
-    ...overrides,
-  });
-  const mergeParams = () => ({
+  /** Vínculo do sandbox derivado da especificação `n` (ref = branch de trabalho derivada). */
+  const agentBinding = (overrides: Partial<ApprovalBinding> = {}, n = 1): ApprovalBinding => {
+    const b: ApprovalBinding = {
+      action: 'sandbox.execute',
+      projectId: project.id,
+      resource: { type: 'task', id: TASK },
+      target: { sha: SHA_A, ref: null },
+      subject: { kind: 'agent', id: 'claude-code' },
+      paramsDigest: '',
+      policyVersion: VERSION,
+      ...overrides,
+    };
+    if (b.action === 'sandbox.execute' && b.target.sha !== null && b.target.ref === null) {
+      b.target = { sha: b.target.sha, ref: sandboxWorkBranchFor(b.subject.id, b.resource.id, requestIdOf(n)) };
+    }
+    if (!Object.hasOwn(overrides, 'paramsDigest')) b.paramsDigest = paramsDigestOf('sandbox', sandboxParams(b, n));
+    return b;
+  };
+  /** Admissão de gasto (#022, classe `cost`): parâmetros completos do pedido, sem SHA. */
+  const spendParams = () => ({
     projectId: project.id,
     taskId: TASK,
     agentId: 'claude-code',
-    action: 'repo.merge',
-    mode: 'subscription_assisted',
+    action: 'tool.use',
+    mode: 'metered_api',
     durationSeconds: 60,
-    estimatedCostMinor: null,
-    maxTokens: null,
+    estimatedCostMinor: 100,
+    maxTokens: 1000,
   });
-  const mergeBinding = () => agentBinding({ action: 'repo.merge', resource: { type: 'task', id: TASK }, paramsDigest: paramsDigestOf('admission', mergeParams()) });
+  const spendBinding = () =>
+    agentBinding({ action: 'spend.create', resource: { type: 'task', id: TASK }, target: { sha: null, ref: null }, paramsDigest: paramsDigestOf('admission', spendParams()) });
+  /** Merge (SHA obrigatório): nenhum componente desta fase apresenta parâmetros para ele. */
+  const mergeBinding = () => agentBinding({ action: 'repo.merge', resource: { type: 'task', id: TASK }, paramsDigest: paramsDigestOf('admission', { ...spendParams(), action: 'repo.merge' }) });
   /** O componente real entrega os parâmetros exatos cujo resumo está no vínculo (apresentação). */
   const presentationFor = (binding: ApprovalBinding) => {
-    if (binding.action !== 'sandbox.execute') return { requestedBy: 'limits', presentation: { kind: 'admission', params: mergeParams() } };
-    const params = [sandboxParams(1), sandboxParams(2)].find((p) => paramsDigestOf('sandbox', p) === binding.paramsDigest);
+    if (binding.action === 'spend.create') return { requestedBy: 'limits', presentation: { kind: 'admission', params: spendParams() } };
+    if (binding.action !== 'sandbox.execute') return { requestedBy: 'limits' };
+    const params = [sandboxParams(binding, 1), sandboxParams(binding, 2)].find((p) => paramsDigestOf('sandbox', p) === binding.paramsDigest);
     return { requestedBy: 'sandbox', presentation: params ? { kind: 'sandbox', params } : undefined };
   };
   const requestApproval = (binding = agentBinding()) => service!.request({ ownerId: 'admin', binding, ...presentationFor(binding) });
@@ -222,7 +246,7 @@ async function startApp(options: { approvals?: boolean; releaseBarrier?: boolean
     service = createApprovalService({ store, identity: identity!, policyVersion: VERSION, now, monotonicNow: () => clock.mono });
     runtime!.service = service;
   }
-  return { call, post, get, login, proof, proofId, requestApproval, agentBinding, mergeBinding, sandboxParams, detail, decide, svc: () => service!, st: () => store!, restart, advance, logLines, auditFile, project, root };
+  return { call, post, get, login, proof, proofId, requestApproval, agentBinding, mergeBinding, spendBinding, detail, decide, svc: () => service!, st: () => store!, restart, advance, logLines, auditFile, project, root };
 }
 
 describe('autenticação, CSRF e identidade (grupo A)', () => {
@@ -392,15 +416,21 @@ describe('aprovações pelo administrador (grupo B)', () => {
     expect(events).toEqual(expect.arrayContaining(['approval.rejected', 'approval.revoked']));
   });
 
-  it('expiração: merge vale 15 min; execução 1 h; pedido pendente vence em 24 h e não pode mais ser aprovado', async () => {
+  it('expiração: custo vale 15 min; execução 1 h; pedido pendente vence em 24 h e não pode mais ser aprovado; merge sem apresentação não é aprovável', async () => {
     const app = await startApp();
     let cookie = await app.login();
+    // Merge exige SHA, e nenhum componente desta fase apresenta parâmetros para ele (R3): bloqueado.
     const merge = await app.requestApproval(app.mergeBinding());
-    const approved = await app.decide(cookie, merge.id, 'approve');
-    expect(approved.json().approval).toMatchObject({ class: 'merge', validUntil: '2026-11-15T12:15:00.000Z' });
+    const blocked = await app.decide(cookie, merge.id, 'approve');
+    expect(blocked.status).toBe(409);
+    expect(blocked.json().error.code).toBe('approval_presentation_invalid');
+    expect((await app.decide(cookie, merge.id, 'reject')).json().approval.state).toBe('rejected');
+    const spend = await app.requestApproval(app.spendBinding());
+    const approved = await app.decide(cookie, spend.id, 'approve');
+    expect(approved.json().approval).toMatchObject({ class: 'cost', validUntil: '2026-11-15T12:15:00.000Z' });
     app.advance(15 * MIN);
     cookie = await app.login();
-    expect((await app.detail(cookie, merge.id)).state).toBe('expired');
+    expect((await app.detail(cookie, spend.id)).state).toBe('expired');
 
     const pending = await app.requestApproval();
     app.advance(24 * 60 * MIN);
@@ -422,7 +452,7 @@ describe('aprovações pelo administrador (grupo B)', () => {
     const wrong = await app.post(`/api/approvals/${second.id}/approve`, { bindingDigest: first.bindingDigest, presentationDigest: pd(first), proofId: await app.proofId(cookie) }, cookie);
     expect(wrong.status).toBe(409);
     expect(wrong.json().error.code).toBe('approval_binding_mismatch');
-    const third = await app.requestApproval(app.agentBinding({ target: { sha: SHA_B, ref: null }, paramsDigest: paramsDigestOf('sandbox', sandboxParams(2)) }));
+    const third = await app.requestApproval(app.agentBinding({ target: { sha: SHA_B, ref: null } }, 2));
     expect((await app.detail(cookie, second.id)).state).toBe('superseded');
     expect((await app.decide(cookie, third.id, 'approve')).status).toBe(200);
   });
@@ -432,7 +462,7 @@ describe('aprovações pelo administrador (grupo B)', () => {
     const cookie = await app.login();
     const missing = '0f8fad5b-d9cb-469f-a165-70867728950e';
     expect((await app.get(`/api/approvals/${missing}`, cookie)).status).toBe(404);
-    const other = await app.svc().request({ ownerId: 'user-b', requestedBy: 'sandbox', binding: app.agentBinding(), presentation: { kind: 'sandbox', params: sandboxParams(1) } });
+    const other = await app.svc().request({ ownerId: 'user-b', requestedBy: 'sandbox', binding: app.agentBinding(), presentation: { kind: 'sandbox', params: sandboxParams(app.agentBinding(), 1) } });
     expect((await app.get(`/api/approvals/${other.id}`, cookie)).status).toBe(404);
     const reply = await app.post(`/api/approvals/${other.id}/approve`, { bindingDigest: other.bindingDigest, presentationDigest: pd(other), proofId: await app.proofId(cookie) }, cookie);
     expect(reply.status).toBe(404);
@@ -599,7 +629,7 @@ describe('R1 — apresentação verificável dos parâmetros (HTTP)', () => {
     const cookie = await app.login();
     const request = await app.requestApproval();
     const shown = await app.detail(cookie, request.id);
-    expect(shown).toMatchObject({ presentable: true, presentationIssue: null, presentation: { kind: 'sandbox', params: sandboxParams(1) } });
+    expect(shown).toMatchObject({ presentable: true, presentationIssue: null, presentation: { kind: 'sandbox', params: sandboxParams(app.agentBinding(), 1) } });
     const check = checkPresentation({ binding: shown.binding, bindingDigest: approvalBindingDigest(shown.binding), requestedBy: shown.requestedBy, presentation: shown.presentation });
     expect(check).toMatchObject({ ok: true, digest: shown.presentationDigest });
     expect(shown.presentationDigest).toBe(pd(request));
@@ -611,7 +641,7 @@ describe('R1 — apresentação verificável dos parâmetros (HTTP)', () => {
     const request = await app.requestApproval();
     const missing = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId: await app.proofId(cookie) }, cookie);
     expect(missing.status).toBe(400);
-    const other = approvalPresentationDigest(request.bindingDigest, { kind: 'sandbox', params: sandboxParams(2) } as ApprovalPresentation);
+    const other = approvalPresentationDigest(request.bindingDigest, { kind: 'sandbox', params: sandboxParams(app.agentBinding(), 2) } as ApprovalPresentation);
     for (const presentationDigest of [other, request.bindingDigest]) {
       const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest, proofId: await app.proofId(cookie) }, cookie);
       expect(reply.status).toBe(409);
@@ -627,7 +657,7 @@ describe('R1 — apresentação verificável dos parâmetros (HTTP)', () => {
     const shown = await app.detail(cookie, request.id);
     expect(shown).toMatchObject({ presentable: false, presentation: null, presentationDigest: null, presentationIssue: 'presentation_missing' });
     // O cliente tenta "adivinhar" os parâmetros e calcular um resumo coincidente: continua recusado.
-    const guessed = approvalPresentationDigest(request.bindingDigest, { kind: 'sandbox', params: sandboxParams(1) } as ApprovalPresentation);
+    const guessed = approvalPresentationDigest(request.bindingDigest, { kind: 'sandbox', params: sandboxParams(app.agentBinding(), 1) } as ApprovalPresentation);
     const approve = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: guessed, proofId: await app.proofId(cookie) }, cookie);
     expect(approve.status).toBe(409);
     expect(approve.json().error.code).toBe('approval_presentation_invalid');
@@ -640,9 +670,9 @@ describe('R1 — apresentação verificável dos parâmetros (HTTP)', () => {
   it('os valores dos parâmetros não vão para logs nem para a auditoria', async () => {
     const app = await startApp();
     const cookie = await app.login();
-    const request = await app.requestApproval(app.agentBinding({ paramsDigest: paramsDigestOf('sandbox', sandboxParams(2)) }));
+    const request = await app.requestApproval(app.agentBinding({}, 2));
     expect((await app.decide(cookie, request.id, 'approve')).status).toBe(200);
     const recorded = [app.logLines.join('\n'), await app.auditFile()].join('\n');
-    for (const value of [sandboxParams(2).requestId, 'registry.npmjs.org', 'acc#11']) expect(recorded).not.toContain(value);
+    for (const value of [requestIdOf(2), 'registry.npmjs.org', 'acc#11']) expect(recorded).not.toContain(value);
   });
 });

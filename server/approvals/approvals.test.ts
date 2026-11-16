@@ -20,7 +20,7 @@ import { TEST_ADMIN_PASSWORD, testPasswordHash } from '../test/authFixtures.ts';
 import { bindingDigest, paramsDigestOf } from './binding.ts';
 import { canonicalJson, macHex, without } from './canonical.ts';
 import { APPROVAL_TRANSITIONS, ApprovalError, ATTEMPT_TRANSITIONS, classOf, type ApprovalBinding, type LedgerApproval } from './contracts.ts';
-import { approvalPresentationDigest, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
+import { approvalPresentationDigest, sandboxWorkBranchFor, sandboxWorkspaceIdFor, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
 import { createPasswordConfirmer, createStepUpRegistry, type IdentityContext } from './identity.ts';
 import { createEnvKeyProvider, createFileKeyProvider } from './keyProvider.ts';
 import { acquireStoreLock, LOCK_FILE, processAlive, TAKEOVER_FILE } from './lock.ts';
@@ -46,15 +46,25 @@ afterEach(async () => {
 });
 
 const TASK = '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b';
-/** Parâmetros exatos (correção R1) entregues pelo componente; o `paramsDigest` sai deles. */
-const SANDBOX_PARAMS = {
-  requestId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
-  repository: null,
+/** Tarefas distintas (UUID) para operações distintas no mesmo projeto. */
+const taskN = (n: number) => `6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5${n}`;
+const REQ = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+/**
+ * Especificação COMPLETA do sandbox (correções R1/R3) coerente com o vínculo: projeto, tarefa,
+ * agente, workspace e git derivados exatamente como o sandbox deriva. O `paramsDigest` sai dela.
+ */
+const sandboxParamsFor = (b: Pick<ApprovalBinding, 'projectId' | 'resource' | 'subject' | 'target'>) => ({
+  requestId: REQ,
+  projectId: b.projectId,
+  taskId: b.resource.id,
+  agentId: b.subject.id,
+  workspace: { id: sandboxWorkspaceIdFor(REQ), exclusive: true, hostPathAccess: 'none' },
+  git: b.target.sha === null ? null : { repository: 'Moreirapontocom-br/ai-command-center', baseSha: b.target.sha, workBranch: b.target.ref, mainWritable: false },
   network: { default: 'deny', allow: [] },
   credentials: { scopes: [], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
   limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
   inputs: [],
-};
+});
 const MERGE_PARAMS = {
   projectId: P1,
   taskId: TASK,
@@ -65,23 +75,32 @@ const MERGE_PARAMS = {
   estimatedCostMinor: null,
   maxTokens: null,
 };
-const agentBinding = (overrides: Partial<ApprovalBinding> = {}): ApprovalBinding => ({
-  action: 'sandbox.execute',
-  projectId: P1,
-  resource: { type: 'sandbox', id: 'sb-1' },
-  target: { sha: null, ref: null },
-  subject: { kind: 'agent', id: 'claude-code' },
-  paramsDigest: paramsDigestOf('sandbox', SANDBOX_PARAMS),
-  policyVersion: VERSION,
-  ...overrides,
-});
+const agentBinding = (overrides: Partial<ApprovalBinding> = {}): ApprovalBinding => {
+  const b: ApprovalBinding = {
+    action: 'sandbox.execute',
+    projectId: P1,
+    resource: { type: 'task', id: taskN(1) },
+    target: { sha: null, ref: null },
+    subject: { kind: 'agent', id: 'claude-code' },
+    paramsDigest: '',
+    policyVersion: VERSION,
+    ...overrides,
+  };
+  // Sandbox com SHA: a ref é sempre a branch de trabalho derivada (como no #021).
+  if (b.action === 'sandbox.execute' && b.target.sha !== null && b.target.ref === null) {
+    b.target = { sha: b.target.sha, ref: sandboxWorkBranchFor(b.subject.id, b.resource.id, REQ) };
+  }
+  if (!Object.hasOwn(overrides, 'paramsDigest')) b.paramsDigest = paramsDigestOf('sandbox', sandboxParamsFor(b));
+  return b;
+};
+/** Merge (SHA obrigatório): nenhum componente desta fase apresenta parâmetros para ele. */
 const mergeBinding = (sha = SHA_A): ApprovalBinding =>
   agentBinding({ action: 'repo.merge', resource: { type: 'task', id: TASK }, target: { sha, ref: 'feature/x' }, paramsDigest: paramsDigestOf('admission', MERGE_PARAMS) });
 /** Pedido como o componente real faz: solicitante + parâmetros exatos (apresentação verificável). */
 const reqOf = (binding: ApprovalBinding, ownerId = 'admin') =>
   binding.action === 'sandbox.execute'
-    ? { ownerId, requestedBy: 'sandbox', binding, presentation: { kind: 'sandbox', params: SANDBOX_PARAMS } }
-    : { ownerId, requestedBy: 'limits', binding, presentation: { kind: 'admission', params: MERGE_PARAMS } };
+    ? { ownerId, requestedBy: 'sandbox', binding, presentation: { kind: 'sandbox', params: sandboxParamsFor(binding) } }
+    : { ownerId, requestedBy: 'limits', binding };
 /** Resumo da apresentação que o navegador recalcula e envia ao aprovar. */
 const pd = (approval: LedgerApproval) => (approval.presentation ? approvalPresentationDigest(approval.bindingDigest, approval.presentation as ApprovalPresentation) : null);
 const ownerBinding = (action: ApprovalBinding['action'], paramsDigest: string, resource = { type: 'limits', id: 'controller' }, projectId: string | null = null): ApprovalBinding => ({
@@ -209,7 +228,7 @@ describe('fluxo de aprovação', () => {
     expect(r.grant).not.toBeNull();
     const evaluation = evaluatePolicy(
       DEFAULT_POLICY,
-      { subject: { kind: 'agent', id: 'claude-code' }, action: 'sandbox.execute', projectId: P1, resource: { type: 'sandbox', id: 'sb-1' }, target: { sha: null, ref: null }, approval: r.grant },
+      { subject: { kind: 'agent', id: 'claude-code' }, action: 'sandbox.execute', projectId: P1, resource: { type: 'task', id: taskN(1) }, target: { sha: null, ref: null }, approval: r.grant },
       { projectAccessible: true, agentAssigned: true, now: START, usedApprovals: t.svc.consumedApprovalIds(r.approvalId) },
       testCatalog,
     );
@@ -258,7 +277,7 @@ describe('fluxo de aprovação', () => {
 describe('autenticidade, identidade e autoaprovação', () => {
   it('aprovação forjada pelo chamador (sem recibo) não é autêntica', async () => {
     const t = await setup();
-    const forged = { id: '9f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b', action: 'sandbox.execute' as const, projectId: P1, resource: { type: 'sandbox', id: 'sb-1' }, target: { sha: null, ref: null }, subject: { kind: 'agent' as const, id: 'claude-code' as const }, approvedBy: { kind: 'human' as const, id: 'admin' }, approvedAt: new Date(START).toISOString(), expiresAt: new Date(START + MIN).toISOString() };
+    const forged = { id: '9f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b', action: 'sandbox.execute' as const, projectId: P1, resource: { type: 'task', id: taskN(1) }, target: { sha: null, ref: null }, subject: { kind: 'agent' as const, id: 'claude-code' as const }, approvedBy: { kind: 'human' as const, id: 'admin' }, approvedAt: new Date(START).toISOString(), expiresAt: new Date(START + MIN).toISOString() };
     expect(t.svc.verifierFor('sandbox').verifyGrant(forged)).toEqual({ authentic: false, reason: 'receipt_missing' });
     expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: forged.id, component: 'sandbox', binding: agentBinding() }))).toBe('approval_not_issued');
   });
@@ -267,7 +286,7 @@ describe('autenticidade, identidade e autoaprovação', () => {
     const t = await setup();
     const approval = await t.approved();
     const r = await t.svc.reserve({ ownerId: 'admin', approvalId: approval.id, component: 'sandbox', binding: agentBinding() });
-    const tampered = { ...r.grant!, resource: { type: 'sandbox', id: 'sb-2' } };
+    const tampered = { ...r.grant!, resource: { type: 'task', id: taskN(2) } };
     expect(t.svc.verifierFor('sandbox').verifyGrant(tampered)).toEqual({ authentic: false, reason: 'receipt_operation_mismatch' });
     expect(t.svc.verifierFor('sandbox').verifyGrant(r.grant!)).toEqual({ authentic: false, reason: 'receipt_missing' });
   });
@@ -337,8 +356,8 @@ describe('autenticidade, identidade e autoaprovação', () => {
 describe('vínculo: SHA, parâmetros, política e validade', () => {
   it('SHA alterado após a aprovação → superseded, sem consumo', async () => {
     const t = await setup();
-    const approval = await t.approved(mergeBinding(SHA_A));
-    expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: approval.id, component: 'policy', binding: mergeBinding(SHA_B) }))).toBe('binding_changed');
+    const approval = await t.approved(agentBinding({ target: { sha: SHA_A, ref: null } }));
+    expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: approval.id, component: 'policy', binding: agentBinding({ target: { sha: SHA_B, ref: null } }) }))).toBe('binding_changed');
     expect(t.svc.list('admin').at(-1)!.state).toBe('superseded');
   });
 
@@ -365,7 +384,7 @@ describe('vínculo: SHA, parâmetros, política e validade', () => {
     const approval = await t.approved();
     t.advance(60 * MIN);
     expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: approval.id, component: 'sandbox', binding: agentBinding() }))).toBe('approval_expired');
-    const req = await t.svc.request(reqOf(agentBinding({ resource: { type: 'sandbox', id: 'sb-9' } })));
+    const req = await t.svc.request(reqOf(agentBinding({ resource: { type: 'task', id: taskN(9) } })));
     t.advance(24 * 60 * MIN);
     expect(await code(t.svc.decide({ ownerId: 'admin', approvalId: req.id, decision: 'approve', bindingDigest: req.bindingDigest, presentationDigest: pd(req), proofId: await t.proof(), identity: CTX }))).toBe('approval_expired');
   });
@@ -383,8 +402,8 @@ describe('vínculo: SHA, parâmetros, política e validade', () => {
     const a = await t.approved();
     await t.svc.revoke({ ownerId: 'admin', approvalId: a.id, proofId: await t.proof(), identity: CTX });
     expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: a.id, component: 'sandbox', binding: agentBinding() }))).toBe('approval_revoked');
-    const b = await t.approved(agentBinding({ resource: { type: 'sandbox', id: 'sb-2' } }));
-    const r = await t.svc.reserve({ ownerId: 'admin', approvalId: b.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'sandbox', id: 'sb-2' } }) });
+    const b = await t.approved(agentBinding({ resource: { type: 'task', id: taskN(2) } }));
+    const r = await t.svc.reserve({ ownerId: 'admin', approvalId: b.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'task', id: taskN(2) } }) });
     t.svc.verifierFor('sandbox').verifyGrant(r.grant!);
     await t.svc.recordOutcome({ attemptId: r.attemptId, outcome: 'succeeded' });
     expect(await code(t.svc.revoke({ ownerId: 'admin', approvalId: b.id, proofId: await t.proof(), identity: CTX }))).toBe('invalid_transition');
@@ -475,9 +494,9 @@ describe('persistência, reinício e recuperação (R2)', () => {
     const t = await setup();
     const epoch = t.store.epoch();
     const a = await t.approved();
-    const b = await t.approved(agentBinding({ resource: { type: 'sandbox', id: 'sb-2' } }));
-    await t.svc.reserve({ ownerId: 'admin', approvalId: b.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'sandbox', id: 'sb-2' } }) });
-    const pending = await t.svc.request(reqOf(agentBinding({ resource: { type: 'sandbox', id: 'sb-3' } })));
+    const b = await t.approved(agentBinding({ resource: { type: 'task', id: taskN(2) } }));
+    await t.svc.reserve({ ownerId: 'admin', approvalId: b.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'task', id: taskN(2) } }) });
+    const pending = await t.svc.request(reqOf(agentBinding({ resource: { type: 'task', id: taskN(3) } })));
     await t.close(t.store);
     const store = await t.open();
     const svc = t.service(store);
@@ -490,7 +509,7 @@ describe('persistência, reinício e recuperação (R2)', () => {
     // Sem repetição automática: só o PO reconhece, e nada é reexecutado.
     await svc.acknowledgeAttempt({ ownerId: 'admin', attemptId: attempt.id, proofId: await t.proof(), identity: CTX });
     expect(store.ledger().attempts.at(-1)!.state).toBe('acknowledged_by_owner');
-    expect(await code(svc.reserve({ ownerId: 'admin', approvalId: b.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'sandbox', id: 'sb-2' } }) }))).toBe('approval_already_used');
+    expect(await code(svc.reserve({ ownerId: 'admin', approvalId: b.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'task', id: taskN(2) } }) }))).toBe('approval_already_used');
     const decided = await svc.decide({ ownerId: 'admin', approvalId: pending.id, decision: 'approve', bindingDigest: pending.bindingDigest, presentationDigest: pd(pending), proofId: await t.proof(), identity: CTX });
     expect(decided.epoch).toBe(epoch + 1);
   });
@@ -683,7 +702,7 @@ describe('barreiras e kill switch (R3)', () => {
     const byId = new Map(t.svc.list('admin').map((x) => [x.id, x]));
     expect(byId.get(inP1.id)).toMatchObject({ state: 'revoked', closedReason: 'killswitch' });
     expect(byId.get(inP2.id)!.state).toBe('approved');
-    const req = await t.svc.request(reqOf(agentBinding({ resource: { type: 'sandbox', id: 'sb-7' } })));
+    const req = await t.svc.request(reqOf(agentBinding({ resource: { type: 'task', id: taskN(7) } })));
     expect(await code(t.svc.decide({ ownerId: 'admin', approvalId: req.id, decision: 'approve', bindingDigest: req.bindingDigest, presentationDigest: pd(req), proofId: await t.proof(), identity: CTX }))).toBe('killswitch_engaged');
     await t.close(t.store);
     const store = await t.open();
@@ -728,7 +747,7 @@ describe('barreiras e kill switch (R3)', () => {
     const svc = t.service(t.store, { controllerKillSwitch: () => engaged });
     const a = await t.approved(agentBinding(), svc);
     engaged = true;
-    const req = await svc.request(reqOf(agentBinding({ resource: { type: 'sandbox', id: 'sb-5' } })));
+    const req = await svc.request(reqOf(agentBinding({ resource: { type: 'task', id: taskN(5) } })));
     expect(await code(svc.decide({ ownerId: 'admin', approvalId: req.id, decision: 'approve', bindingDigest: req.bindingDigest, presentationDigest: pd(req), proofId: await t.proof(), identity: CTX }))).toBe('killswitch_engaged');
     expect(await code(svc.reserve({ ownerId: 'admin', approvalId: a.id, component: 'sandbox', binding: agentBinding() }))).toBe('killswitch_engaged');
     engaged = false;
@@ -803,7 +822,7 @@ describe('histórico, retenção e compactação (R5)', () => {
     const t = await setup();
     const kept = await t.approved();
     await t.svc.revoke({ ownerId: 'admin', approvalId: kept.id, proofId: await t.proof(), identity: CTX });
-    const gone = await t.approved(agentBinding({ resource: { type: 'sandbox', id: 'sb-2' } }));
+    const gone = await t.approved(agentBinding({ resource: { type: 'task', id: taskN(2) } }));
     await t.svc.revoke({ ownerId: 'admin', approvalId: gone.id, proofId: await t.proof(), identity: CTX });
     await t.svc.addHold({ ownerId: 'admin', approvalId: kept.id, reason: 'incident', note: '  Investigação\u0007 do incidente  ', proofId: await t.proof(), identity: CTX });
     expect(t.store.history().holds[0].note).toBe('Investigação do incidente');
@@ -816,7 +835,7 @@ describe('histórico, retenção e compactação (R5)', () => {
     expect(events(t.store)).toEqual(expect.arrayContaining(['approval.compacted', 'approval.history_purged']));
     // Compactada: o id não existe mais → negado (nunca reativado).
     expect(t.svc.list('admin').map((x) => x.id)).toEqual([kept.id]);
-    expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: gone.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'sandbox', id: 'sb-2' } }) }))).toBe('approval_not_issued');
+    expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: gone.id, component: 'sandbox', binding: agentBinding({ resource: { type: 'task', id: taskN(2) } }) }))).toBe('approval_not_issued');
     await t.close(t.store);
     const store = await t.open();
     expect(store.status().state).toBe('available');
@@ -1082,7 +1101,7 @@ describe('revisão R3 — falha de gravação nunca concede autoridade', () => {
     const a = await t.approved();
     control.fail = true;
     expect(await code(t.svc.reserve({ ownerId: 'admin', approvalId: a.id, component: 'sandbox', binding: agentBinding() }))).toBe('store_write_failed');
-    const grant = { id: a.id, method: 'approval' as const, action: 'sandbox.execute' as const, projectId: P1, resource: { type: 'sandbox', id: 'sb-1' }, target: { sha: null, ref: null }, subject: { kind: 'agent' as const, id: 'claude-code' as const }, approvedBy: { kind: 'human' as const, id: 'admin' }, approvedAt: a.decidedAt!, expiresAt: a.validUntil! };
+    const grant = { id: a.id, method: 'approval' as const, action: 'sandbox.execute' as const, projectId: P1, resource: { type: 'task', id: taskN(1) }, target: { sha: null, ref: null }, subject: { kind: 'agent' as const, id: 'claude-code' as const }, approvedBy: { kind: 'human' as const, id: 'admin' }, approvedAt: a.decidedAt!, expiresAt: a.validUntil! };
     expect(t.svc.verifierFor('sandbox').verifyGrant(grant).authentic).toBe(false);
   });
 

@@ -153,6 +153,7 @@ describe('superfície de escrita do servidor', () => {
       'server/approvals/lock.ts',
       'server/approvals/maintenance.ts',
       'server/approvals/paths.ts',
+      'server/approvals/presentation.ts',
       'server/approvals/service.ts',
       'server/approvals/store.ts',
     ]);
@@ -168,7 +169,7 @@ describe('superfície de escrita do servidor', () => {
     expect(files.find((f) => f.path === 'server/approvals/service.ts')!.code).toMatch(/kind: 'trusted' as const/);
     // PR 2: só estes pontos revisados usam o núcleo — a configuração/abertura do servidor, as rotas
     // de decisão do administrador e os componentes que pedem/consomem aprovações (#021/#022).
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts|maintenance)/).sort()).toEqual([
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts|maintenance|presentation)/).sort()).toEqual([
       'server/http/approvalRoutes.ts',
       'server/index.ts',
       'server/limits/controller.ts',

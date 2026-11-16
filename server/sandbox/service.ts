@@ -206,6 +206,21 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
     );
   }
 
+  /** Parâmetros exatos da execução (o que o administrador vê e o que o resumo cobre). */
+  function paramsOf(spec: SandboxSpec) {
+    return {
+      requestId: spec.requestId,
+      repository: spec.git?.repository ?? null,
+      network: spec.network,
+      credentials: spec.credentials,
+      limits: spec.limits,
+      inputs: spec.inputs,
+    };
+  }
+
+  /** Apresentação verificável (#011, R1): os MESMOS parâmetros do resumo, em formato fechado. */
+  const presentationOf = (spec: SandboxSpec) => ({ kind: 'sandbox' as const, params: structuredClone(paramsOf(spec)) });
+
   /** Vínculo exato (#011) da execução pedida: os parâmetros entram pelo resumo do `spec`. */
   function bindingOf(spec: SandboxSpec) {
     return {
@@ -214,14 +229,7 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
       resource: { type: 'task', id: spec.taskId },
       target: { sha: spec.git?.baseSha ?? null, ref: spec.git?.workBranch ?? null },
       subject: { kind: 'agent' as const, id: spec.agentId },
-      paramsDigest: paramsDigestOf('sandbox', {
-        requestId: spec.requestId,
-        repository: spec.git?.repository ?? null,
-        network: spec.network,
-        credentials: spec.credentials,
-        limits: spec.limits,
-        inputs: spec.inputs,
-      }),
+      paramsDigest: paramsDigestOf('sandbox', paramsOf(spec)),
       policyVersion: policy.version,
     };
   }
@@ -300,7 +308,7 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
       // Exige aprovação: o pedido é registrado no núcleo (#011) ANTES do registro; sem núcleo
       // disponível, nada é criado (fail-closed).
       if (evaluation.decision === 'REQUIRE_APPROVAL' && options.approvals) {
-        await options.approvals.request({ ownerId, requestedBy: 'sandbox', binding: bindingOf(spec) });
+        await options.approvals.request({ ownerId, requestedBy: 'sandbox', binding: bindingOf(spec), presentation: presentationOf(spec) });
       }
       const at = now();
       const record: SandboxRecord = {
@@ -342,7 +350,7 @@ export function createSandboxService(options: SandboxServiceOptions): SandboxSer
         if (precheck.decision === 'UNAVAILABLE') throw new SandboxError('capability_unavailable', precheck);
         if (precheck.decision === 'DENY') throw new SandboxError('policy_denied', precheck);
         const binding = bindingOf(record.spec);
-        const request = await approvals.request({ ownerId, requestedBy: 'sandbox', binding });
+        const request = await approvals.request({ ownerId, requestedBy: 'sandbox', binding, presentation: presentationOf(record.spec) });
         if (request.state === 'pending') throw new SandboxError('approval_pending');
         if (request.state !== 'approved') throw new SandboxError('approval_invalid');
         const reservation = await approvals.reserve({ ownerId, approvalId: request.id, component: 'sandbox', binding });

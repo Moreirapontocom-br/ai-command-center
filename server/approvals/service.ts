@@ -29,6 +29,7 @@ import {
 } from './contracts.ts';
 import { sanitizeNote, type HistoryItem, type HistoryTombstone } from './documents.ts';
 import { assertHumanContext, type IdentityContext, type StepUpRegistry } from './identity.ts';
+import { verifyApprovalPresentation } from './presentation.ts';
 import type { ApprovalStore, HistoryInput, StoreTransaction } from './store.ts';
 
 /**
@@ -341,6 +342,13 @@ export function createApprovalService(options: ApprovalServiceOptions) {
     if (binding.paramsDigest !== paramsDigestOf('killswitch.release', { scope: scope ?? 'global' })) throw new ApprovalError('invalid_binding');
   }
 
+  /** Valida a apresentação contra o vínculo (R1); devolve a cópia normalizada ou recusa. */
+  function presentationFor(binding: ApprovalBinding, digest: string, requestedBy: LedgerApproval['requestedBy'], raw: unknown) {
+    const check = verifyApprovalPresentation({ binding, bindingDigest: digest, requestedBy, presentation: raw as LedgerApproval['presentation'] });
+    if (!check.ok) throw new ApprovalError(check.reason);
+    return check.presentation;
+  }
+
   const service = {
     /**
      * Pedido de aprovação, feito por um COMPONENTE DO SERVIDOR em nome de uma tarefa (nunca por um
@@ -348,7 +356,7 @@ export function createApprovalService(options: ApprovalServiceOptions) {
      * `confirmOwner`. Mesmo vínculo → mesmo pedido; vínculo da mesma operação com SHA/parâmetros/
      * política diferentes torna os anteriores `superseded`.
      */
-    request(input: { ownerId: string; requestedBy: string; binding: unknown }): Promise<LedgerApproval> {
+    request(input: { ownerId: string; requestedBy: string; binding: unknown; presentation?: unknown }): Promise<LedgerApproval> {
       return guarded(
         () => null,
         async () => {
@@ -360,6 +368,10 @@ export function createApprovalService(options: ApprovalServiceOptions) {
           if (binding.policyVersion !== options.policyVersion) throw new ApprovalError('policy_version_mismatch');
           const cls = bindingClass(binding);
           const digest = bindingDigest(binding);
+          // Correção R1: os parâmetros exatos entregues pelo componente precisam reproduzir o
+          // `paramsDigest` no formato esperado para ESTE solicitante; senão nada é criado.
+          // Sem apresentação o pedido é registrado, mas só pode ser rejeitado.
+          const presentation = input.presentation === undefined ? undefined : presentationFor(binding, digest, { kind: 'system', id: requester }, input.presentation);
           return store.commit((tx) => {
             const sameOperation = (a: LedgerApproval) =>
               a.ownerId === input.ownerId &&
@@ -398,6 +410,7 @@ export function createApprovalService(options: ApprovalServiceOptions) {
               closedAt: null,
               closedReason: null,
               attemptId: null,
+              ...(presentation ? { presentation } : {}),
             };
             tx.ledger.approvals.push(approval);
             tx.append(event(approval, { event: 'approval.requested', actor: { kind: 'system', id: requester }, to: 'pending', reason: 'requested' }));
@@ -411,7 +424,16 @@ export function createApprovalService(options: ApprovalServiceOptions) {
      * Decisão do PO sobre um pedido de OUTRO sujeito. Exige prova de *step-up* desta sessão e o
      * `bindingDigest` exibido (aprova-se exatamente o que foi mostrado).
      */
-    decide(input: { ownerId: string; approvalId: string; decision: 'approve' | 'reject'; bindingDigest: string; proofId: string; identity: IdentityContext }): Promise<LedgerApproval> {
+    decide(input: {
+      ownerId: string;
+      approvalId: string;
+      decision: 'approve' | 'reject';
+      bindingDigest: string;
+      /** Obrigatório para aprovar (R1): resumo do vínculo + parâmetros que o navegador exibiu. */
+      presentationDigest?: string | null;
+      proofId: string;
+      identity: IdentityContext;
+    }): Promise<LedgerApproval> {
       return guarded(
         (code) => ({ event: 'approval.decision_denied', actor: { kind: 'human', id: typeof input.identity?.userId === 'string' && /^[a-z0-9][a-z0-9:_-]{0,63}$/.test(input.identity.userId) ? input.identity.userId : 'unknown' }, approvalId: UUID.test(String(input.approvalId)) ? input.approvalId : null, reason: code }),
         async () => {
@@ -433,6 +455,12 @@ export function createApprovalService(options: ApprovalServiceOptions) {
               return structuredClone(approval);
             }
             if (barredClass(approval.binding) && blocked(tx, approval.binding)) throw new ApprovalError('killswitch_engaged');
+            // Correção R1: aprovar exige os parâmetros apresentados, válidos e coerentes com o
+            // vínculo, E o resumo da apresentação que o administrador conferiu. Um `bindingDigest`
+            // ou `paramsDigest` coincidente nunca basta. (Rejeitar não depende disto.)
+            const presented = verifyApprovalPresentation(approval);
+            if (!presented.ok) throw new ApprovalError(presented.reason);
+            if (typeof input.presentationDigest !== 'string' || input.presentationDigest !== presented.digest) throw new ApprovalError('presentation_mismatch');
             const at = now();
             approval.epoch = tx.epoch;
             approval.validUntil = iso(at + APPROVAL_TTL_MS[approval.class]);
@@ -451,7 +479,7 @@ export function createApprovalService(options: ApprovalServiceOptions) {
      * mesmo iniciou. O sujeito é a pessoa da sessão (nunca um valor informado); a prova de
      * *step-up* é desta sessão e de uso único. Não vale para a classe `execution`.
      */
-    confirmOwner(input: { ownerId: string; binding: unknown; bindingDigest: string; proofId: string; identity: IdentityContext }): Promise<LedgerApproval> {
+    confirmOwner(input: { ownerId: string; binding: unknown; bindingDigest: string; proofId: string; identity: IdentityContext; presentation?: unknown }): Promise<LedgerApproval> {
       return guarded(
         (code) => ({ event: 'approval.decision_denied', actor: { kind: 'human', id: typeof input.identity?.userId === 'string' && /^[a-z0-9][a-z0-9:_-]{0,63}$/.test(input.identity.userId) ? input.identity.userId : 'unknown' }, reason: code }),
         async () => {
@@ -465,6 +493,7 @@ export function createApprovalService(options: ApprovalServiceOptions) {
           if (binding.policyVersion !== options.policyVersion) throw new ApprovalError('policy_version_mismatch');
           const digest = bindingDigest(binding);
           if (digest !== input.bindingDigest) throw new ApprovalError('binding_mismatch');
+          const presentation = input.presentation === undefined ? undefined : presentationFor(binding, digest, { kind: 'human', id: userId }, input.presentation);
           return store.commit((tx) => {
             if (barredClass(binding) && blocked(tx, binding)) throw new ApprovalError('killswitch_engaged');
             const at = now();
@@ -487,6 +516,7 @@ export function createApprovalService(options: ApprovalServiceOptions) {
               closedAt: null,
               closedReason: null,
               attemptId: null,
+              ...(presentation ? { presentation } : {}),
             };
             tx.ledger.approvals.push(approval);
             tx.append(event(approval, { event: 'approval.requested', actor: { kind: 'human', id: userId }, to: 'pending', reason: 'owner_initiated' }));
@@ -850,7 +880,14 @@ export function createApprovalService(options: ApprovalServiceOptions) {
         paramsDigest: paramsDigestOf(input.operation, params),
         policyVersion: options.policyVersion,
       };
-      const approval = await service.confirmOwner({ ownerId: input.ownerId, binding, bindingDigest: bindingDigest(binding), proofId: input.proofId, identity: input.identity });
+      const approval = await service.confirmOwner({
+        ownerId: input.ownerId,
+        binding,
+        bindingDigest: bindingDigest(binding),
+        proofId: input.proofId,
+        identity: input.identity,
+        presentation: { kind: input.operation, params },
+      });
       const reservation = await service.reserve({ ownerId: input.ownerId, approvalId: approval.id, component: 'approvals', binding });
       if ('days' in params) await service.changeRetention({ attemptId: reservation.attemptId, days: params.days });
       else await service.purgeHistory({ attemptId: reservation.attemptId, before: params.before });

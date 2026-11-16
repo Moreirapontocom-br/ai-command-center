@@ -1,3 +1,4 @@
+import { parsePresentation } from '../../shared/approvalPresentation.ts';
 import { APPROVAL_METHODS } from '../../shared/contracts.ts';
 import { isIsoDate } from '../storage/jsonFile.ts';
 import { HUMAN_ID, isPlain, parseBinding, bindingDigest, REASON, UUID } from './binding.ts';
@@ -151,7 +152,17 @@ const oneOf = <T extends string>(list: readonly T[]) => (v: unknown): v is T => 
 
 function checkApproval(raw: unknown, index: number): LedgerApproval {
   const what = `aprovação ${index}`;
-  const a = keys(raw, ['id', 'ownerId', 'class', 'method', 'binding', 'bindingDigest', 'state', 'epoch', 'requestedBy', 'requestedAt', 'pendingUntil', 'decidedBy', 'decidedAt', 'confirmation', 'validUntil', 'closedAt', 'closedReason', 'attemptId'], what);
+  const fields = ['id', 'ownerId', 'class', 'method', 'binding', 'bindingDigest', 'state', 'epoch', 'requestedBy', 'requestedAt', 'pendingUntil', 'decidedBy', 'decidedAt', 'confirmation', 'validUntil', 'closedAt', 'closedReason', 'attemptId'];
+  // `presentation` (correção R1) é o único campo opcional: registros do PR 1 não o têm.
+  const a = keys(raw, isPlain(raw) && Object.hasOwn(raw, 'presentation') ? [...fields, 'presentation'] : fields, what);
+  if (Object.hasOwn(a, 'presentation')) {
+    // Formato fechado obrigatório; a coerência com o vínculo é conferida a cada decisão/exibição.
+    try {
+      parsePresentation(a.presentation);
+    } catch {
+      fail(what);
+    }
+  }
   if (!isUuid(a.id) || typeof a.ownerId !== 'string' || !HUMAN_ID.test(a.ownerId)) fail(what);
   if (!oneOf(APPROVAL_CLASSES)(a.class) || !oneOf(APPROVAL_METHODS)(a.method) || !oneOf(APPROVAL_STATES)(a.state)) fail(what);
   let binding;

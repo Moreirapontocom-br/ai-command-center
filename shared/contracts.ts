@@ -1,3 +1,5 @@
+import type { ApprovalPresentation, PresentationIssue } from './approvalPresentation.ts';
+
 /**
  * Contrato entre o servidor intermediário (`server/`) e o frontend (`src/`).
  *
@@ -153,6 +155,7 @@ export type ApiErrorCode =
   | 'approval_conflict'
   | 'approval_expired'
   | 'approval_binding_mismatch'
+  | 'approval_presentation_invalid'
   | 'approval_blocked'
   | 'internal';
 
@@ -566,7 +569,10 @@ export type ApprovalAttemptStateName = (typeof APPROVAL_ATTEMPT_STATE_NAMES)[num
 export const APPROVAL_HOLD_REASONS = ['incident', 'security_review', 'dispute', 'legal'] as const;
 export type ApprovalHoldReason = (typeof APPROVAL_HOLD_REASONS)[number];
 
-/** Vínculo exato (o que o administrador confere). Parâmetros aparecem só como resumo (digest). */
+/**
+ * Vínculo exato (o que o administrador confere). Os parâmetros entram pelo `paramsDigest`; os
+ * valores legíveis vêm em `ApprovalDetail.presentation` (correção R1), conferidos contra ele.
+ */
 export interface ApprovalBindingView {
   action: string;
   projectId: string | null;
@@ -616,8 +622,21 @@ export interface ApprovalDetail extends ApprovalSummary {
   binding: ApprovalBindingView;
   /** Resumo canônico do vínculo; o navegador recalcula e só permite decidir se for igual. */
   bindingDigest: string;
-  /** `false` se o servidor não conseguiu confirmar a integridade da apresentação: decidir é recusado. */
+  /**
+   * `true` só se o vínculo estiver íntegro E os parâmetros exatos estiverem presentes, no formato
+   * esperado e coerentes com o `paramsDigest` (verificado pelo servidor). `false` → aprovar é
+   * recusado; rejeitar continua possível.
+   */
   presentable: boolean;
+  /**
+   * Parâmetros exatos (formato fechado, somente leitura; nunca segredos), entregues pelo
+   * componente do servidor que pediu. `null` se ausentes ou inválidos.
+   */
+  presentation: ApprovalPresentation | null;
+  /** Resumo vínculo + parâmetros calculado pelo servidor; o navegador recalcula e envia ao aprovar. */
+  presentationDigest: string | null;
+  /** Motivo (token) quando a apresentação não pôde ser verificada; `null` se válida. */
+  presentationIssue: PresentationIssue | 'binding_mismatch' | null;
   decidedBy: { kind: 'human'; id: string } | null;
   confirmationMethod: string | null;
   attempts: ApprovalAttemptView[];

@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { approvalBindingDigest } from '../../../shared/approvalDigest.ts';
+import { approvalPresentationDigest, presentationParamsDigest, type ApprovalPresentation } from '../../../shared/approvalPresentation.ts';
 import type { ApprovalDetail, ApprovalListResponse, ApprovalSummary } from '../../../shared/contracts.ts';
 import App from '../../App';
 import { apiError, configuredStatus, json, mockApi, PROJECT_ID, snapshotReply } from '../../test/githubFixtures';
@@ -27,21 +28,39 @@ const summary = (overrides: Partial<ApprovalSummary> = {}): ApprovalSummary => (
   ...overrides,
 });
 
+/** Parâmetros exatos entregues pelo componente do servidor (correção R1). */
+const presentation: ApprovalPresentation = {
+  kind: 'sandbox',
+  params: {
+    requestId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+    repository: 'Moreirapontocom-br/ai-command-center',
+    network: { default: 'deny', allow: ['registry.npmjs.org'] },
+    credentials: { scopes: ['repo.read'], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
+    limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
+    inputs: [{ kind: 'issue', ref: 'acc#11', trust: 'untrusted' }],
+  },
+};
+const PARAMS_DIGEST = presentationParamsDigest(presentation);
+
 const binding = {
   action: 'sandbox.execute',
   projectId: PROJECT_ID,
   resource: { type: 'task', id: '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b' },
   target: { sha: SHA, ref: 'agent/claude-code/6f1e8b2a' },
   subject: { kind: 'agent' as const, id: 'claude-code' as const },
-  paramsDigest: 'sandbox:4f5e6d',
+  paramsDigest: PARAMS_DIGEST,
   policyVersion: '2026-11-14.1',
 };
+const PRESENTATION_DIGEST = approvalPresentationDigest(approvalBindingDigest(binding), presentation);
 
 const detail = (overrides: Partial<ApprovalDetail> = {}): ApprovalDetail => ({
   ...summary(),
   binding,
   bindingDigest: approvalBindingDigest(binding),
   presentable: true,
+  presentation,
+  presentationDigest: PRESENTATION_DIGEST,
+  presentationIssue: null,
   decidedBy: null,
   confirmationMethod: null,
   attempts: [],
@@ -83,11 +102,28 @@ describe('página de aprovações', () => {
     await openApprovals();
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Ver detalhes' }));
     const panel = await screen.findByRole('region', { name: 'Detalhes da solicitação' });
-    for (const text of [SHA, 'agent/claude-code/6f1e8b2a', 'sandbox:4f5e6d', '2026-11-14.1', 'task:6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b', 'Claude Code (agente)']) {
+    for (const text of [SHA, 'agent/claude-code/6f1e8b2a', PARAMS_DIGEST, '2026-11-14.1', 'task:6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b', 'Claude Code (agente)']) {
       expect(panel).toHaveTextContent(text);
     }
-    expect(panel).toHaveTextContent('representados apenas por este resumo');
-    expect(within(panel).getByText(/Apresentação conferida/)).toBeInTheDocument();
+    // Correção R1: os parâmetros REAIS aparecem, legíveis e somente leitura.
+    const params = within(panel).getByRole('region', { name: 'Parâmetros da operação' });
+    for (const text of [
+      'Moreirapontocom-br/ai-command-center',
+      'registry.npmjs.org',
+      'repo.read',
+      '600 s',
+      'CPU 1',
+      'memória 512 MB',
+      'disco 1024 MB',
+      'acc#11',
+      '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+    ]) {
+      expect(params).toHaveTextContent(text);
+    }
+    expect(params).toHaveTextContent(/Segredos de produção\s*Negado/);
+    expect(within(params).getByText(/Parâmetros conferidos/)).toBeInTheDocument();
+    expect(within(params).queryAllByRole('textbox')).toHaveLength(0);
+    expect(within(within(panel).getByRole('form', { name: 'Aprovar' })).getByLabelText(/Confirme sua senha/)).not.toBeDisabled();
   });
 
   it('aprovação com senha: confirma a identidade, envia o resumo calculado e atualiza o estado', async () => {
@@ -111,7 +147,7 @@ describe('página de aprovações', () => {
     const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url, init]) => ({ url: String(url), body: JSON.parse(String(init!.body)) }));
     expect(posts).toEqual([
       { url: '/api/approvals/step-up', body: { password: 'minha-senha-canaria' } },
-      { url: `/api/approvals/${APPROVAL_ID}/approve`, body: { bindingDigest: approvalBindingDigest(binding), proofId: 'P'.repeat(43) } },
+      { url: `/api/approvals/${APPROVAL_ID}/approve`, body: { bindingDigest: approvalBindingDigest(binding), presentationDigest: PRESENTATION_DIGEST, proofId: 'P'.repeat(43) } },
     ]);
     // A senha não fica no formulário depois do envio, nem em nenhum outro lugar da página.
     expect(document.body.innerHTML).not.toContain('minha-senha-canaria');
@@ -142,10 +178,86 @@ describe('página de aprovações', () => {
     render(<App />);
     await openApprovals();
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Ver detalhes' }));
-    expect(await screen.findByText(/A aprovação está bloqueada até que os detalhes possam ser conferidos/)).toBeInTheDocument();
+    expect(await screen.findByText(/A aprovação está bloqueada; você pode rejeitá-la/)).toBeInTheDocument();
     const form = screen.getByRole('form', { name: 'Aprovar' });
     expect(within(form).getByRole('button', { name: 'Aprovar esta operação' })).toBeDisabled();
     expect(within(form).getByLabelText(/Confirme sua senha/)).toBeDisabled();
+  });
+
+  /** Abre o detalhe e confere: parâmetros não exibidos, aprovar bloqueado, rejeitar habilitado. */
+  async function expectBlocked(approval: ApprovalDetail, reason: RegExp) {
+    mockApi({ ...base, approvals: [json(list([summary()]))], approvalDetail: [json({ approval })] });
+    render(<App />);
+    await openApprovals();
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Ver detalhes' }));
+    const params = await screen.findByRole('region', { name: 'Parâmetros da operação' });
+    const alert = within(params).getByRole('alert');
+    expect(alert).toHaveTextContent(reason);
+    expect(alert).toHaveTextContent('A aprovação está bloqueada; você pode rejeitá-la.');
+    expect(within(params).queryByText(/Parâmetros conferidos/)).toBeNull();
+    // Nenhum valor não conferido é exibido como parâmetro.
+    expect(within(params).queryByRole('list', { name: 'Parâmetros exatos' })).toBeNull();
+    expect(params).not.toHaveTextContent('registry.npmjs.org');
+    const approve = screen.getByRole('form', { name: 'Aprovar' });
+    expect(within(approve).getByRole('button', { name: 'Aprovar esta operação' })).toBeDisabled();
+    const reject = screen.getByRole('form', { name: 'Rejeitar' });
+    expect(within(reject).getByLabelText(/Confirme sua senha/)).not.toBeDisabled();
+  }
+
+  it('R1 — parâmetros ausentes: aprovar bloqueado, rejeitar disponível', async () => {
+    await expectBlocked(detail({ presentable: false, presentation: null, presentationDigest: null, presentationIssue: 'presentation_missing' }), /não entregou os parâmetros exatos/);
+  });
+
+  it('R1 — divergência: parâmetros exibidos não reproduzem o resumo do vínculo (mesmo que o servidor diga "conferido")', async () => {
+    const tampered: ApprovalPresentation = { kind: 'sandbox', params: { ...presentation.params, network: { default: 'deny', allow: ['evil.example.com'] } } } as ApprovalPresentation;
+    await expectBlocked(detail({ presentation: tampered, presentationDigest: approvalPresentationDigest(approvalBindingDigest(binding), tampered) }), /não correspondem ao resumo registrado/);
+  });
+
+  it('R1 — representação incompleta (campo ausente) ou com campo desconhecido: bloqueia', async () => {
+    const { inputs: _inputs, ...partial } = (presentation as Extract<ApprovalPresentation, { kind: 'sandbox' }>).params; // eslint-disable-line @typescript-eslint/no-unused-vars
+    await expectBlocked(detail({ presentation: { kind: 'sandbox', params: partial } as unknown as ApprovalPresentation }), /incompletos ou em formato desconhecido/);
+  });
+
+  it('R1 — campo extra na apresentação: bloqueia', async () => {
+    const extra = { kind: 'sandbox', params: { ...presentation.params, command: 'rm -rf /' } } as unknown as ApprovalPresentation;
+    await expectBlocked(detail({ presentation: extra }), /incompletos ou em formato desconhecido/);
+  });
+
+  it('R1 — resumo da apresentação do servidor diferente do recalculado: bloqueia (digest coincidente do vínculo não basta)', async () => {
+    await expectBlocked(detail({ presentationDigest: 'e'.repeat(64) }), /não correspondem ao resumo registrado/);
+  });
+
+  it('R1 — tipo de apresentação incompatível com o solicitante: bloqueia', async () => {
+    await expectBlocked(detail({ requestedBy: { kind: 'system', id: 'limits' } }), /não correspondem ao resumo registrado/);
+  });
+
+  it('R1 — valor com aparência de credencial nos parâmetros: não é exibido e bloqueia', async () => {
+    // Valor montado em tempo de execução: nenhum literal com formato de token fica no código.
+    const fakeToken = ['gh', 'p_', 'A'.repeat(24)].join('');
+    const leaked = { kind: 'sandbox', params: { ...presentation.params, inputs: [{ kind: 'issue', ref: fakeToken, trust: 'untrusted' }] } } as ApprovalPresentation;
+    await expectBlocked(detail({ presentation: leaked }), /aparência de credencial/);
+    expect(document.body.innerHTML).not.toContain(fakeToken);
+  });
+
+  it('R1 — rejeição de solicitação com apresentação incompleta envia só o vínculo registrado', async () => {
+    const fetchMock = mockApi({
+      ...base,
+      approvals: [json(list([summary()]))],
+      approvalDetail: [json({ approval: detail({ presentable: false, presentation: null, presentationDigest: null, presentationIssue: 'presentation_missing' }) })],
+      stepUp: [json({ proofId: 'R'.repeat(43), expiresAt: '2026-11-15T12:05:00.000Z' })],
+      approvalAction: [json({ approval: detail({ state: 'rejected', presentable: false, presentation: null, presentationDigest: null, presentationIssue: 'presentation_missing' }) })],
+    });
+    render(<App />);
+    await openApprovals();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Ver detalhes' }));
+    const form = await screen.findByRole('form', { name: 'Rejeitar' });
+    await user.type(within(form).getByLabelText(/Confirme sua senha/), 'senha');
+    await user.click(within(form).getByRole('button', { name: 'Rejeitar' }));
+    expect(await screen.findByText('Solicitação rejeitada.')).toBeInTheDocument();
+    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url, init]) => ({ url: String(url), body: JSON.parse(String(init!.body)) }));
+    expect(posts.at(-1)).toEqual({ url: `/api/approvals/${APPROVAL_ID}/reject`, body: { bindingDigest: approvalBindingDigest(binding), proofId: 'R'.repeat(43) } });
+    expect(posts.some((p) => p.url.endsWith('/approve'))).toBe(false);
   });
 
   it('mensagens de erro seguras: senha recusada, sem detalhes internos', async () => {

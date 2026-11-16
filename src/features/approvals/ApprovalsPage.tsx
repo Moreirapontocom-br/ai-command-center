@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { approvalBindingDigest } from '../../../shared/approvalDigest.ts';
+import { checkPresentation, type ApprovalPresentation } from '../../../shared/approvalPresentation.ts';
 import {
   APPROVAL_HOLD_REASONS,
   type ApprovalAttemptStateName,
@@ -146,6 +147,93 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+const PRESENTATION_ISSUE_COPY: Record<string, string> = {
+  presentation_missing: 'o componente que pediu não entregou os parâmetros exatos',
+  presentation_invalid: 'os parâmetros entregues estão incompletos ou em formato desconhecido',
+  presentation_secret_like: 'os parâmetros contêm um valor com aparência de credencial e não são exibidos',
+  presentation_unsupported: 'não há apresentação conhecida para este tipo de solicitação',
+  presentation_mismatch: 'os parâmetros entregues não correspondem ao resumo registrado',
+  binding_mismatch: 'o vínculo registrado não pôde ser conferido',
+};
+
+const listOrNone = (items: string[], none: string) => (items.length === 0 ? none : items.join(', '));
+
+/**
+ * Parâmetros exatos, somente leitura (correção R1). Renderiza a cópia VERIFICADA no navegador
+ * (formato fechado, conferida contra o `paramsDigest`); todo campo do formato aparece aqui.
+ */
+function PresentationView({ presentation }: { presentation: ApprovalPresentation }) {
+  switch (presentation.kind) {
+    case 'sandbox': {
+      const p = presentation.params;
+      return (
+        <dl className="space-y-2" aria-label="Parâmetros exatos">
+          <Field label="Solicitação do sandbox">
+            <code>{p.requestId}</code>
+          </Field>
+          <Field label="Repositório">{p.repository ? <code>{p.repository}</code> : 'Nenhum (sem código)'}</Field>
+          <Field label="Rede">Negada por padrão; hosts liberados: {listOrNone(p.network.allow, 'nenhum')}</Field>
+          <Field label="Escopos de credencial">{listOrNone(p.credentials.scopes, 'nenhum')}</Field>
+          <Field label="Validade da credencial">{p.credentials.ttlSeconds} s</Field>
+          <Field label="Segredos de produção">Negado</Field>
+          <Field label="Banco de produção">Negado</Field>
+          <Field label="Limites">
+            tempo {p.limits.timeoutSeconds} s · CPU {p.limits.cpu} · memória {p.limits.memoryMb} MB · disco {p.limits.diskMb} MB
+          </Field>
+          <Field label="Entradas (não confiáveis)">
+            {p.inputs.length === 0 ? (
+              'Nenhuma'
+            ) : (
+              <ul>
+                {p.inputs.map((i) => (
+                  <li key={`${i.kind}:${i.ref}`}>
+                    {i.kind}: <code>{i.ref}</code> (dado não confiável)
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Field>
+        </dl>
+      );
+    }
+    case 'admission': {
+      const p = presentation.params;
+      return (
+        <dl className="space-y-2" aria-label="Parâmetros exatos">
+          <Field label="Ação admitida">
+            <code>{p.action}</code>
+          </Field>
+          <Field label="Agente">{AGENT_LABELS[p.agentId as keyof typeof AGENT_LABELS] ?? p.agentId}</Field>
+          <Field label="Tarefa">
+            <code>{p.taskId}</code>
+          </Field>
+          <Field label="Projeto">
+            <code>{p.projectId}</code>
+          </Field>
+          <Field label="Modo de uso">
+            <code>{p.mode}</code>
+          </Field>
+          <Field label="Duração máxima">{p.durationSeconds} s</Field>
+          <Field label="Custo estimado">{p.estimatedCostMinor === null ? 'Sem cobrança adicional informada' : `${p.estimatedCostMinor} (unidade monetária menor, reservado)`}</Field>
+          <Field label="Teto de tokens">{p.maxTokens === null ? 'Não se aplica' : p.maxTokens}</Field>
+        </dl>
+      );
+    }
+    case 'approvals.retention_change':
+      return (
+        <dl className="space-y-2" aria-label="Parâmetros exatos">
+          <Field label="Nova retenção">{presentation.params.days} dias</Field>
+        </dl>
+      );
+    case 'approvals.history_purge':
+      return (
+        <dl className="space-y-2" aria-label="Parâmetros exatos">
+          <Field label="Descartar histórico anterior a">{formatDateTime(presentation.params.before)}</Field>
+        </dl>
+      );
+  }
+}
+
 function ApprovalDetailPanel({ approvalId, onChanged }: { approvalId: string; onChanged: () => void }) {
   const [detail, setDetail] = useState<ApprovalDetail | null>(null);
   const [error, setError] = useState<ApiClientError | null>(null);
@@ -171,13 +259,20 @@ function ApprovalDetailPanel({ approvalId, onChanged }: { approvalId: string; on
   if (error) return <ErrorNotice error={error} />;
   if (!detail) return <p role="status" className="text-sm text-slate-600">Carregando detalhes…</p>;
 
-  // O navegador recalcula o resumo do que ESTÁ EXIBINDO; diferente do servidor → não decide.
-  let digestOk: boolean;
+  // O navegador recalcula os resumos do que ESTÁ EXIBINDO; diferente do servidor → não aprova.
+  // Correção R1: além do vínculo, os PARÂMETROS exatos precisam estar presentes, no formato
+  // fechado esperado e reproduzir o `paramsDigest`. Um resumo coincidente sozinho não basta.
+  let bindingOk: boolean;
   try {
-    digestOk = detail.presentable && approvalBindingDigest(detail.binding) === detail.bindingDigest;
+    bindingOk = approvalBindingDigest(detail.binding) === detail.bindingDigest;
   } catch {
-    digestOk = false;
+    bindingOk = false;
   }
+  const check = bindingOk
+    ? checkPresentation({ binding: detail.binding, bindingDigest: detail.bindingDigest, requestedBy: detail.requestedBy, presentation: detail.presentation })
+    : null;
+  const verified = check !== null && check.ok && detail.presentable && detail.presentationDigest === check.digest ? check : null;
+  const issue = verified ? null : (detail.presentationIssue ?? (check === null ? 'binding_mismatch' : check.ok ? 'presentation_mismatch' : check.reason));
   const b = detail.binding;
   const after = (updated: ApprovalDetail, message: string) => {
     setDetail(updated);
@@ -207,7 +302,6 @@ function ApprovalDetailPanel({ approvalId, onChanged }: { approvalId: string; on
         <Field label="Ref">{b.target.ref ? <code>{b.target.ref}</code> : 'Não se aplica'}</Field>
         <Field label="Parâmetros (resumo)">
           <code>{b.paramsDigest}</code>
-          <span className="block text-xs text-slate-500">Os parâmetros exatos estão representados apenas por este resumo; não há descrição legível confiável.</span>
         </Field>
         <Field label="Versão da política">
           <code>{b.policyVersion}</code>
@@ -220,15 +314,22 @@ function ApprovalDetailPanel({ approvalId, onChanged }: { approvalId: string; on
         </Field>
       </dl>
 
-      {digestOk ? (
-        <p role="status" className="text-xs text-emerald-800">
-          Apresentação conferida: o resumo calculado a partir destes detalhes é igual ao registrado no servidor.
-        </p>
-      ) : (
-        <div role="alert" className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">
-          Não foi possível validar a apresentação destes detalhes. A aprovação está bloqueada até que os detalhes possam ser conferidos.
-        </div>
-      )}
+      <section aria-label="Parâmetros da operação" className="space-y-2 rounded-md border border-slate-200 p-3">
+        <h3 className="text-sm font-semibold text-slate-900">Parâmetros exatos (somente leitura)</h3>
+        {verified ? (
+          <>
+            <PresentationView presentation={verified.presentation} />
+            <p role="status" className="text-xs text-emerald-800">
+              Parâmetros conferidos: estes valores reproduzem o resumo dos parâmetros e o vínculo registrados no servidor.
+            </p>
+          </>
+        ) : (
+          <div role="alert" className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+            Não foi possível apresentar e conferir os parâmetros exatos desta solicitação ({PRESENTATION_ISSUE_COPY[issue ?? 'presentation_invalid'] ?? 'motivo desconhecido'}). A
+            aprovação está bloqueada; você pode rejeitá-la.
+          </div>
+        )}
+      </section>
 
       <p className="text-xs text-slate-600">
         Aprovar autoriza somente esta operação exata, uma única vez, dentro do prazo. Não executa nada: a execução real está desligada nesta versão e capacidades
@@ -246,14 +347,17 @@ function ApprovalDetailPanel({ approvalId, onChanged }: { approvalId: string; on
           <ConfirmForm
             label="Aprovar"
             submitLabel="Aprovar esta operação"
-            disabled={!digestOk}
-            onConfirmed={async (proofId) => after((await approveApproval(detail.id, approvalBindingDigest(detail.binding), proofId)).approval, 'Solicitação aprovada. Nada foi executado.')}
+            disabled={verified === null}
+            onConfirmed={async (proofId) => {
+              if (!verified) return;
+              after((await approveApproval(detail.id, approvalBindingDigest(detail.binding), verified.digest, proofId)).approval, 'Solicitação aprovada. Nada foi executado.');
+            }}
           />
+          {/* Rejeitar nunca depende da apresentação: um pedido incompleto pode ser recusado com segurança. */}
           <ConfirmForm
             label="Rejeitar"
             submitLabel="Rejeitar"
-            disabled={!digestOk}
-            onConfirmed={async (proofId) => after((await rejectApproval(detail.id, approvalBindingDigest(detail.binding), proofId)).approval, 'Solicitação rejeitada.')}
+            onConfirmed={async (proofId) => after((await rejectApproval(detail.id, detail.bindingDigest, proofId)).approval, 'Solicitação rejeitada.')}
           />
         </div>
       )}

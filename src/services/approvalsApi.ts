@@ -49,8 +49,9 @@ export async function confirmIdentity(password: string): Promise<StepUpResponse>
   return body as unknown as StepUpResponse;
 }
 
-export async function approveApproval(approvalId: string, bindingDigest: string, proofId: string) {
-  return asDetail(await requestJson(`/api/approvals/${encodeURIComponent(approvalId)}/approve`, { post: { bindingDigest, proofId } }));
+/** Aprovar envia os DOIS resumos recalculados no navegador: vínculo e apresentação (vínculo + parâmetros exibidos). */
+export async function approveApproval(approvalId: string, bindingDigest: string, presentationDigest: string, proofId: string) {
+  return asDetail(await requestJson(`/api/approvals/${encodeURIComponent(approvalId)}/approve`, { post: { bindingDigest, presentationDigest, proofId } }));
 }
 
 export async function rejectApproval(approvalId: string, bindingDigest: string, proofId: string) {

@@ -21,7 +21,8 @@ import { createSandboxService } from '../sandbox/service.ts';
 import { createSimulatedProvider } from '../sandbox/simulatedProvider.ts';
 import { TEST_ADMIN_PASSWORD, testPasswordHash } from '../test/authFixtures.ts';
 import { bindingDigest, paramsDigestOf } from './binding.ts';
-import type { ApprovalBinding } from './contracts.ts';
+import { approvalPresentationDigest, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
+import type { ApprovalBinding, LedgerApproval } from './contracts.ts';
 import { createPasswordConfirmer, createStepUpRegistry, type IdentityContext } from './identity.ts';
 import { createEnvKeyProvider } from './keyProvider.ts';
 import { createMaintenanceScheduler } from './maintenance.ts';
@@ -37,6 +38,11 @@ const MIN = 60_000;
 const VERSION = DEFAULT_POLICY.version;
 const CTX: IdentityContext = { userId: 'admin', sessionKey: createHash('sha256').update('session').digest('hex') };
 const HUMAN: ControllerActor = { kind: 'human', id: 'admin' };
+/** Resumo da apresentação (vínculo + parâmetros entregues pelo componente real), como o navegador envia. */
+const pd = (a: LedgerApproval) => {
+  expect(a.presentation).toBeDefined();
+  return approvalPresentationDigest(a.bindingDigest, a.presentation as ApprovalPresentation);
+};
 
 const roots: string[] = [];
 const stores: ApprovalStore[] = [];
@@ -143,7 +149,7 @@ async function setup(options: { realCatalog?: boolean; provider?: SandboxProvide
   const approvePending = async () => {
     const pending = service.list('admin').filter((a) => a.state === 'pending');
     expect(pending).toHaveLength(1);
-    return service.decide({ ownerId: 'admin', approvalId: pending[0].id, decision: 'approve', bindingDigest: pending[0].bindingDigest, proofId: await proof(), identity: CTX });
+    return service.decide({ ownerId: 'admin', approvalId: pending[0].id, decision: 'approve', bindingDigest: pending[0].bindingDigest, presentationDigest: pd(pending[0]), proofId: await proof(), identity: CTX });
   };
   const sandboxBody = () => ({
     projectId: P1,
@@ -244,8 +250,24 @@ describe('sandbox (#021) com o gate da #011', () => {
     await expect(ctx.sandbox.request('admin', ctx.sandboxBody())).rejects.toMatchObject({ code: 'capability_unavailable' });
     expect(ctx.service.list('admin').filter((a) => a.state === 'pending')).toEqual([]);
     // Mesmo com uma aprovação concedida e reservada para sandbox.execute, a política diz UNAVAILABLE.
-    const binding: ApprovalBinding = { action: 'sandbox.execute', projectId: P1, resource: { type: 'task', id: T1 }, target: { sha: SHA, ref: null }, subject: { kind: 'agent', id: 'claude-code' }, paramsDigest: 'sandbox:x', policyVersion: VERSION };
-    await ctx.service.request({ ownerId: 'admin', requestedBy: 'sandbox', binding });
+    const params = {
+      requestId: '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+      repository: REPO,
+      network: { default: 'deny', allow: [] },
+      credentials: { scopes: ['repo.read'], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
+      limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
+      inputs: [],
+    };
+    const binding: ApprovalBinding = {
+      action: 'sandbox.execute',
+      projectId: P1,
+      resource: { type: 'task', id: T1 },
+      target: { sha: SHA, ref: null },
+      subject: { kind: 'agent', id: 'claude-code' },
+      paramsDigest: paramsDigestOf('sandbox', params),
+      policyVersion: VERSION,
+    };
+    await ctx.service.request({ ownerId: 'admin', requestedBy: 'sandbox', binding, presentation: { kind: 'sandbox', params } });
     const approved = await ctx.approvePending();
     const reservation = await ctx.service.reserve({ ownerId: 'admin', approvalId: approved.id, component: 'policy', binding });
     const evaluation = evaluatePolicy(
@@ -458,7 +480,9 @@ describe('persistência e manutenção (grupo D)', () => {
     stores.push(flaky);
     const service = createApprovalService({ store: flaky, identity: ctx.identity, policyVersion: VERSION, now: () => START });
     fail = true;
-    await expect(service.decide({ ownerId: 'admin', approvalId: pending.id, decision: 'approve', bindingDigest: pending.bindingDigest, proofId: await ctx.proof(), identity: CTX })).rejects.toBeTruthy();
+    await expect(
+      service.decide({ ownerId: 'admin', approvalId: pending.id, decision: 'approve', bindingDigest: pending.bindingDigest, presentationDigest: pd(pending), proofId: await ctx.proof(), identity: CTX }),
+    ).rejects.toBeTruthy();
     expect(flaky.status().state).toBe('degraded');
     expect(service.get('admin', pending.id)!.state).toBe('pending');
   });

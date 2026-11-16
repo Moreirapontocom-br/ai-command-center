@@ -115,6 +115,10 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
     title: 'Detalhes divergentes',
     description: 'Os detalhes exibidos não correspondem à solicitação registrada. Recarregue antes de decidir.',
   },
+  approval_presentation_invalid: {
+    title: 'Parâmetros não conferidos',
+    description: 'Os parâmetros exatos desta solicitação não puderam ser apresentados e conferidos. Aprovar está bloqueado; você pode rejeitá-la.',
+  },
   approval_blocked: {
     title: 'Bloqueio de emergência ativo',
     description: 'Nenhuma aprovação de execução pode ser concedida ou usada enquanto o bloqueio estiver ativo.',

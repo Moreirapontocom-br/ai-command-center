@@ -13,9 +13,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { approvalBindingDigest } from '../../shared/approvalDigest.ts';
+import { approvalPresentationDigest, checkPresentation, type ApprovalPresentation } from '../../shared/approvalPresentation.ts';
 import type { ApprovalDetail, ApprovalListResponse } from '../../shared/contracts.ts';
 import { bindingDigest, paramsDigestOf } from '../approvals/binding.ts';
-import type { ApprovalBinding } from '../approvals/contracts.ts';
+import type { ApprovalBinding, LedgerApproval } from '../approvals/contracts.ts';
 import { createPasswordConfirmer, createStepUpRegistry, type IdentityContext } from '../approvals/identity.ts';
 import { createEnvKeyProvider } from '../approvals/keyProvider.ts';
 import { createApprovalService } from '../approvals/service.ts';
@@ -36,6 +37,18 @@ const MIN = 60_000;
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 const VERSION = DEFAULT_POLICY.version;
+const TASK = '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b';
+/** Parâmetros exatos do sandbox (correção R1); `n` distingue dois conjuntos de parâmetros. */
+const sandboxParams = (n = 1) => ({
+  requestId: n === 1 ? '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' : '8b7c6d5e-4f3a-4b2c-9d1e-0f9a8b7c6d5e',
+  repository: 'Moreirapontocom-br/ai-command-center',
+  network: { default: 'deny', allow: n === 1 ? [] : ['registry.npmjs.org'] },
+  credentials: { scopes: ['repo.read'], ttlSeconds: 600, productionSecrets: 'denied', productionDatabase: 'denied' },
+  limits: { timeoutSeconds: 600, cpu: 1, memoryMb: 512, diskMb: 1024 },
+  inputs: [{ kind: 'issue', ref: 'acc#11', trust: 'untrusted' }],
+});
+/** Resumo da apresentação (vínculo + parâmetros) como o navegador envia ao aprovar. */
+const pd = (a: Pick<LedgerApproval, 'bindingDigest' | 'presentation'>) => (a.presentation ? approvalPresentationDigest(a.bindingDigest, a.presentation as ApprovalPresentation) : 'f'.repeat(64));
 
 const servers: Server[] = [];
 const stores: ApprovalStore[] = [];
@@ -163,22 +176,43 @@ async function startApp(options: { approvals?: boolean; releaseBarrier?: boolean
   const agentBinding = (overrides: Partial<ApprovalBinding> = {}): ApprovalBinding => ({
     action: 'sandbox.execute',
     projectId: project.id,
-    resource: { type: 'task', id: '6f1e8b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b' },
+    resource: { type: 'task', id: TASK },
     target: { sha: SHA_A, ref: null },
     subject: { kind: 'agent', id: 'claude-code' },
-    paramsDigest: 'sandbox:params-1',
+    paramsDigest: paramsDigestOf('sandbox', sandboxParams(1)),
     policyVersion: VERSION,
     ...overrides,
   });
-  const requestApproval = (binding = agentBinding()) => service!.request({ ownerId: 'admin', requestedBy: 'sandbox', binding });
+  const mergeParams = () => ({
+    projectId: project.id,
+    taskId: TASK,
+    agentId: 'claude-code',
+    action: 'repo.merge',
+    mode: 'subscription_assisted',
+    durationSeconds: 60,
+    estimatedCostMinor: null,
+    maxTokens: null,
+  });
+  const mergeBinding = () => agentBinding({ action: 'repo.merge', resource: { type: 'task', id: TASK }, paramsDigest: paramsDigestOf('admission', mergeParams()) });
+  /** O componente real entrega os parâmetros exatos cujo resumo está no vínculo (apresentação). */
+  const presentationFor = (binding: ApprovalBinding) => {
+    if (binding.action !== 'sandbox.execute') return { requestedBy: 'limits', presentation: { kind: 'admission', params: mergeParams() } };
+    const params = [sandboxParams(1), sandboxParams(2)].find((p) => paramsDigestOf('sandbox', p) === binding.paramsDigest);
+    return { requestedBy: 'sandbox', presentation: params ? { kind: 'sandbox', params } : undefined };
+  };
+  const requestApproval = (binding = agentBinding()) => service!.request({ ownerId: 'admin', binding, ...presentationFor(binding) });
   async function detail(cookie: string, id: string): Promise<ApprovalDetail> {
     const reply = await get(`/api/approvals/${id}`, cookie);
     expect(reply.status).toBe(200);
     return reply.json().approval;
   }
+  /** Como o navegador: recalcula os resumos a partir do que o servidor exibiu e envia ambos. */
   async function decide(cookie: string, id: string, verb: 'approve' | 'reject') {
     const shown = await detail(cookie, id);
-    return post(`/api/approvals/${id}/${verb}`, { bindingDigest: approvalBindingDigest(shown.binding), proofId: await proofId(cookie) }, cookie);
+    if (verb === 'reject') return post(`/api/approvals/${id}/reject`, { bindingDigest: shown.bindingDigest, proofId: await proofId(cookie) }, cookie);
+    const check = checkPresentation({ binding: shown.binding, bindingDigest: approvalBindingDigest(shown.binding), requestedBy: shown.requestedBy, presentation: shown.presentation });
+    const presentationDigest = check.ok ? check.digest : 'f'.repeat(64);
+    return post(`/api/approvals/${id}/approve`, { bindingDigest: approvalBindingDigest(shown.binding), presentationDigest, proofId: await proofId(cookie) }, cookie);
   }
   const auditFile = () => readFile(join(root, 'data', 'audit.json'), 'utf8');
   /** Reinício do servidor: reabre o armazenamento (nova época, N1) com um núcleo novo. */
@@ -188,7 +222,7 @@ async function startApp(options: { approvals?: boolean; releaseBarrier?: boolean
     service = createApprovalService({ store, identity: identity!, policyVersion: VERSION, now, monotonicNow: () => clock.mono });
     runtime!.service = service;
   }
-  return { call, post, get, login, proof, proofId, requestApproval, agentBinding, detail, decide, svc: () => service!, st: () => store!, restart, advance, logLines, auditFile, project, root };
+  return { call, post, get, login, proof, proofId, requestApproval, agentBinding, mergeBinding, sandboxParams, detail, decide, svc: () => service!, st: () => store!, restart, advance, logLines, auditFile, project, root };
 }
 
 describe('autenticação, CSRF e identidade (grupo A)', () => {
@@ -197,7 +231,7 @@ describe('autenticação, CSRF e identidade (grupo A)', () => {
     const request = await app.requestApproval();
     expect((await app.get('/api/approvals', null)).status).toBe(401);
     expect((await app.get(`/api/approvals/${request.id}`, 'acc_session=invalido')).status).toBe(401);
-    const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId: 'x'.repeat(43) }, null);
+    const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId: 'x'.repeat(43) }, null);
     expect(reply.status).toBe(401);
     expect((await app.post('/api/approvals/step-up', { password: TEST_ADMIN_PASSWORD }, 'acc_session=' + 'A'.repeat(43))).status).toBe(401);
     expect(app.svc().get('admin', request.id)!.state).toBe('pending');
@@ -208,7 +242,7 @@ describe('autenticação, CSRF e identidade (grupo A)', () => {
     const cookie = await app.login();
     const request = await app.requestApproval();
     const path = `/api/approvals/${request.id}/approve`;
-    const body = JSON.stringify({ bindingDigest: request.bindingDigest, proofId: 'x'.repeat(43) });
+    const body = JSON.stringify({ bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId: 'x'.repeat(43) });
     const base = { cookie, 'content-type': 'application/json' };
     expect((await app.call(path, { method: 'POST', headers: base, body })).status).toBe(403);
     expect((await app.call(path, { method: 'POST', headers: { ...base, origin: 'http://evil.example' }, body })).status).toBe(403);
@@ -225,15 +259,15 @@ describe('autenticação, CSRF e identidade (grupo A)', () => {
     const request = await app.requestApproval();
     const proofId = await app.proofId(cookie);
     for (const extra of [{ userId: 'claude-code' }, { approvedBy: { kind: 'human', id: 'admin' } }, { ownerId: 'admin' }, { admin: true }, { decision: 'approve' }]) {
-      const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId, ...extra }, cookie);
+      const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId, ...extra }, cookie);
       expect(reply.status).toBe(400);
     }
     expect((await app.post('/api/approvals/step-up', { password: TEST_ADMIN_PASSWORD, userId: 'admin' }, cookie)).status).toBe(400);
     expect((await app.post('/api/approvals/step-up', ['x'], cookie)).status).toBe(400);
     expect((await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: 'nao-hex', proofId }, cookie)).status).toBe(400);
-    expect((await app.post('/api/approvals/nao-uuid/approve', { bindingDigest: request.bindingDigest, proofId }, cookie)).status).toBe(404);
+    expect((await app.post('/api/approvals/nao-uuid/approve', { bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId }, cookie)).status).toBe(404);
     // Cabeçalhos "de identidade" são ignorados: a decisão é sempre da pessoa da sessão.
-    const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId }, cookie, { 'x-user-id': 'claude-code', 'x-approved-by': 'gemini' });
+    const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId }, cookie, { 'x-user-id': 'claude-code', 'x-approved-by': 'gemini' });
     expect(reply.status).toBe(200);
     expect(reply.json().approval).toMatchObject({ state: 'approved', decidedBy: { kind: 'human', id: 'admin' } });
   });
@@ -272,7 +306,7 @@ describe('autenticação, CSRF e identidade (grupo A)', () => {
 
     const expired = await app.proofId(cookie);
     app.advance(5 * MIN);
-    const late = await app.post(`/api/approvals/${a.id}/approve`, { bindingDigest: a.bindingDigest, proofId: expired }, cookie);
+    const late = await app.post(`/api/approvals/${a.id}/approve`, { bindingDigest: a.bindingDigest, presentationDigest: pd(a), proofId: expired }, cookie);
     expect(late.status).toBe(403);
     expect(late.json().error.code).toBe('confirmation_required');
 
@@ -285,14 +319,14 @@ describe('autenticação, CSRF e identidade (grupo A)', () => {
     // Prova obtida na sessão A, apresentada pela sessão B (novo login revoga A).
     const fromA = await app.proofId(cookie);
     cookie = await app.login();
-    const other = await app.post(`/api/approvals/${b.id}/approve`, { bindingDigest: b.bindingDigest, proofId: fromA }, cookie);
+    const other = await app.post(`/api/approvals/${b.id}/approve`, { bindingDigest: b.bindingDigest, presentationDigest: pd(b), proofId: fromA }, cookie);
     expect(other.status).toBe(403);
     expect(other.json().error.code).toBe('confirmation_required');
 
     const beforeLogout = await app.proofId(cookie);
     expect((await app.post('/api/auth/logout', {}, cookie)).status).toBe(200);
     cookie = await app.login();
-    expect((await app.post(`/api/approvals/${b.id}/approve`, { bindingDigest: b.bindingDigest, proofId: beforeLogout }, cookie)).status).toBe(403);
+    expect((await app.post(`/api/approvals/${b.id}/approve`, { bindingDigest: b.bindingDigest, presentationDigest: pd(b), proofId: beforeLogout }, cookie)).status).toBe(403);
     expect(app.svc().get('admin', b.id)!.state).toBe('pending');
   });
 });
@@ -361,7 +395,7 @@ describe('aprovações pelo administrador (grupo B)', () => {
   it('expiração: merge vale 15 min; execução 1 h; pedido pendente vence em 24 h e não pode mais ser aprovado', async () => {
     const app = await startApp();
     let cookie = await app.login();
-    const merge = await app.requestApproval(app.agentBinding({ action: 'repo.merge', resource: { type: 'pull_request', id: '43' } }));
+    const merge = await app.requestApproval(app.mergeBinding());
     const approved = await app.decide(cookie, merge.id, 'approve');
     expect(approved.json().approval).toMatchObject({ class: 'merge', validUntil: '2026-11-15T12:15:00.000Z' });
     app.advance(15 * MIN);
@@ -385,10 +419,10 @@ describe('aprovações pelo administrador (grupo B)', () => {
     expect((await app.detail(cookie, first.id)).state).toBe('superseded');
     expect((await app.decide(cookie, first.id, 'approve')).status).toBe(409);
     // O navegador apresentou outro vínculo (ex.: SHA antigo): o servidor recusa.
-    const wrong = await app.post(`/api/approvals/${second.id}/approve`, { bindingDigest: first.bindingDigest, proofId: await app.proofId(cookie) }, cookie);
+    const wrong = await app.post(`/api/approvals/${second.id}/approve`, { bindingDigest: first.bindingDigest, presentationDigest: pd(first), proofId: await app.proofId(cookie) }, cookie);
     expect(wrong.status).toBe(409);
     expect(wrong.json().error.code).toBe('approval_binding_mismatch');
-    const third = await app.requestApproval(app.agentBinding({ target: { sha: SHA_B, ref: null }, paramsDigest: 'sandbox:params-2' }));
+    const third = await app.requestApproval(app.agentBinding({ target: { sha: SHA_B, ref: null }, paramsDigest: paramsDigestOf('sandbox', sandboxParams(2)) }));
     expect((await app.detail(cookie, second.id)).state).toBe('superseded');
     expect((await app.decide(cookie, third.id, 'approve')).status).toBe(200);
   });
@@ -398,9 +432,9 @@ describe('aprovações pelo administrador (grupo B)', () => {
     const cookie = await app.login();
     const missing = '0f8fad5b-d9cb-469f-a165-70867728950e';
     expect((await app.get(`/api/approvals/${missing}`, cookie)).status).toBe(404);
-    const other = await app.svc().request({ ownerId: 'user-b', requestedBy: 'sandbox', binding: app.agentBinding() });
+    const other = await app.svc().request({ ownerId: 'user-b', requestedBy: 'sandbox', binding: app.agentBinding(), presentation: { kind: 'sandbox', params: sandboxParams(1) } });
     expect((await app.get(`/api/approvals/${other.id}`, cookie)).status).toBe(404);
-    const reply = await app.post(`/api/approvals/${other.id}/approve`, { bindingDigest: other.bindingDigest, proofId: await app.proofId(cookie) }, cookie);
+    const reply = await app.post(`/api/approvals/${other.id}/approve`, { bindingDigest: other.bindingDigest, presentationDigest: pd(other), proofId: await app.proofId(cookie) }, cookie);
     expect(reply.status).toBe(404);
     expect(app.svc().get('user-b', other.id)!.state).toBe('pending');
     expect((await app.get('/api/approvals', cookie)).json().approvals.some((a: { id: string }) => a.id === other.id)).toBe(false);
@@ -506,7 +540,7 @@ describe('histórico, preservação, retenção e tentativas (grupos B/D)', () =
     expect(list.subsystem.state).toBe('unavailable');
     expect(list.approvals).toEqual([]);
     expect((await app.get(`/api/approvals/${request.id}`, cookie)).status).toBe(503);
-    expect((await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId: 'x'.repeat(43) }, cookie)).status).toBe(503);
+    expect((await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId: 'x'.repeat(43) }, cookie)).status).toBe(503);
   });
 
   it('subsistema não configurado: lista informa indisponível e qualquer decisão responde 503', async () => {
@@ -530,8 +564,8 @@ describe('segurança e governança (grupos E/F)', () => {
     const request = await app.requestApproval();
     const proofReply = await app.proof(cookie);
     const proofId = proofReply.json().proofId as string;
-    const ok = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId }, cookie);
-    const reused = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId }, cookie);
+    const ok = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId }, cookie);
+    const reused = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: pd(request), proofId }, cookie);
     const wrong = await app.proof(cookie, 'senha-errada-canaria');
     const everything = [app.logLines.join('\n'), await app.auditFile(), ok.body, reused.body, wrong.body].join('\n');
     for (const secret of [TEST_ADMIN_PASSWORD, 'senha-errada-canaria', proofId, cookie.split('=')[1]]) expect(everything).not.toContain(secret);
@@ -556,5 +590,59 @@ describe('segurança e governança (grupos E/F)', () => {
     const agent = project.subjects.find((s: { subject: { id: string } }) => s.subject.id === 'claude-code');
     expect(agent.evaluations.find((e: { action: string }) => e.action === 'sandbox.execute').decision).not.toBe('ALLOW');
     expect((await app.get('/api/approvals', cookie)).json().subsystem.realExecutionEnabled).toBe(false);
+  });
+});
+
+describe('R1 — apresentação verificável dos parâmetros (HTTP)', () => {
+  it('detalhe traz os parâmetros exatos conferidos pelo servidor; o navegador reproduz os dois resumos', async () => {
+    const app = await startApp();
+    const cookie = await app.login();
+    const request = await app.requestApproval();
+    const shown = await app.detail(cookie, request.id);
+    expect(shown).toMatchObject({ presentable: true, presentationIssue: null, presentation: { kind: 'sandbox', params: sandboxParams(1) } });
+    const check = checkPresentation({ binding: shown.binding, bindingDigest: approvalBindingDigest(shown.binding), requestedBy: shown.requestedBy, presentation: shown.presentation });
+    expect(check).toMatchObject({ ok: true, digest: shown.presentationDigest });
+    expect(shown.presentationDigest).toBe(pd(request));
+  });
+
+  it('aprovar sem o resumo da apresentação → 400; com resumo de outros parâmetros → 409, nada aprovado', async () => {
+    const app = await startApp();
+    const cookie = await app.login();
+    const request = await app.requestApproval();
+    const missing = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, proofId: await app.proofId(cookie) }, cookie);
+    expect(missing.status).toBe(400);
+    const other = approvalPresentationDigest(request.bindingDigest, { kind: 'sandbox', params: sandboxParams(2) } as ApprovalPresentation);
+    for (const presentationDigest of [other, request.bindingDigest]) {
+      const reply = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest, proofId: await app.proofId(cookie) }, cookie);
+      expect(reply.status).toBe(409);
+      expect(reply.json().error.code).toBe('approval_presentation_invalid');
+    }
+    expect(app.svc().get('admin', request.id)!.state).toBe('pending');
+  });
+
+  it('pedido sem parâmetros apresentados: exibido como não conferível, aprovar 409, rejeitar 200', async () => {
+    const app = await startApp();
+    const cookie = await app.login();
+    const request = await app.svc().request({ ownerId: 'admin', requestedBy: 'sandbox', binding: app.agentBinding() });
+    const shown = await app.detail(cookie, request.id);
+    expect(shown).toMatchObject({ presentable: false, presentation: null, presentationDigest: null, presentationIssue: 'presentation_missing' });
+    // O cliente tenta "adivinhar" os parâmetros e calcular um resumo coincidente: continua recusado.
+    const guessed = approvalPresentationDigest(request.bindingDigest, { kind: 'sandbox', params: sandboxParams(1) } as ApprovalPresentation);
+    const approve = await app.post(`/api/approvals/${request.id}/approve`, { bindingDigest: request.bindingDigest, presentationDigest: guessed, proofId: await app.proofId(cookie) }, cookie);
+    expect(approve.status).toBe(409);
+    expect(approve.json().error.code).toBe('approval_presentation_invalid');
+    expect(app.svc().get('admin', request.id)!.state).toBe('pending');
+    const reject = await app.decide(cookie, request.id, 'reject');
+    expect(reject.status).toBe(200);
+    expect(reject.json().approval.state).toBe('rejected');
+  });
+
+  it('os valores dos parâmetros não vão para logs nem para a auditoria', async () => {
+    const app = await startApp();
+    const cookie = await app.login();
+    const request = await app.requestApproval(app.agentBinding({ paramsDigest: paramsDigestOf('sandbox', sandboxParams(2)) }));
+    expect((await app.decide(cookie, request.id, 'approve')).status).toBe(200);
+    const recorded = [app.logLines.join('\n'), await app.auditFile()].join('\n');
+    for (const value of [sandboxParams(2).requestId, 'registry.npmjs.org', 'acc#11']) expect(recorded).not.toContain(value);
   });
 });

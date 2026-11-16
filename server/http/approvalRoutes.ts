@@ -16,6 +16,7 @@ import {
   type StepUpResponse,
 } from '../../shared/contracts.ts';
 import { bindingDigest } from '../approvals/binding.ts';
+import { verifyApprovalPresentation } from '../approvals/presentation.ts';
 import { ApprovalError, HISTORY_RETENTION_DAYS, HOLD_NOTE_MAX, type LedgerApproval, type LedgerAttempt } from '../approvals/contracts.ts';
 import type { IdentityContext, StepUpRegistry } from '../approvals/identity.ts';
 import type { ApprovalService } from '../approvals/service.ts';
@@ -118,6 +119,7 @@ export function publicCode(code: string): ApiErrorCode {
   if (code === 'killswitch_engaged') return 'approval_blocked';
   if (['approval_expired'].includes(code)) return 'approval_expired';
   if (['binding_mismatch', 'binding_changed', 'policy_version_mismatch'].includes(code)) return 'approval_binding_mismatch';
+  if (code.startsWith('presentation_')) return 'approval_presentation_invalid';
   if (code === 'invalid_transition') return 'approval_conflict';
   if (code.startsWith('invalid_') || ['hold_note_too_long', 'action_not_approvable', 'missing_sha', 'use_owner_confirmation'].includes(code)) return 'bad_request';
   if (code.startsWith('store_') || code.startsWith('key_') || ['history_full', 'mac_invalid', 'document_invalid'].includes(code)) return 'approvals_unavailable';
@@ -187,17 +189,24 @@ export function createApprovalRoutes(deps: {
   });
 
   function detail(runtime: ApprovalsRuntime, a: LedgerApproval): ApprovalDetail {
-    let presentable: boolean;
+    let bindingOk: boolean;
     try {
-      presentable = bindingDigest(a.binding) === a.bindingDigest;
+      bindingOk = bindingDigest(a.binding) === a.bindingDigest;
     } catch {
-      presentable = false;
+      bindingOk = false;
     }
+    // Correção R1: os parâmetros só são exibidos se o SERVIDOR conseguir conferi-los contra o
+    // `paramsDigest`; inválidos/ausentes não aparecem (nem como "quase certos").
+    const presented = bindingOk ? verifyApprovalPresentation(a) : null;
+    const ok = presented !== null && presented.ok;
     return {
       ...summary(a, clock()),
       binding: structuredClone(a.binding),
       bindingDigest: a.bindingDigest,
-      presentable,
+      presentable: ok,
+      presentation: presented?.ok ? structuredClone(presented.presentation) : null,
+      presentationDigest: presented?.ok ? presented.digest : null,
+      presentationIssue: presented === null ? 'binding_mismatch' : presented.ok ? null : presented.reason,
       decidedBy: a.decidedBy ? { ...a.decidedBy } : null,
       confirmationMethod: a.confirmation?.method ?? null,
       attempts: runtime.service.attemptsOf(a.ownerId, a.id).map(attemptView),
@@ -400,9 +409,13 @@ export function createApprovalRoutes(deps: {
         const body =
           verb === 'revoke'
             ? object(await io.readJsonBody(req, MAX_BODY_BYTES), ['proofId'])
-            : object(await io.readJsonBody(req, MAX_BODY_BYTES), ['bindingDigest', 'proofId']);
+            : verb === 'approve'
+              ? object(await io.readJsonBody(req, MAX_BODY_BYTES), ['bindingDigest', 'presentationDigest', 'proofId'])
+              : object(await io.readJsonBody(req, MAX_BODY_BYTES), ['bindingDigest', 'proofId']);
         const proofId = proofOf(body);
         if (verb !== 'revoke' && (typeof body.bindingDigest !== 'string' || !DIGEST.test(body.bindingDigest))) fail('bad_request');
+        // Aprovar exige o resumo da apresentação (vínculo + parâmetros exibidos), recalculado no navegador.
+        if (verb === 'approve' && (typeof body.presentationDigest !== 'string' || !DIGEST.test(body.presentationDigest))) fail('bad_request');
         const existing = rt.service.status().state === 'unavailable' ? null : rt.service.get(ownerId, id);
         const projectId = ownedProject(session, existing?.binding.projectId ?? null);
         const context = { operation: verb, ...(existing ? { policyAction: existing.binding.action } : {}) };
@@ -412,9 +425,19 @@ export function createApprovalRoutes(deps: {
             if (!existing) fail('not_found');
             // Apresentação não verificável → nunca decide (o navegador também bloqueia).
             if (verb === 'approve' && bindingDigest(existing!.binding) !== existing!.bindingDigest) fail('approval_binding_mismatch');
+            // O núcleo confere de novo (autoridade final) dentro da gravação; aqui só recusa cedo.
+            if (verb === 'approve' && !verifyApprovalPresentation(existing!).ok) fail('approval_presentation_invalid');
             return verb === 'revoke'
               ? rt.service.revoke({ ownerId, approvalId: id, proofId, identity: ctx })
-              : rt.service.decide({ ownerId, approvalId: id, decision: verb as 'approve' | 'reject', bindingDigest: body.bindingDigest as string, proofId, identity: ctx });
+              : rt.service.decide({
+                  ownerId,
+                  approvalId: id,
+                  decision: verb as 'approve' | 'reject',
+                  bindingDigest: body.bindingDigest as string,
+                  presentationDigest: verb === 'approve' ? (body.presentationDigest as string) : null,
+                  proofId,
+                  identity: ctx,
+                });
           });
           await mirror({ action: 'approval.decision', actor, ownerId, projectId, resource: { type: 'approval', id }, outcome: 'success', context: { ...context, to: updated.state } });
           deps.logger.log('info', 'Decisão sobre aprovação', { event: `approval_${verb}`, approvalId: id });

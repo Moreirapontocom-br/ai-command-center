@@ -73,6 +73,7 @@ export const ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   approval_conflict: 'A solicitação não está em um estado que permita esta operação.',
   approval_expired: 'A solicitação ou aprovação expirou.',
   approval_binding_mismatch: 'Os detalhes apresentados não correspondem à solicitação registrada.',
+  approval_presentation_invalid: 'Os parâmetros da solicitação não puderam ser apresentados e conferidos; a aprovação está bloqueada (rejeitar continua possível).',
   approval_blocked: 'Bloqueio de emergência ativo: nenhuma aprovação de execução pode ser concedida ou usada neste escopo.',
   internal: 'Erro interno do servidor.',
 };
@@ -114,6 +115,7 @@ export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
   approval_conflict: 409,
   approval_expired: 409,
   approval_binding_mismatch: 409,
+  approval_presentation_invalid: 409,
   approval_blocked: 423,
   internal: 500,
 };

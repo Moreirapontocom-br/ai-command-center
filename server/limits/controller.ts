@@ -388,9 +388,15 @@ export function createLimitsController(options: LimitsControllerOptions) {
     }
   }
 
+  /** Parâmetros exatos da admissão (pedido completo, sem a chave idempotente do chamador). */
+  function admissionParams(input: AdmissionRequestInput) {
+    const { idempotencyKey: _key, ...params } = input; // eslint-disable-line @typescript-eslint/no-unused-vars
+    return params;
+  }
+
   /** Vínculo exato (#011) de uma ação de agente nesta admissão (parâmetros = pedido completo). */
   function admissionBinding(input: AdmissionRequestInput, action: PolicyAction) {
-    const { idempotencyKey: _key, ...params } = input; // eslint-disable-line @typescript-eslint/no-unused-vars
+    const params = admissionParams(input);
     return {
       action,
       projectId: input.projectId,
@@ -408,10 +414,12 @@ export function createLimitsController(options: LimitsControllerOptions) {
   };
 
   /** Reserva (uso único) a aprovação concedida para o vínculo; recusa se ainda pendente. */
-  async function reserveFor(ownerId: string, binding: ReturnType<typeof admissionBinding>) {
+  async function reserveFor(ownerId: string, input: AdmissionRequestInput, binding: ReturnType<typeof admissionBinding>) {
     const approvals = coordinator();
-    // Mesmo vínculo → mesmo pedido (idempotente): a pessoa o vê na interface de aprovações.
-    const request = await approvals.request({ ownerId, requestedBy: 'limits', binding });
+    // Mesmo vínculo → mesmo pedido (idempotente): a pessoa o vê na interface de aprovações, com
+    // os parâmetros exatos (apresentação verificável, #011 R1).
+    const presentation = { kind: 'admission' as const, params: structuredClone(admissionParams(input)) };
+    const request = await approvals.request({ ownerId, requestedBy: 'limits', binding, presentation });
     if (request.state === 'pending') throw new LimitsError('approval_pending');
     if (request.state !== 'approved') throw new LimitsError('approval_invalid');
     return approvals.reserve({ ownerId, approvalId: request.id, component: 'limits', binding });
@@ -707,7 +715,7 @@ export function createLimitsController(options: LimitsControllerOptions) {
       const reservations: Array<{ key: 'action' | 'spend'; attemptId: string; grant: ApprovalGrant }> = [];
       try {
         for (const { key, action } of pending) {
-          const reservation = await reserveFor(ownerId, admissionBinding(input, action));
+          const reservation = await reserveFor(ownerId, input, admissionBinding(input, action));
           if (!reservation.grant) throw new LimitsError('approval_invalid');
           reservations.push({ key, attemptId: reservation.attemptId, grant: reservation.grant });
         }

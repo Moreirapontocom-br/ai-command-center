@@ -7,6 +7,7 @@ import { LoginPage } from './features/auth/LoginPage';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { GitHubDataProvider } from './features/github/GitHubDataProvider';
 import { BranchesPage, IssuesPage, PullRequestsPage } from './features/github/GitHubPages';
+import { ApprovalsPage } from './features/approvals/ApprovalsPage';
 import { AuditPage } from './features/audit/AuditPage';
 import { PolicyPage } from './features/policy/PolicyPage';
 import { ProjectsPage } from './features/projects/ProjectsPage';
@@ -24,6 +25,7 @@ const VIEWS: Record<ViewId, ComponentType> = {
   agentes: AgentsPage,
   tarefas: TasksPage,
   politicas: PolicyPage,
+  aprovacoes: ApprovalsPage,
   auditoria: AuditPage,
 };
 

@@ -53,6 +53,13 @@ Os dados fictícios são identificados de três formas:
 - Novas telas: Issues, Pull Requests e Branches; o Dashboard ganhou a seção "Repositório no GitHub".
 - Dados reais e demonstrativos ficam separados: issues não viram `Task` nem recebem agente.
 
+## Issue #011 — aprovações humanas (resumo)
+
+- **Núcleo** (`server/approvals/`, PR 1): estado mínimo e histórico oficial com HMAC, anchor em outro diretório, escritor único, época por reinício (N1), reserva de uso único com recibo de 30 s e barreiras de emergência duráveis.
+- **Integração** (PR 2): rotas do administrador em `server/http/approvalRoutes.ts` (sessão + CSRF + confirmação por senha de uso único, presa à sessão, 5 min); o sandbox (#021) e o controlador (#022) pedem aprovações e só aceitam grants com recibo válido do verificador confiável; a política (#020) segue pura, e a exceção `owner_confirmation` depende de atestado do servidor.
+- **Interface:** página *Aprovações* (lista, detalhe do vínculo exato com resumo recalculado no navegador, parâmetros exatos somente leitura conferidos contra o `paramsDigest` — correção R1, `shared/approvalPresentation.ts` —, aprovar/rejeitar/revogar com senha, histórico). Aprovar exige os parâmetros apresentados e o `presentationDigest`; rejeitar nunca depende deles.
+- **Limites intencionais:** nenhuma rota executa, admite, inicia sandbox, aciona ou libera o kill switch (N9) ou altera limites; execução real continua desligada. A barreira global inicial permanece ativa: sua liberação operacional depende de etapa futura aprovada pelo Product Owner (R2). Detalhes em `docs/IMPLEMENTATION_REPORT_011_PR2.md`.
+
 ## Fora do escopo (não implementado)
 
 Integrações com provedores de IA, escrita no GitHub, webhooks, banco de dados, autenticação de usuários, execução automática de agentes e deploy público.

@@ -253,8 +253,19 @@ export function mockApi(routes: {
   audit?: Reply[];
   /** `GET /api/projects/:id/policy`. */
   policy?: Reply[];
+  /** Issue #011: `GET /api/approvals`, detalhe, histórico, confirmação de identidade e decisões (POST). */
+  approvals?: Reply[];
+  approvalDetail?: Reply[];
+  approvalHistory?: Reply[];
+  stepUp?: Reply[];
+  approvalAction?: Reply[];
 }) {
   const queues = {
+    approvals: [...(routes.approvals ?? [])],
+    approvalDetail: [...(routes.approvalDetail ?? [])],
+    approvalHistory: [...(routes.approvalHistory ?? [])],
+    stepUp: [...(routes.stepUp ?? [])],
+    approvalAction: [...(routes.approvalAction ?? [])],
     policy: [...(routes.policy ?? [])],
     audit: [...(routes.audit ?? [json({ events: [], nextBefore: null, retention: { droppedEvents: 0 } })])],
     tasks: [...(routes.tasks ?? [json(taskList())])],
@@ -273,7 +284,17 @@ export function mockApi(routes: {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     void init; // registrado em `mock.calls` para as asserções
     const url = String(input);
-    const queue = url.startsWith('/api/auth/session')
+    const queue = url.startsWith('/api/approvals')
+      ? url === '/api/approvals'
+        ? queues.approvals
+        : url === '/api/approvals/step-up'
+          ? queues.stepUp
+          : url.startsWith('/api/approvals/history') && init?.method !== 'POST'
+            ? queues.approvalHistory
+            : init?.method === 'POST'
+              ? queues.approvalAction
+              : queues.approvalDetail
+      : url.startsWith('/api/auth/session')
       ? queues.session
       : url.startsWith('/api/auth/login')
         ? queues.login

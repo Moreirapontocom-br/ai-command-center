@@ -1,4 +1,4 @@
-import type { AgentRef, PolicyAction } from '../../shared/contracts.ts';
+import type { AgentRef, ApprovalGrant, PolicyAction } from '../../shared/contracts.ts';
 
 /**
  * Contratos do controlador de orçamento, quotas e kill switch (Issue #022) — camada PREPARATÓRIA.
@@ -183,6 +183,12 @@ export interface ApprovalVerifier {
   /** `simulated`: apenas para testes; nunca deve ser configurado em produção. */
   readonly kind: 'simulated' | 'trusted';
   verify(approval: HumanApproval): ApprovalVerification;
+  /**
+   * Origem de um `ApprovalGrant` da #020 (Issue #011, PR 2). Sem este método, grants recebidos
+   * pelo controlador ou pelo sandbox são recusados (`approval_verifier_unavailable`): campos
+   * válidos nunca bastam.
+   */
+  verifyGrant?(grant: ApprovalGrant): ApprovalVerification;
 }
 
 /** Relato OFICIAL de indisponibilidade temporária (só restringe; nunca torna algo disponível). */

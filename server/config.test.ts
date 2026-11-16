@@ -3,7 +3,7 @@ import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { createFineGrainedTokenProvider } from './auth/credentials.ts';
 import type { ExecFileLike } from './auth/ghCli.ts';
-import { ConfigError, loadConfig } from './config.ts';
+import { ConfigError, loadConfig, resolveApprovalsConfig } from './config.ts';
 import { createConsoleLogger, redact } from './logger.ts';
 import { hashPassword } from './auth/password.ts';
 import { TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD, testPasswordHash } from './test/authFixtures.ts';
@@ -242,3 +242,45 @@ describe('administrador do ACC (Issue #003, PR 2)', () => {
     }
   });
 });
+
+describe('aprovações (Issue #011, PR 2)', () => {
+  const abs = (name: string) => (process.platform === 'win32' ? `C:\\acc-test\\${name}` : `/acc-test/${name}`);
+  it('sem variáveis: desligado; o restante da configuração continua válido', () => {
+    expect(loadConfig({}).approvals).toEqual({ state: 'disabled' });
+  });
+
+  it('configuração completa: caminhos absolutos, anchor separado, chave por ambiente ou arquivo, inicialização explícita', () => {
+    expect(resolveApprovalsConfig({ ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('b'), ACC_APPROVAL_KEY: 'k'.repeat(64) })).toMatchObject({
+      state: 'configured',
+      key: { kind: 'env' },
+      initialize: 'never',
+    });
+    expect(resolveApprovalsConfig({ ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('b'), ACC_APPROVAL_KEY_FILE: abs('key'), ACC_APPROVALS_INITIALIZE: 'if_absent' })).toMatchObject({
+      state: 'configured',
+      key: { kind: 'file' },
+      initialize: 'if_absent',
+    });
+  });
+
+  it('incompleta, ambígua ou insegura: inválida com motivo-token (nunca repete valores)', () => {
+    const cases: Array<[Record<string, string>, string]> = [
+      [{ ACC_APPROVAL_KEY: 'segredo-canario' }, 'directories_required'],
+      [{ ACC_APPROVALS_DIR: 'relativo', ACC_APPROVALS_ANCHOR_DIR: abs('b'), ACC_APPROVAL_KEY: 'x' }, 'directories_must_be_absolute'],
+      [{ ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('a'), ACC_APPROVAL_KEY: 'x' }, 'anchor_must_be_separate'],
+      [{ ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('b'), ACC_APPROVAL_KEY: 'x', ACC_APPROVAL_KEY_FILE: abs('k') }, 'key_source_ambiguous'],
+      [{ ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('b') }, 'key_required'],
+      [{ ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('b'), ACC_APPROVAL_KEY_FILE: 'k.txt' }, 'key_file_must_be_absolute'],
+      [{ ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('b'), ACC_APPROVAL_KEY: 'x', ACC_APPROVALS_INITIALIZE: 'sempre' }, 'initialize_invalid'],
+    ];
+    for (const [env, reason] of cases) {
+      const result = resolveApprovalsConfig(env);
+      expect(result).toEqual({ state: 'invalid', reason });
+      expect(JSON.stringify(result)).not.toContain('segredo-canario');
+    }
+  });
+
+  it('chave com prefixo VITE_ é recusada (seria exposta ao navegador)', () => {
+    expect(() => loadConfig({ VITE_ACC_APPROVAL_KEY: 'x' })).toThrow(ConfigError);
+  });
+});
+

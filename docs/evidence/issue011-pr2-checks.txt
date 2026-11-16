@@ -1,0 +1,29 @@
+# Issue #011 PR 2 — verificações
+
+$ npx tsc -b
+(sem erros)
+
+$ npx eslint .
+(sem problemas)
+
+$ npm run build
+dist/assets/index-ChAGrzV0.css   23.84 kB │ gzip:  5.37 kB
+dist/assets/index-DRC4BxbL.js   325.65 kB │ gzip: 95.66 kB
+
+✓ built in 256ms
+
+$ npm run check:secrets
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+$ npm run check:csp
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+$ npm run check:secrets:repo
+Nenhuma credencial encontrada (199 arquivo(s) versionado(s)).
+
+## Teste de fumaça: node server/index.ts (credenciais em branco, diretórios temporários)
+valid config: [{"event":"approvals_opened","state":"available","reason":"none","globalBarrier":true}] session route: 200 key in output: false
+ledger files: approvals-history.json,approvals-install.json,approvals-ledger.json,approvals.lock | anchor files: approvals-anchor.json,approvals-install.json
+dir inside Git/OneDrive: [{"event":"approvals_opened","state":"unavailable","reason":"path_in_synced_folder","globalBarrier":null}] session route: 200 repo path in output: false
+partial config: [{"event":"approvals_config_invalid","reason":"directories_required"}] session route: 200
+
+## Execução real
+13:export const REAL_EXECUTION_ENABLED = false as const;

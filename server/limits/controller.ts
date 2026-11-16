@@ -7,6 +7,8 @@ import {
   type PolicyActionInfo,
   type PolicyEvaluation,
 } from '../../shared/contracts.ts';
+import { paramsDigestOf } from '../approvals/binding.ts';
+import type { ApprovalCoordinator } from '../approvals/service.ts';
 import type { Logger } from '../logger.ts';
 import { DEFAULT_POLICY } from '../policy/defaultPolicy.ts';
 import { evaluatePolicy, type Policy } from '../policy/engine.ts';
@@ -102,6 +104,18 @@ export interface LimitsControllerOptions {
    * Os testes usam `createSimulatedApprovalVerifier()`, explícito e só para testes.
    */
   approvalVerifier?: ApprovalVerifier;
+  /**
+   * Núcleo de aprovações da Issue #011 (PR 2): pedidos, reserva de uso único e resultado. Sem ele,
+   * os métodos `*WithApproval` recusam (`approvals_unavailable`). O verificador entregue em
+   * `approvalVerifier` deve ser o confiável do mesmo núcleo (`approvals.verifierFor('limits')`).
+   */
+  approvals?: ApprovalCoordinator;
+  /**
+   * Chamado SINCRONAMENTE ao acionar o kill switch, antes de qualquer `await` (Issue #011, D6): a
+   * barreira do núcleo de aprovações revoga as aprovações de execução não usadas do escopo.
+   * Falha aqui nunca impede o acionamento (bloquear é a ação segura).
+   */
+  onKillSwitchEngaged?: (scope: KillSwitchScope, reason: string) => void;
   now?: () => number;
   generateId?: () => string;
   logger?: Logger;
@@ -354,7 +368,64 @@ export function createLimitsController(options: LimitsControllerOptions) {
     usedHumanApprovals.add(approval.id);
   }
 
-  return {
+  /**
+   * Origem de cada grant aceito pela política (Issue #011, PR 2). Roda DEPOIS de todas as demais
+   * verificações e imediatamente antes da reserva (sem `await`): o recibo de uso único do núcleo
+   * só é gasto quando a admissão de fato acontece. Sem verificador de grants → negado.
+   */
+  function verifyGrants(grants: ApprovalGrant[], ctx: { actor: string; projectId: string }) {
+    for (const grant of grants) {
+      const verifier = options.approvalVerifier;
+      if (!verifier || typeof verifier.verifyGrant !== 'function') deny('approval_verifier_unavailable', ctx);
+      let verification: ReturnType<ApprovalVerifier['verify']>;
+      try {
+        verification = verifier.verifyGrant(structuredClone(grant));
+      } catch {
+        verification = { authentic: false, reason: 'approval_verification_failed' };
+      }
+      if (!verification.authentic) deny('approval_not_authentic', ctx);
+      if (verification.approverId !== grant.approvedBy.id || isAgentId(verification.approverId)) deny('approver_identity_mismatch', ctx);
+    }
+  }
+
+  /** Parâmetros exatos da admissão (pedido completo, sem a chave idempotente do chamador). */
+  function admissionParams(input: AdmissionRequestInput) {
+    const { idempotencyKey: _key, ...params } = input; // eslint-disable-line @typescript-eslint/no-unused-vars
+    return params;
+  }
+
+  /** Vínculo exato (#011) de uma ação de agente nesta admissão (parâmetros = pedido completo). */
+  function admissionBinding(input: AdmissionRequestInput, action: PolicyAction) {
+    const params = admissionParams(input);
+    return {
+      action,
+      projectId: input.projectId,
+      resource: { type: 'task', id: input.taskId },
+      target: { sha: null, ref: null },
+      subject: { kind: 'agent' as const, id: input.agentId },
+      paramsDigest: paramsDigestOf('admission', params),
+      policyVersion: policy.version,
+    };
+  }
+
+  const coordinator = (): ApprovalCoordinator => {
+    if (!options.approvals) throw new LimitsError('approvals_unavailable');
+    return options.approvals;
+  };
+
+  /** Reserva (uso único) a aprovação concedida para o vínculo; recusa se ainda pendente. */
+  async function reserveFor(ownerId: string, input: AdmissionRequestInput, binding: ReturnType<typeof admissionBinding>) {
+    const approvals = coordinator();
+    // Mesmo vínculo → mesmo pedido (idempotente): a pessoa o vê na interface de aprovações, com
+    // os parâmetros exatos (apresentação verificável, #011 R1).
+    const presentation = { kind: 'admission' as const, params: structuredClone(admissionParams(input)) };
+    const request = await approvals.request({ ownerId, requestedBy: 'limits', binding, presentation });
+    if (request.state === 'pending') throw new LimitsError('approval_pending');
+    if (request.state !== 'approved') throw new LimitsError('approval_invalid');
+    return approvals.reserve({ ownerId, approvalId: request.id, component: 'limits', binding });
+  }
+
+  const api = {
     /**
      * Admite uma tarefa/execução se TODAS as verificações passarem. Idempotente pela chave do
      * chamador (por dono): o mesmo pedido devolve a mesma admissão, sem nova reserva.
@@ -432,6 +503,13 @@ export function createLimitsController(options: LimitsControllerOptions) {
         const providerCap = limits.budget.perProviderMinor[input.agentId];
         if (providerCap !== undefined && committed((a) => a.agentId === input.agentId) + estimate > providerCap) deny('provider_budget_exceeded', ctx);
       }
+
+      // Origem dos grants (#011): só o fluxo confiável emite; campos válidos não bastam.
+      const usedGrants = [actionEval.approvalId !== null ? approvals.action : null, spendEval && spendEval.approvalId !== null ? approvals.spend : null];
+      verifyGrants(
+        usedGrants.filter((g): g is ApprovalGrant => g !== null && g !== undefined),
+        ctx,
+      );
 
       // Tudo aprovado: consome aprovações (uso único) e registra a admissão com a reserva.
       const approvalIds = [actionEval.approvalId, spendEval?.approvalId ?? null].filter((id): id is string => id !== null);
@@ -563,6 +641,12 @@ export function createLimitsController(options: LimitsControllerOptions) {
       const state: KillSwitchState = { engaged: true, reason: safeReason, engagedAt: iso(), engagedBy: label };
       if (scope.kind === 'global') Object.assign(killGlobal, state);
       else killProjects.set(scope.projectId, state);
+      try {
+        options.onKillSwitchEngaged?.(structuredClone(scope), safeReason);
+      } catch {
+        // A barreira do núcleo falhou: o kill switch do controlador continua acionado (fail-closed).
+        audit({ event: 'killswitch_engage', actor: label, projectId, admissionId: null, decision: 'recorded', reason: 'approvals_barrier_failed' });
+      }
       audit({ event: 'killswitch_engage', actor: label, projectId, admissionId: null, decision: 'recorded', reason: safeReason });
 
       // Alvos: ativas no escopo E encerradas cuja interrupção nunca foi confirmada (pede de novo).
@@ -608,6 +692,99 @@ export function createLimitsController(options: LimitsControllerOptions) {
     },
 
     getLimits: (): ControllerLimits => structuredClone(limits),
+
+    /**
+     * Admissão com aprovação do fluxo confiável (Issue #011, PR 2). Sem aprovação necessária, é a
+     * admissão comum. Se a política exigir aprovação, o pedido é registrado no núcleo (visível ao
+     * PO) e, se já concedido, reservado (uso único) e entregue a `admit`, que verifica a origem
+     * pelo recibo. Falha depois da reserva: a aprovação continua consumida (nova tentativa exige
+     * nova aprovação) e a tentativa fica `failed`. Nunca torna disponível o que a política ou o
+     * catálogo declaram indisponível (UNAVAILABLE é recusado antes de qualquer pedido).
+     */
+    async admitWithApproval(ownerId: string, raw: unknown): Promise<Admission> {
+      try {
+        return api.admit(ownerId, raw);
+      } catch (error) {
+        if (!(error instanceof LimitsError) || !['approval_required', 'spend_approval_required'].includes(error.code)) throw error;
+      }
+      const input = parseAdmissionRequest(raw, limits);
+      const needed: Array<{ key: 'action' | 'spend'; action: PolicyAction }> = [{ key: 'action', action: input.action }];
+      if (input.mode === 'metered_api') needed.push({ key: 'spend', action: 'spend.create' });
+      // Só pede aprovação para o que de fato a exige (a política decide, sem aprovação).
+      const pending = needed.filter(({ action }) => policyCheck(ownerId, input, action, null).decision === 'REQUIRE_APPROVAL');
+      const reservations: Array<{ key: 'action' | 'spend'; attemptId: string; grant: ApprovalGrant }> = [];
+      try {
+        for (const { key, action } of pending) {
+          const reservation = await reserveFor(ownerId, input, admissionBinding(input, action));
+          if (!reservation.grant) throw new LimitsError('approval_invalid');
+          reservations.push({ key, attemptId: reservation.attemptId, grant: reservation.grant });
+        }
+      } catch (error) {
+        for (const r of reservations) await coordinator().recordOutcome({ attemptId: r.attemptId, outcome: 'failed', reason: 'admission_denied' }).catch(() => undefined);
+        throw error;
+      }
+      let admission: Admission;
+      try {
+        admission = api.admit(ownerId, raw, Object.fromEntries(reservations.map((r) => [r.key, r.grant])));
+      } catch (error) {
+        for (const r of reservations) await coordinator().recordOutcome({ attemptId: r.attemptId, outcome: 'failed', reason: 'admission_denied' }).catch(() => undefined);
+        throw error;
+      }
+      for (const r of reservations) await coordinator().recordOutcome({ attemptId: r.attemptId, outcome: 'succeeded' });
+      return admission;
+    },
+
+    /**
+     * Reativação com aprovação de CONFIGURAÇÃO do fluxo confiável (15 min, uso único). A
+     * aprovação nasce da confirmação do próprio PO (`confirmOwner`); nenhuma rota HTTP chama isto
+     * nesta fase (N9). Sucesso libera também a barreira durável do núcleo.
+     */
+    async releaseKillSwitchWithApproval(actor: ControllerActor, scope: KillSwitchScope, approvalId: string): Promise<KillSwitchState> {
+      if (actor?.kind !== 'human') throw new LimitsError('human_required');
+      const target = scope.kind === 'global' ? 'global' : scope.projectId;
+      const binding = {
+        action: 'killswitch.release' as const,
+        projectId: scope.kind === 'global' ? null : scope.projectId,
+        resource: { type: 'killswitch', id: target },
+        target: { sha: null, ref: null },
+        subject: { kind: 'human' as const, id: actor.id },
+        paramsDigest: paramsDigestOf('killswitch.release', { scope: target }),
+        policyVersion: policy.version,
+      };
+      const reservation = await coordinator().reserve({ ownerId: actor.id, approvalId, component: 'limits', binding });
+      try {
+        const state = api.releaseKillSwitch(actor, scope, reservation.humanApproval);
+        await coordinator().recordOutcome({ attemptId: reservation.attemptId, outcome: 'succeeded' });
+        return state;
+      } catch (error) {
+        await coordinator().recordOutcome({ attemptId: reservation.attemptId, outcome: 'failed', reason: 'release_denied' }).catch(() => undefined);
+        throw error;
+      }
+    },
+
+    /** Alteração de limites com aprovação de configuração do fluxo confiável (sem rota HTTP). */
+    async updateLimitsWithApproval(actor: ControllerActor, proposed: unknown, approvalId: string): Promise<ControllerLimits> {
+      if (actor?.kind !== 'human') throw new LimitsError('human_required');
+      const next = parseLimits(proposed);
+      const binding = {
+        action: 'limits.change' as const,
+        projectId: null,
+        resource: { type: 'limits', id: 'controller' },
+        target: { sha: null, ref: null },
+        subject: { kind: 'human' as const, id: actor.id },
+        paramsDigest: limitsFingerprint(next),
+        policyVersion: policy.version,
+      };
+      const reservation = await coordinator().reserve({ ownerId: actor.id, approvalId, component: 'limits', binding });
+      try {
+        const updated = api.updateLimits(actor, next, reservation.humanApproval);
+        await coordinator().recordOutcome({ attemptId: reservation.attemptId, outcome: 'succeeded' });
+        return updated;
+      } catch (error) {
+        await coordinator().recordOutcome({ attemptId: reservation.attemptId, outcome: 'failed', reason: 'limits_change_denied' }).catch(() => undefined);
+        throw error;
+      }
+    },
 
     /**
      * Relato OFICIAL de indisponibilidade temporária. Só restringe: não há relato que torne um
@@ -681,6 +858,7 @@ export function createLimitsController(options: LimitsControllerOptions) {
 
     auditTrail: (): ControllerAuditEntry[] => structuredClone(auditTrail),
   };
+  return api;
 }
 
 export type LimitsController = ReturnType<typeof createLimitsController>;

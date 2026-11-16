@@ -4,6 +4,7 @@ import {
   type PolicyAction,
   type PolicySubject,
 } from '../../shared/contracts.ts';
+import type { ApprovalPresentation } from '../../shared/approvalPresentation.ts';
 
 /**
  * Contratos do núcleo de aprovações humanas (Issue #011, PR 1) — camada DORMENTE.
@@ -161,6 +162,12 @@ export interface LedgerApproval {
   closedAt: string | null;
   closedReason: string | null;
   attemptId: string | null;
+  /**
+   * Parâmetros exatos, em formato fechado (correção R1), entregues pelo componente do servidor
+   * que pediu e conferidos contra o `paramsDigest` no pedido. Ausente em registros antigos (PR 1):
+   * esses pedidos só podem ser rejeitados.
+   */
+  presentation?: ApprovalPresentation;
 }
 
 export interface LedgerAttempt {

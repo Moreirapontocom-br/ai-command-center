@@ -42,7 +42,8 @@ function setup(
   // Verificador SIMULADO e explícito (o confiável é da #011). `noVerifier` reproduz a produção atual.
   const verifier = createSimulatedApprovalVerifier();
   const controller = createLimitsController({
-    approvalVerifier: options.noVerifier ? undefined : verifier,
+    // Grants da #020 também passam pelo dublê (o controlador nunca confia só nos campos, Issue #011).
+    approvalVerifier: options.noVerifier ? undefined : { id: verifier.id, kind: verifier.kind, verify: verifier.verify, verifyGrant: GRANTS.verifyGrant },
     projects: { get: (owner, id) => projects.get(`${owner}|${id}`) ?? null },
     tasks: { get: (owner, projectId, id) => (projects.has(`${owner}|${projectId}`) ? (tasks.find((t) => t.id === id && t.projectId === projectId) ?? null) : null) },
     policyCatalog: options.real ? undefined : testPolicyCatalog,
@@ -89,7 +90,11 @@ const subscription = (overrides: Record<string, unknown> = {}) => ({
 });
 const metered = (overrides: Record<string, unknown> = {}) => subscription({ mode: 'metered_api', estimatedCostMinor: 500, maxTokens: 20_000, ...overrides });
 
-const grant = (action: PolicyAction, overrides: Partial<ApprovalGrant> = {}): ApprovalGrant => ({
+/** Dublê (só testes) que "emite" os grants da #020 usados aqui; o real é o núcleo da #011. */
+const GRANTS = createSimulatedApprovalVerifier();
+const grant = (action: PolicyAction, overrides: Partial<ApprovalGrant> = {}): ApprovalGrant => GRANTS.issueGrant(forgedGrant(action, overrides));
+/** Grant montado pelo chamador, sem emissão (forjado). */
+const forgedGrant = (action: PolicyAction, overrides: Partial<ApprovalGrant> = {}): ApprovalGrant => ({
   id: `grant-${action}-${++keySeq}`,
   action,
   projectId: P1,

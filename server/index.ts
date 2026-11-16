@@ -1,6 +1,11 @@
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { createAuthService, DEFAULT_AUTH_LIMITS } from './auth/adminAuth.ts';
+import { createPasswordConfirmer, createStepUpRegistry } from './approvals/identity.ts';
+import { createEnvKeyProvider, createFileKeyProvider } from './approvals/keyProvider.ts';
+import { createMaintenanceScheduler } from './approvals/maintenance.ts';
+import { createApprovalService } from './approvals/service.ts';
+import { openApprovalStore, type ApprovalStore } from './approvals/store.ts';
+import { ADMIN_USER_ID, createAuthService, DEFAULT_AUTH_LIMITS } from './auth/adminAuth.ts';
 import { ConfigError, loadConfig } from './config.ts';
 import { CredentialError } from './auth/credentials.ts';
 import { GH_CLI_ERROR_MESSAGE } from './auth/ghCli.ts';
@@ -12,6 +17,8 @@ import { DataFileError } from './storage/jsonFile.ts';
 import { openTaskStore } from './tasks/taskStore.ts';
 import { createAuditSequence, openAuditLog } from './audit/auditLog.ts';
 import { createSnapshotService } from './snapshotService.ts';
+import type { ApprovalsRuntime } from './http/approvalRoutes.ts';
+import { DEFAULT_POLICY } from './policy/defaultPolicy.ts';
 
 const logger = createConsoleLogger();
 
@@ -71,7 +78,53 @@ try {
   process.exit(1);
 }
 
-const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, logger });
+// Aprovações humanas (Issue #011, PR 2). Qualquer problema deixa SÓ este subsistema indisponível
+// (nega tudo); o restante do ACC, que não depende dele, continua funcionando. Caminhos e chaves
+// nunca vão para o log: apenas o estado e o motivo-token.
+let approvals: ApprovalsRuntime | null = null;
+let approvalStore: ApprovalStore | null = null;
+if (config.approvals.state === 'invalid') {
+  logger.log('warn', 'Aprovações indisponíveis: configuração inválida.', { event: 'approvals_config_invalid', reason: config.approvals.reason });
+} else if (config.approvals.state === 'disabled') {
+  logger.log('warn', 'Aprovações não configuradas (ACC_APPROVALS_DIR, ACC_APPROVALS_ANCHOR_DIR e chave): subsistema indisponível.', { event: 'approvals_disabled' });
+} else {
+  const settings = config.approvals;
+  const environment = { env: process.env };
+  try {
+    approvalStore = await openApprovalStore({
+      approvalsDir: settings.approvalsDir,
+      anchorDir: settings.anchorDir,
+      keyProvider: settings.key.kind === 'env' ? createEnvKeyProvider(process.env) : createFileKeyProvider(settings.key.path, environment),
+      environment,
+      initialize: settings.initialize,
+    });
+    const identity = createStepUpRegistry({
+      confirmers: [createPasswordConfirmer(config.admin ? { userId: ADMIN_USER_ID, passwordHash: config.admin.passwordHash } : null)],
+    });
+    const service = createApprovalService({ store: approvalStore, identity, policyVersion: DEFAULT_POLICY.version });
+    approvals = { service, identity };
+    const status = service.status();
+    logger.log(status.state === 'available' ? 'info' : 'warn', 'Aprovações', {
+      event: 'approvals_opened',
+      state: status.state,
+      reason: status.reason ?? 'none',
+      // Indisponível: o ledger nem é lido (nada a informar além do motivo).
+      globalBarrier: status.state === 'unavailable' ? null : service.barriers().durable.global !== null,
+    });
+    // Manutenção periódica sem execuções simultâneas (expiração, compactação, retenção).
+    createMaintenanceScheduler({
+      run: async () => {
+        if (service.status().state === 'available') await service.sweep();
+      },
+      onError: (reason) => logger.log('warn', 'Falha na manutenção das aprovações', { event: 'approvals_maintenance_failed', reason }),
+    });
+  } catch {
+    approvals = null;
+    logger.log('error', 'Aprovações indisponíveis: falha ao abrir o armazenamento.', { event: 'approvals_open_failed' });
+  }
+}
+
+const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, approvals, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
 });
@@ -92,6 +145,13 @@ if (config.credentials?.kind === 'gh-cli') {
     'Modo gh-cli (somente desenvolvimento local): o token do GitHub CLI costuma ter permissões amplas, ' +
       'inclusive de escrita. O servidor continua restrito a leitura, loopback e consultas aprovadas.',
   );
+}
+
+// Encerramento: libera o bloqueio de escritor único do armazenamento de aprovações.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    void (approvalStore?.close() ?? Promise.resolve()).finally(() => process.exit(0));
+  });
 }
 
 server.listen(config.port, config.host, () => {

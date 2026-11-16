@@ -48,7 +48,7 @@ describe('superfície de escrita do servidor', () => {
     expect([...GH_AUTH_TOKEN_ARGS]).toEqual(['auth', 'token', '--hostname', 'github.com']);
   });
 
-  it('POST só em login/logout (Issue #003), projetos (Issue #004) e tarefas (Issue #005); o resto é GET/HEAD', () => {
+  it('POST só em login/logout (Issue #003), projetos (Issue #004), tarefas (Issue #005) e decisões de aprovação (Issue #011); o resto é GET/HEAD', () => {
     expect([...POST_ROUTES]).toEqual([
       '/api/auth/login',
       '/api/auth/logout',
@@ -57,7 +57,18 @@ describe('superfície de escrita do servidor', () => {
       '/api/projects/:id',
       '/api/projects/:id/tasks',
       '/api/projects/:id/tasks/:taskId',
+      '/api/approvals/step-up',
+      '/api/approvals/:id/approve',
+      '/api/approvals/:id/reject',
+      '/api/approvals/:id/revoke',
+      '/api/approvals/owner-confirmations',
+      '/api/approvals/attempts/:id/acknowledge',
+      '/api/approvals/history/holds',
+      '/api/approvals/history/holds/:id/remove',
+      '/api/approvals/history/purge',
     ]);
+    // Nenhuma rota executa, admite, inicia sandbox, faz merge/deploy, mexe em limites ou no kill switch (N9).
+    expect(POST_ROUTES.some((route) => /exec|run|sandbox|admission|admit|kill|barrier|release|limit|budget|quota|spend|merge|deploy|publish|secret|permission/.test(route))).toBe(false);
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
     for (const path of [
       '/api/status',
@@ -130,7 +141,7 @@ describe('superfície de escrita do servidor', () => {
     expect(POST_ROUTES.some((route) => /limit|budget|quota|kill|spend|admission/.test(route))).toBe(false);
   });
 
-  it('aprovações (Issue #011, PR 1): núcleo dormente, sem rede, sem execução, sem rota e sem verificador simulado', () => {
+  it('aprovações (Issue #011): núcleo sem rede, sem execução e sem verificador simulado; ligado só pelos pontos revisados', () => {
     const files = server.filter((f) => f.path.startsWith('server/approvals/'));
     expect(files.map((f) => f.path).sort()).toEqual([
       'server/approvals/binding.ts',
@@ -140,7 +151,9 @@ describe('superfície de escrita do servidor', () => {
       'server/approvals/identity.ts',
       'server/approvals/keyProvider.ts',
       'server/approvals/lock.ts',
+      'server/approvals/maintenance.ts',
       'server/approvals/paths.ts',
+      'server/approvals/presentation.ts',
       'server/approvals/service.ts',
       'server/approvals/store.ts',
     ]);
@@ -154,9 +167,23 @@ describe('superfície de escrita do servidor', () => {
     expect(filesMatching(files, /auth\/password|verifyPassword/)).toEqual(['server/approvals/identity.ts']);
     // O verificador entregue aos componentes é sempre o confiável.
     expect(files.find((f) => f.path === 'server/approvals/service.ts')!.code).toMatch(/kind: 'trusted' as const/);
-    // Dormente: nada fora de server/approvals o importa neste PR (a integração é o PR 2).
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts)/)).toEqual([]);
-    expect(POST_ROUTES.some((route) => /approv|step-up|stepup|confirm|barrier|kill/.test(route))).toBe(false);
+    // PR 2: só estes pontos revisados usam o núcleo — a configuração/abertura do servidor, as rotas
+    // de decisão do administrador e os componentes que pedem/consomem aprovações (#021/#022).
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts|maintenance|presentation)/).sort()).toEqual([
+      'server/http/approvalRoutes.ts',
+      'server/index.ts',
+      'server/limits/controller.ts',
+      'server/sandbox/service.ts',
+    ]);
+    // As rotas de aprovação não alcançam execução, sandbox, controlador nem verificador simulado.
+    const routes = server.find((f) => f.path === 'server/http/approvalRoutes.ts')!.code;
+    expect(routes).not.toMatch(/sandbox\/(service|simulatedProvider|provider)|limits\/(controller|providers|simulatedApprovalVerifier)|engageBarrier|releaseBarrier|recover\(|reserve\(|recordOutcome/);
+    // A configuração do PO pela web cobre só retenção e descarte do histórico (nunca kill switch/limites).
+    expect(routes).toMatch(/body\.operation !== 'approvals\.retention_change'/);
+    // Nenhuma rota de aprovação aciona ou libera o kill switch, nem recupera o armazenamento (N9).
+    expect(POST_ROUTES.filter((route) => route.startsWith('/api/approvals')).some((route) => /kill|barrier|release|recover|quarantine|limit|reserve|execute|step_up_bypass/.test(route))).toBe(false);
+    // Nenhum código do servidor importa o verificador simulado nem o provedor simulado do sandbox.
+    expect(filesMatching(server, /\/simulatedApprovalVerifier|\/simulatedProvider/)).toEqual([]);
   });
 
   it('auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006)', () => {
@@ -233,13 +260,18 @@ describe('frontend', () => {
     expect(filesMatching(frontend, /\bfetch\(/)).toEqual(['src/services/apiClient.ts']);
     expect(filesMatching(frontend, /method:\s*['"](?:PUT|PATCH|DELETE)/i)).toEqual([]);
     expect(filesMatching(frontend, /method:\s*['"]POST/)).toEqual(['src/services/apiClient.ts']);
-    // Quem envia corpo (`post:`) são só os clientes de autenticação e de projetos.
-    const writers = ['src/services/authApi.ts', 'src/services/projectsApi.ts', 'src/services/tasksApi.ts'];
+    // Quem envia corpo (`post:`) são só os clientes de autenticação, projetos, tarefas e aprovações.
+    const writers = ['src/services/approvalsApi.ts', 'src/services/authApi.ts', 'src/services/projectsApi.ts', 'src/services/tasksApi.ts'];
     expect(filesMatching(frontend, /\bpost:\s/)).toEqual(writers);
     const posted = writers.flatMap((path) => {
       const code = frontend.find((f) => f.path === path)!.code;
       return [...code.matchAll(/requestJson\(\s*(['`])([^'`]+)\1, \{ post:/g)].map((m) =>
-        m[2].replace('${encodeURIComponent(projectId)}', ':id').replace('${encodeURIComponent(taskId)}', ':taskId'),
+        m[2]
+          .replace('${encodeURIComponent(projectId)}', ':id')
+          .replace('${encodeURIComponent(taskId)}', ':taskId')
+          .replace('${encodeURIComponent(approvalId)}', ':id')
+          .replace('${encodeURIComponent(attemptId)}', ':id')
+          .replace('${encodeURIComponent(holdId)}', ':id'),
       );
     });
     expect(posted.sort()).toEqual([...POST_ROUTES].sort());

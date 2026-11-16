@@ -47,6 +47,54 @@ export interface ServerConfig {
   tasksFile: string;
   /** Registro de auditoria avulso (Issue #006), na mesma pasta. */
   auditFile: string;
+  /** Aprovações humanas (Issue #011, PR 2). Nunca contém a chave (só de onde lê-la). */
+  approvals: ApprovalsConfig;
+}
+
+/**
+ * Configuração do núcleo de aprovações (N1/N2):
+ * - `ACC_APPROVALS_DIR` e `ACC_APPROVALS_ANCHOR_DIR`: caminhos ABSOLUTOS e distintos, fora do Git e
+ *   de pastas sincronizadas (validados de novo, pelo caminho efetivo, ao abrir o armazenamento);
+ * - chave HMAC: `ACC_APPROVAL_KEY` (hex/base64, ≥ 32 bytes) OU `ACC_APPROVAL_KEY_FILE` (absoluto);
+ * - `ACC_APPROVALS_INITIALIZE=if_absent`: primeira instalação EXPLÍCITA (começa com barreira global).
+ *
+ * Sem nenhuma variável: `disabled` (o restante do ACC funciona; aprovações indisponíveis).
+ * Configuração incompleta ou ambígua: `invalid` com motivo-token (subsistema indisponível; os valores
+ * nunca são repetidos em mensagens nem em logs).
+ */
+export type ApprovalsConfig =
+  | { state: 'disabled' }
+  | { state: 'invalid'; reason: string }
+  | {
+      state: 'configured';
+      approvalsDir: string;
+      anchorDir: string;
+      key: { kind: 'env' } | { kind: 'file'; path: string };
+      initialize: 'never' | 'if_absent';
+    };
+
+export function resolveApprovalsConfig(env: Record<string, string | undefined>): ApprovalsConfig {
+  const value = (name: string) => env[name]?.trim() ?? '';
+  const dir = value('ACC_APPROVALS_DIR');
+  const anchor = value('ACC_APPROVALS_ANCHOR_DIR');
+  const hasKey = value('ACC_APPROVAL_KEY') !== '';
+  const keyFile = value('ACC_APPROVAL_KEY_FILE');
+  const initialize = value('ACC_APPROVALS_INITIALIZE');
+  if (dir === '' && anchor === '' && !hasKey && keyFile === '' && initialize === '') return { state: 'disabled' };
+  if (dir === '' || anchor === '') return { state: 'invalid', reason: 'directories_required' };
+  if (!isAbsolute(dir) || !isAbsolute(anchor)) return { state: 'invalid', reason: 'directories_must_be_absolute' };
+  if (resolve(dir).toLowerCase() === resolve(anchor).toLowerCase()) return { state: 'invalid', reason: 'anchor_must_be_separate' };
+  if (hasKey && keyFile !== '') return { state: 'invalid', reason: 'key_source_ambiguous' };
+  if (!hasKey && keyFile === '') return { state: 'invalid', reason: 'key_required' };
+  if (keyFile !== '' && !isAbsolute(keyFile)) return { state: 'invalid', reason: 'key_file_must_be_absolute' };
+  if (initialize !== '' && initialize !== 'if_absent') return { state: 'invalid', reason: 'initialize_invalid' };
+  return {
+    state: 'configured',
+    approvalsDir: resolve(dir),
+    anchorDir: resolve(anchor),
+    key: hasKey ? { kind: 'env' } : { kind: 'file', path: resolve(keyFile) },
+    initialize: initialize === 'if_absent' ? 'if_absent' : 'never',
+  };
 }
 
 export class ConfigError extends Error {
@@ -210,5 +258,6 @@ export function loadConfig(
     projectsFile: join(dataDir, 'projects.json'),
     tasksFile: join(dataDir, 'tasks.json'),
     auditFile: join(dataDir, 'audit.json'),
+    approvals: resolveApprovalsConfig(env),
   };
 }

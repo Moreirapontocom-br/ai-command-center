@@ -85,6 +85,12 @@ function hasSyncSegment(path: string): boolean {
 export async function secureDirectory(path: string, environment: PathEnvironment): Promise<string> {
   const platform = environment.platform ?? process.platform;
   if (typeof path !== 'string' || path.trim() === '' || !isAbsolute(path)) throw new ApprovalError('path_not_absolute');
+  const roots = await resolvedSyncRoots(environment.env);
+  // PR 2: as mesmas verificações ANTES de criar, para que um caminho recusado nunca deixe uma
+  // pasta vazia dentro do repositório ou de uma pasta sincronizada. Depois de criar, tudo é
+  // verificado de novo pelo caminho real (links e junções).
+  if (hasSyncSegment(path) || roots.some((root) => isInside(path, root, platform))) throw new ApprovalError('path_in_synced_folder');
+  if (await insideGitRepository(path)) throw new ApprovalError('path_in_git_repository');
   await mkdir(path, { recursive: true, mode: 0o700 });
   let real: string;
   try {
@@ -94,7 +100,6 @@ export async function secureDirectory(path: string, environment: PathEnvironment
   }
   const info = await stat(real);
   if (!info.isDirectory()) throw new ApprovalError('path_not_directory');
-  const roots = await resolvedSyncRoots(environment.env);
   for (const candidate of [path, real]) {
     if (hasSyncSegment(candidate) || roots.some((root) => isInside(candidate, root, platform))) throw new ApprovalError('path_in_synced_folder');
     if (await insideGitRepository(candidate)) throw new ApprovalError('path_in_git_repository');

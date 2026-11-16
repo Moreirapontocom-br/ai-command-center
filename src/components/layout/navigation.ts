@@ -14,5 +14,6 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'agentes', label: 'Agentes' },
   { id: 'tarefas', label: 'Tarefas' },
   { id: 'politicas', label: 'Políticas' },
+  { id: 'aprovacoes', label: 'Aprovações' },
   { id: 'auditoria', label: 'Auditoria' },
 ];

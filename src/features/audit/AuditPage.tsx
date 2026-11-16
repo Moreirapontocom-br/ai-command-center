@@ -28,6 +28,11 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'auth.login_rejected': 'Login recusado',
   'access.denied': 'Acesso negado',
   'policy.decision': 'Decisão de política (bloqueio)',
+  'approval.confirmation': 'Confirmação de identidade (aprovações)',
+  'approval.decision': 'Decisão sobre aprovação',
+  'approval.attempt_acknowledged': 'Tentativa indeterminada reconhecida',
+  'approval.configuration': 'Configuração do histórico de aprovações',
+  'approval.hold': 'Preservação de registros de aprovação',
 };
 
 const OUTCOME_LABELS: Record<AuditOutcome, string> = { success: 'Sucesso', failure: 'Falha', blocked: 'Bloqueado' };

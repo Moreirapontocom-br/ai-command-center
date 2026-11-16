@@ -1,3 +1,5 @@
+import type { ApprovalPresentation, PresentationIssue } from './approvalPresentation.ts';
+
 /**
  * Contrato entre o servidor intermediário (`server/`) e o frontend (`src/`).
  *
@@ -146,6 +148,15 @@ export type ApiErrorCode =
   | 'policy_denied'
   | 'approval_required'
   | 'capability_unavailable'
+  | 'approvals_unavailable'
+  | 'confirmation_failed'
+  | 'confirmation_required'
+  | 'confirmation_locked'
+  | 'approval_conflict'
+  | 'approval_expired'
+  | 'approval_binding_mismatch'
+  | 'approval_presentation_invalid'
+  | 'approval_blocked'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -379,6 +390,12 @@ export const AUDIT_ACTIONS = [
   'auth.login_rejected',
   'access.denied',
   'policy.decision',
+  // Issue #011 (PR 2): espelho, na auditoria da #006, do histórico oficial de aprovações.
+  'approval.confirmation',
+  'approval.decision',
+  'approval.attempt_acknowledged',
+  'approval.configuration',
+  'approval.hold',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -402,7 +419,7 @@ export interface AuditEvent {
   action: AuditAction;
   actor: AuditActor;
   projectId: string | null;
-  resource: { type: 'project' | 'task' | 'session' | 'route'; id: string | null };
+  resource: { type: 'project' | 'task' | 'session' | 'route' | 'approval'; id: string | null };
   outcome: AuditOutcome;
   context: Record<string, AuditContextValue>;
 }
@@ -535,4 +552,144 @@ export interface PolicyMatrixResponse {
   policyVersion: string;
   projectId: string;
   subjects: Array<{ subject: PolicySubject; assigned: boolean; evaluations: PolicyEvaluation[] }>;
+}
+
+/**
+ * Aprovações humanas (Issue #011, PR 2) — formato das respostas da API. A autoridade é sempre o
+ * servidor: o navegador só exibe o vínculo, confere o resumo e envia a decisão com a prova de
+ * confirmação de identidade. Aprovar NUNCA executa nada nem torna disponível uma capacidade
+ * indisponível; a execução real continua desligada.
+ */
+export const APPROVAL_STATE_NAMES = ['pending', 'approved', 'rejected', 'withdrawn', 'expired', 'superseded', 'consumed', 'revoked'] as const;
+export type ApprovalStateName = (typeof APPROVAL_STATE_NAMES)[number];
+export const APPROVAL_CLASS_NAMES = ['execution', 'configuration', 'merge', 'publication', 'cost'] as const;
+export type ApprovalClassName = (typeof APPROVAL_CLASS_NAMES)[number];
+export const APPROVAL_ATTEMPT_STATE_NAMES = ['reserved', 'succeeded', 'failed', 'indeterminate', 'acknowledged_by_owner'] as const;
+export type ApprovalAttemptStateName = (typeof APPROVAL_ATTEMPT_STATE_NAMES)[number];
+export const APPROVAL_HOLD_REASONS = ['incident', 'security_review', 'dispute', 'legal'] as const;
+export type ApprovalHoldReason = (typeof APPROVAL_HOLD_REASONS)[number];
+
+/**
+ * Vínculo exato (o que o administrador confere). Os parâmetros entram pelo `paramsDigest`; os
+ * valores legíveis vêm em `ApprovalDetail.presentation` (correção R1), conferidos contra ele.
+ */
+export interface ApprovalBindingView {
+  action: string;
+  projectId: string | null;
+  resource: { type: string; id: string };
+  target: { sha: string | null; ref: string | null };
+  subject: PolicySubject;
+  paramsDigest: string;
+  policyVersion: string;
+}
+
+export interface ApprovalSummary {
+  id: string;
+  class: ApprovalClassName;
+  method: ApprovalMethod;
+  action: string;
+  projectId: string | null;
+  /** Nome do projeto do próprio dono (exibição); `null` sem projeto ou se ele não existe mais. */
+  projectName: string | null;
+  subject: PolicySubject;
+  requestedBy: { kind: 'system' | 'human'; id: string };
+  state: ApprovalStateName;
+  requestedAt: string;
+  pendingUntil: string;
+  validUntil: string | null;
+  decidedAt: string | null;
+  closedReason: string | null;
+}
+
+export interface ApprovalAttemptView {
+  id: string;
+  component: string;
+  state: ApprovalAttemptStateName;
+  reservedAt: string;
+  outcomeAt: string | null;
+  reason: string | null;
+}
+
+export interface ApprovalHoldView {
+  id: string;
+  approvalId: string;
+  reason: ApprovalHoldReason;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface ApprovalDetail extends ApprovalSummary {
+  binding: ApprovalBindingView;
+  /** Resumo canônico do vínculo; o navegador recalcula e só permite decidir se for igual. */
+  bindingDigest: string;
+  /**
+   * `true` só se o vínculo estiver íntegro E os parâmetros exatos estiverem presentes, no formato
+   * esperado e coerentes com o `paramsDigest` (verificado pelo servidor). `false` → aprovar é
+   * recusado; rejeitar continua possível.
+   */
+  presentable: boolean;
+  /**
+   * Parâmetros exatos (formato fechado, somente leitura; nunca segredos), entregues pelo
+   * componente do servidor que pediu. `null` se ausentes ou inválidos.
+   */
+  presentation: ApprovalPresentation | null;
+  /** Resumo vínculo + parâmetros calculado pelo servidor; o navegador recalcula e envia ao aprovar. */
+  presentationDigest: string | null;
+  /** Motivo (token) quando a apresentação não pôde ser verificada; `null` se válida. */
+  presentationIssue: PresentationIssue | 'binding_mismatch' | null;
+  decidedBy: { kind: 'human'; id: string } | null;
+  confirmationMethod: string | null;
+  attempts: ApprovalAttemptView[];
+  holds: ApprovalHoldView[];
+}
+
+export interface ApprovalSubsystemStatus {
+  state: 'available' | 'degraded' | 'unavailable';
+  /** Motivo como token (ex.: `not_configured`, `store_not_initialized`); nunca caminhos ou segredos. */
+  reason: string | null;
+  barriers: { global: boolean; projects: string[] };
+  /** Sempre `false` nesta versão: aprovar não executa nada. */
+  realExecutionEnabled: false;
+}
+
+export interface ApprovalListResponse {
+  subsystem: ApprovalSubsystemStatus;
+  approvals: ApprovalSummary[];
+}
+
+export interface ApprovalDetailResponse {
+  approval: ApprovalDetail;
+}
+
+export type ApprovalHistoryItemView =
+  | {
+      kind: 'entry';
+      seq: number;
+      at: string;
+      event: string;
+      actor: { kind: 'human' | 'system'; id: string };
+      approvalId: string | null;
+      attemptId: string | null;
+      projectId: string | null;
+      class: ApprovalClassName | null;
+      action: string | null;
+      from: string | null;
+      to: string | null;
+      reason: string | null;
+    }
+  | { kind: 'tombstone'; firstSeq: number; seq: number; purged: number };
+
+export interface ApprovalHistoryResponse {
+  retentionDays: number;
+  retentionLimits: { min: number; max: number };
+  /** Mais recentes primeiro. */
+  items: ApprovalHistoryItemView[];
+  nextBefore: number | null;
+  holds: ApprovalHoldView[];
+}
+
+/** Prova de confirmação de identidade: uso único, presa à sessão, válida por no máximo 5 minutos. */
+export interface StepUpResponse {
+  proofId: string;
+  expiresAt: string;
 }

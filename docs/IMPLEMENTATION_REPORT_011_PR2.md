@@ -200,7 +200,7 @@ Todos exigem a sessão do administrador. Os POST passam antes por Host/Origin, `
 
 | Solicitante | Ação | Tipo de apresentação | Campos exibidos |
 |---|---|---|---|
-| componente `sandbox` (#021) | `sandbox.execute` | `sandbox` | id da solicitação, repositório, rede (padrão negar + hosts), escopos e validade da credencial, segredos e banco de produção (sempre negados), limites, entradas não confiáveis |
+| componente `sandbox` (#021) | `sandbox.execute` | `sandbox` | a especificação completa (correção R3, seção 13): id da solicitação, projeto, tarefa, agente, workspace, git (repositório, SHA base, branch de trabalho, main não gravável), rede (padrão negar + hosts), escopos e validade da credencial, segredos e banco de produção (sempre negados), limites, entradas não confiáveis |
 | componente `limits` (#022) | qualquer ação da #020 admitida (inclusive `spend.create` em modo cobrado) | `admission` | ação, agente, tarefa, projeto, modo de uso, duração, custo estimado, teto de tokens |
 | PO (confirmação própria) | `approvals.retention_change` / `approvals.history_purge` | o próprio nome | dias de retenção / data de corte |
 | qualquer outro | — | nenhum | **nunca aprovável** (`presentation_unsupported`) |
@@ -267,4 +267,64 @@ Todos exigem a sessão do administrador. Os POST passam antes por Host/Origin, `
 - **Nenhuma rota de liberação do kill switch** foi criada neste PR. O teste estrutural (`security.test.ts`) continua garantindo que nenhuma rota POST de aprovações contém `kill`, `barrier`, `release`, `recover`, `limit`, `reserve` ou `execute`, e que as rotas não chamam `releaseBarrier`.
 - **A barreira global inicial continua ativa** em toda instalação nova (PR 1). Com ela, aprovações de execução são recusadas (423 `approval_blocked`), enquanto rejeitar, retenção, preservação e descarte continuam funcionando.
 - **A liberação operacional depende de etapa futura aprovada pelo Product Owner.** Este PR não define como, quando nem por qual interface a barreira será liberada, e não antecipa nada da Issue #012. Os métodos internos `releaseKillSwitchWithApproval` e `releaseBarrier` continuam sem rota (N9).
+
+## 13. Correção R3 — coerência semântica completa dos pedidos de sandbox
+
+**Problema apontado.** Em `consistent()`, o tipo `sandbox` só verificava a ação, o tipo de sujeito e a presença de repositório × SHA. A apresentação podia ser criptograficamente válida (resumo igual ao `paramsDigest`) e, ainda assim, não comparar projeto, tarefa, agente, id da solicitação, SHA e ref com o vínculo.
+
+**Contrato ampliado (fechado, estrito).** Os parâmetros do sandbox passam a ser a **especificação inteira** que seria autorizada (`SandboxSpec`), com exceção de `ownerId`:
+
+```
+requestId, projectId, taskId, agentId,
+workspace { id, exclusive: true, hostPathAccess: 'none' },
+git { repository, baseSha, workBranch, mainWritable: false } | null,
+network, credentials, limits, inputs
+```
+
+O resumo (`paramsDigest`) é calculado pelo sandbox sobre esse mesmo objeto (`paramsOf(spec)`). Não foi acrescentado nenhum campo livre nem segredo. Todos os campos são identificadores com padrão fixo, literais ou números limitados, e qualquer campo ausente, extra ou fora do formato invalida a apresentação.
+
+**Regras de coerência.** A apresentação só é aceita se todas valerem:
+
+| # | Exigência | Regra |
+|---|---|---|
+| 1 | Projeto | `binding.projectId === params.projectId` |
+| 2 | Tarefa | `binding.resource` é `{type:'task', id: params.taskId}` |
+| 3 | Agente | `binding.subject` é `{kind:'agent', id: params.agentId}` |
+| 4 | Ação | `sandbox.execute`. Outra ação com tipo `sandbox` → `presentation_unsupported` |
+| 5 | Id da solicitação | `workspace.id === ws-<requestId sem hífens>` e `git.workBranch === acc/<agente>/<tarefa[0..8]>-<requestId[0..8]>`, que são as mesmas derivações do #021 (um teste compara com `workBranchFor`/`assertWorkspaceId`) |
+| 6 | Repositório, SHA e ref | sem git: `target.sha` e `target.ref` nulos. Com git: `target.sha === git.baseSha` e `target.ref === git.workBranch`. `mainWritable` sempre `false` |
+| 7 | Parâmetros = objeto autorizado | o resumo cobre a especificação inteira. Na autorização, `authorizeWithApproval` recalcula o vínculo a partir do `record.spec` e a reserva exige o mesmo `bindingDigest`. Um teste de integração mostra que a apresentação gravada é exatamente `record.spec` sem `ownerId` |
+| 8 | Nada omitido ou substituído | formato fechado. A credencial vale exatamente o tempo da execução (`ttlSeconds === limits.timeoutSeconds`). Escrita na branch exige repositório |
+
+**Também fortalecido.**
+- **Admissão (#022):** o vínculo deve ter `target` vazio, porque a admissão não tem SHA nem ref.
+- **Configuração do PO:** o recurso deve ser `approvals:history`, com `target` vazio.
+
+**Limitações e efeitos explícitos, sem garantias inventadas.**
+
+1. **`ownerId` não é exibido nem vai para o resumo.** Ele é vinculado pelo núcleo: o pedido é gravado com o `ownerId` da sessão do componente, e `get`, `decide` e `reserve` recusam outro dono. Hoje o dono é sempre o próprio administrador da sessão.
+2. **Unicidade do id da solicitação.** O resumo prende a aprovação ao `requestId`. Um segundo pedido idêntico gera outro id, portanto outro vínculo, e substitui o anterior (`superseded`), como mostra o teste de integração.
+
+   O formato de vínculo do PR 1 não tem campo próprio para o id. Ele fica protegido pelo resumo e pelas derivações conferidas (workspace e branch), e não por um campo do vínculo. Se o PO quiser o id no próprio vínculo, isso exige uma nova versão do formato do vínculo: `acc-approval-binding:v2`, com migração.
+3. **Merge e publicação com SHA ainda não têm componente que os peça.** Pela regra 6 da admissão, esses vínculos não são apresentáveis e, portanto, **não podem ser aprovados** (falha fechada). Rejeitar continua possível.
+
+   O teste HTTP de expiração por classe passou a usar a classe `cost` (15 min) e a provar que um merge sem apresentação é bloqueado. Quando existir um componente de merge, ele precisará de um contrato próprio de apresentação (PR, SHA, base), revisado separadamente.
+
+**Testes adicionados (+14):**
+
+- **`server/approvals/presentation.test.ts` (13), grupo "R3":**
+  - derivações iguais às do servidor;
+  - fluxo legítimo com e sem repositório;
+  - projeto, tarefa (inclusive recurso que não é tarefa), agente, ação e id da solicitação divergentes;
+  - SHA divergente no vínculo e na especificação;
+  - ref divergente, branch não derivada e `main`;
+  - repositório incompatível (git ausente com SHA, SHA sem git, `mainWritable`, repositório inválido, escrita sem repositório);
+  - workspace não exclusivo ou com acesso ao host, credencial além da execução e omissão de cada um dos 10 campos;
+  - no núcleo: seis pedidos criptograficamente válidos e semanticamente incompatíveis são recusados sem criar nada;
+  - admissão com alvo e configuração com recurso errado.
+- **`server/approvals/integration.test.ts` (1):** com o sandbox real, a apresentação é exatamente `record.spec` sem `ownerId`. O vínculo é coerente. Um novo pedido substitui o anterior, e o aprovado é autorizado.
+
+**Fixtures ajustadas (sem enfraquecer):**
+- `approvals.test.ts`, `server/http/approvals.test.ts` e `Approvals.test.tsx` passaram a gerar a especificação completa coerente com o vínculo. Os recursos `sandbox:sb-N` viraram tarefas distintas.
+- O teste "SHA alterado" do núcleo passou a usar sandbox com SHA no lugar de merge.
 

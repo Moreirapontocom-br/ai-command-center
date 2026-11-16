@@ -1,0 +1,69 @@
+# Issue #011 PR 2 — correção R3 (coerência semântica do sandbox) — verificações
+
+$ npx tsc -b
+(sem erros)
+
+$ npx eslint .
+(sem problemas)
+
+$ npm run build
+dist/index.html                   0.48 kB │ gzip:  0.31 kB
+dist/assets/index-ChAGrzV0.css   23.84 kB │ gzip:  5.37 kB
+dist/assets/index-pE3eHyYw.js   336.32 kB │ gzip: 99.14 kB
+✓ built in 187ms
+
+$ npm run check:secrets
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+$ npm run check:csp
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+$ npm run check:secrets:repo
+Nenhuma credencial encontrada (215 arquivo(s) versionado(s)).
+
+$ npx vitest run
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ Test Files  1 failed | 40 passed (41)
+      Tests  1 failed | 1005 passed (1006)
+
+Única falha: a conhecida de CRLF local (core.autocrlf=true; i/lf w/crlf). Reproduz-se na main limpa e passa na CI (LF).
+
+## Testes R3 e integração (verbose)
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > pedido aparece para o PO; sem aprovação fica pendente; aprovado → autorizado uma única vez 99ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > R3: o que o PO vê é exatamente a especificação que será autorizada (tudo exceto ownerId), coerente com o vínculo 78ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > grant forjado, de outro componente ou já usado é recusado; o sandbox nunca confia nos campos 71ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > sujeito ou projeto incompatível com o grant é recusado pela política antes de gastar o recibo 59ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > autorizado não significa executado: provedor que executa código continua recusado 63ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > capacidade indisponível (catálogo real): nada é pedido e aprovação válida não a torna disponível 59ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > derivações compartilhadas são as mesmas do sandbox do servidor 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > fluxo legítimo completo: especificação coerente é aceita (com e sem repositório) 1ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > projeto divergente 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > tarefa divergente (inclusive recurso que não é tarefa) 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > agente divergente 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > ação diferente de sandbox.execute 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > identificador da solicitação divergente: workspace e branch precisam derivar do MESMO id 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > SHA divergente (no vínculo ou na especificação) 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > referência divergente: branch do vínculo ≠ especificação, ou branch que não é a derivada 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > repositório incompatível: sem git com SHA no vínculo, git sem SHA, main gravável, repositório inválido 0ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > campos substituídos ou omitidos: workspace, credencial além da execução, campos obrigatórios 1ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > no núcleo: pedido criptograficamente válido mas semanticamente incompatível é recusado e nada é criado 37ms
+ ✓ server/approvals/presentation.test.ts > R3 — coerência semântica completa do sandbox > admissão e configuração também exigem coerência completa (alvo vazio; recurso fixo) 0ms
+ ✓ server/approvals/integration.test.ts > sandbox (#021) com o gate da #011 > falha depois da reserva: a aprovação continua consumida e repetir exige nova aprovação 52ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > admissão que exige aprovação: pedido pendente → PO aprova → admitida; nova admissão exige nova aprovação 64ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > grant forjado ou de outro componente é recusado pelo controlador 56ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > orçamento R$ 0: nenhuma aprovação autoriza gasto (spend indisponível no catálogo real) 39ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > kill switch: bloqueia, revoga aprovações de execução não usadas e invalida recibos; a liberação exige aprovação de configuração e não reativa nada 110ms
+ ✓ server/approvals/integration.test.ts > controlador (#022) com o gate da #011 > liberação vencida (15 min) é recusada; agentes e o sistema nunca liberam 48ms
+ ✓ server/approvals/integration.test.ts > política (#020): exceção owner_confirmation só com atestado do servidor (D2/N4) > operação crítica do próprio PO: só o grant reservado e atestado vale; forjado ou de agente não 50ms
+ ✓ server/approvals/integration.test.ts > política (#020): exceção owner_confirmation só com atestado do servidor (D2/N4) > agente não se autoaprova: identidade de agente nunca confirma nem decide 44ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > a barreira durável sobrevive ao reinício e continua bloqueando 57ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > bloqueio de escritor único: um segundo servidor sobre os mesmos arquivos fica indisponível 35ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > chave errada ou anchor inconsistente: indisponível, nada é liberado 45ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > recuperação administrativa: quarentena verificada e nova instalação com barreira global 62ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > falha de gravação: nada é concedido e o armazenamento degrada (nega o resto) 53ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > manutenção: nunca roda duas vezes ao mesmo tempo e falhas não interrompem os ciclos 1ms
+ ✓ server/approvals/integration.test.ts > persistência e manutenção (grupo D) > a manutenção expira pedidos de 24 h e aprovações vencidas (por classe) 62ms
+ Test Files  2 passed (2)
+      Tests  46 passed (46)
+
+## Execução real
+13:export const REAL_EXECUTION_ENABLED = false as const;

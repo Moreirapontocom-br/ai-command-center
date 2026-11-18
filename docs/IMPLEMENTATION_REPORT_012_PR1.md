@@ -185,3 +185,50 @@ Sequência planejada registrada (U3): **#012 → #028 → #008 → #009 → #010
 ## 13. Parecer
 
 A implementação cobre D2, D3, D7 e U1–U7 com testes de integridade, recuperação, concorrência entre processos reais e compatibilidade com a #011. **Apta para revisão independente** assim que a CI do PR estiver verde (estado registrado no PR). Merge e PR 2 aguardam autorização explícita do Product Owner.
+
+## 14. Revisão independente do PR #45 (SHA revisado `ff57188`) — correções R1–R3
+
+### R1 — Referências mutáveis ao estado interno (confirmado e corrigido)
+- **Causa:** `signedLedger.body()`/`history()` devolviam os objetos internos; `QueueStore.items()/pendingBarriers()/history()` derivavam deles. `Readonly` só existe na tipagem: um chamador podia alterar o estado em memória sem `commit()` (sem MAC, sem histórico, sem gravação) e a memória divergiria do disco.
+- **Correção:** o estado em memória é **congelado em profundidade** (`deepFreeze`) toda vez que é instalado (`persist` → toda abertura, linhagem, recuperação e commit). Leituras devolvem o estado congelado: qualquer modificação lança `TypeError` (módulos ES são estritos) e nada muda. Escolhido em vez de cópias por leitura (custo O(n) a cada consulta); `commit` continua trabalhando sobre cópias (`structuredClone`), e o rascunho/resultado devolvido por `commit` nunca é o estado interno.
+- **Testes:** `queue/review.test.ts` (R1) e `storage/signedLedger.test.ts` — push/splice/atribuição em itens, pedidos, escopos, entradas e hashes do histórico → `TypeError`; estado em memória e bytes no disco idênticos; mutação dentro de `commit` seguida de erro não vaza; rascunho/resultado vazados não afetam o estado; reabertura íntegra (MAC/encadeamento).
+- **#011:** inalterada. O armazenamento de aprovações tem o mesmo padrão de leitura (`ledger()`/`history()` devolvem referências internas); **não** foi alterado porque o PR não pode mudar o comportamento da #011 — fica registrado como risco residual para decisão do PO (correção análoga em PR próprio).
+
+### R2 — Remoção de pedidos de barreira pelo `commit()` (confirmado e corrigido)
+- **Causa:** `checkQueueChange` só controlava itens; `commit()` podia remover, alterar ou substituir `pendingBarriers`, desbloqueando o portão sem confirmação da autoridade.
+- **Correção:**
+  - `checkQueueChange(before, after, { epoch, allow })`: pedidos existentes **nunca** mudam; só podem ser **acrescentados** (com a época da gravação); remoção exige `BarrierClearance` do **mesmo escopo**, no máximo uma por gravação.
+  - O motor passou a aceitar `commit(change, allow)`; o `commit` público de `QueueStore` **nunca** repassa `allow`. Só `clearBarrierRequest` fornece a permissão.
+  - `openQueueStore({ authority })`: a autoridade é injetada na abertura (a mesma instância do portão, no `index.ts`). `clearBarrierRequest` confirma a barreira durável **dentro da operação serializada** (`authorityConfirms`: autoridade disponível + barreira durável no escopo exato; erro/dúvida → não). Sem confirmação → `barrier_not_confirmed`, nada removido.
+  - `BarrierAuthority`/`authorityConfirms` movidos para `queue/contracts.ts` (reexportados por `barrierGate.ts`).
+- **Testes:** remoção/zeragem/alteração de motivo/época/substituição via `commit` → `change_rejected` (persistente após reabrir); acréscimo permitido só com a época certa; `clearBarrierRequest` sem autoridade, com autoridade que não confirma, degradada, com exceção, ou com barreira de outro escopo → recusado; confirmação legítima remove só aquele pedido e registra `queue.barrier_confirmed`; regra pura de escopo exato.
+
+### R3 — Alterações em itens existentes (analisado; regras explícitas acrescentadas)
+| Campo | Antes (`ff57188`) | Agora | Motivo |
+|---|---|---|---|
+| Identidade (`id`, `idempotencyKey`, `ownerId`, `projectId`, `taskId`, `agentId`, `createdAt`) | imutável | imutável | — |
+| `priority` | livre em qualquer estado | só enquanto `queued` e sem transição na mesma gravação | repriorização da fila é prevista para o PR 2; fora da fila não há uso legítimo |
+| `reason` | livre sem transição | só muda com transição | motivo descreve a última transição |
+| `stateEpoch` | livre | sem transição: inalterado; com transição: = época da gravação | rastreabilidade de época |
+| `updatedAt` | livre | nunca regride | ordem temporal (a abertura de época preserva o maior valor se o relógio voltar) |
+| `closedAt` | coerência só por estado | terminal exige `closedAt = updatedAt`; sem transição inalterado | — |
+| `approvalId` | `null → valor` a qualquer momento | só ao entrar em `admitted`; nunca trocado | a aprovação é vinculada na admissão |
+| `attempt` | só cresce ao entrar em `dispatching` | idem; inalterado sem transição | — |
+| Terminais | imutáveis | imutáveis | — |
+| Item novo | `queued`, tentativa 0, sem aprovação | + sem motivo, `stateEpoch` = época, `updatedAt = createdAt` | — |
+
+Transições permitidas (`QUEUE_TRANSITIONS`) não mudaram. Testes em `queue/review.test.ts` (R3), incluindo reinício com relógio atrasado.
+
+### Verificações após as correções
+| Verificação | Resultado |
+|---|---|
+| Suítes novas/estruturais (`storage`, `queue`, `config`, `security`, `hardening`) | 10 arquivos / **165** verdes |
+| Regressão #011 e vizinhas (arquivos de teste inalterados) | 17 arquivos / **653** verdes |
+| Suíte completa local | **1078/1079**; única falha = `scripts/main-audit.test.mjs` (CRLF local, inalterado) |
+| `tsc -b`, `eslint .`, build, `check:secrets`/`check:csp`, `check-secrets tracked/staged` | ok (ver `docs/evidence/issue012-pr1-r1-checks.txt`) |
+| CI do PR #45 | registrada no PR |
+
+### Riscos residuais
+- Leituras do armazenamento de aprovações (#011) continuam devolvendo referências internas (fora do escopo; decisão do PO).
+- `BarrierClearance` é uma permissão interna por convenção de módulo: código do servidor que importasse o motor diretamente e abrisse a fila por conta própria poderia passá-la — mitigado pelo teste estrutural (só `index.ts` usa a fila) e pela confirmação obrigatória na autoridade dentro de `clearBarrierRequest`.
+- A autoridade do armazenamento e a do portão devem ser a mesma instância (assim no `index.ts`); se divergirem, o efeito é só restritivo (pedido não removido).

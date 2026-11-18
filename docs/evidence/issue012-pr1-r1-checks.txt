@@ -1,0 +1,54 @@
+# Issue #012 PR 1 — revisão R1–R3: verificações (gerado em 2026-11-18T01:49:15Z)
+base origin/main: a65b238cc5aba09adee0d5975f969c0152b207a6 | branch: feature/012-queue-foundation | revisado: ff571880ddb8c51c62d6cbfd48807a180e30c41e
+
+## Testes novos da revisão
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > alteração recusada (checkChange/checkBody/entrada) não grava nem degrada 39ms
+ ✓ server/queue/review.test.ts > R1 — leituras imutáveis em tempo de execução > itens, pedidos de barreira e histórico devolvidos estão congelados; o estado interno não muda 103ms
+ ✓ server/queue/review.test.ts > R1 — leituras imutáveis em tempo de execução > commit trabalha sobre cópias: mutação seguida de erro não vaza para o estado nem para o disco 62ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > limite de tamanho: recusa antes de gravar, sem degradar 66ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > documento com campo extra ou formato de outro núcleo → document_invalid; MAC de outro namespace → mac_invalid 57ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > especificação inválida é recusada 2ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > chave ausente ou curta → indisponível (key_unavailable/key_invalid), sem criar documentos 14ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > R1: body() e history() são congelados em profundidade; checkChange recebe época e permissão 42ms
+ ✓ server/queue/review.test.ts > R2 — pedidos de barreira pendentes > commit público não remove, não altera e não substitui pedidos (mesmo após reabrir) 36ms
+ ✓ server/queue/review.test.ts > R2 — pedidos de barreira pendentes > acrescentar pedido pelo commit é permitido (só restringe), com a época da gravação 21ms
+ ✓ server/queue/review.test.ts > R2 — pedidos de barreira pendentes > clearBarrierRequest exige confirmação durável da autoridade injetada, no escopo exato 128ms
+ ✓ server/queue/review.test.ts > R2 — pedidos de barreira pendentes > a permissão de remoção vale para UM escopo exato (regra pura) 1ms
+ ✓ server/queue/review.test.ts > R3 — alterações de itens existentes controladas campo a campo > prioridade: só enquanto `queued` e sem transição 84ms
+ ✓ server/queue/review.test.ts > R3 — alterações de itens existentes controladas campo a campo > motivo, época, aprovação, encerramento e tentativa não mudam sem transição 115ms
+ ✓ server/queue/review.test.ts > R3 — alterações de itens existentes controladas campo a campo > datas: updatedAt nunca regride; createdAt é identidade 31ms
+ ✓ server/queue/review.test.ts > R3 — alterações de itens existentes controladas campo a campo > transição: época da gravação, aprovação só ao entrar em `admitted`, encerramento coerente 27ms
+ ✓ server/queue/review.test.ts > R3 — alterações de itens existentes controladas campo a campo > itens novos: época da gravação, sem motivo, updatedAt = createdAt 18ms
+ ✓ server/queue/review.test.ts > R3 — alterações de itens existentes controladas campo a campo > identidade e terminais continuam imutáveis 25ms
+ ✓ server/queue/review.test.ts > R3 — alterações de itens existentes controladas campo a campo > reinício com relógio atrasado: interrompido sem regredir updatedAt (fila continua disponível) 39ms
+      Tests  19 passed (19)
+
+## Suítes novas/estruturais
+ Test Files  10 passed (10)
+      Tests  165 passed (165)
+
+## Regressão #011 e vizinhas (testes inalterados: 0 arquivos alterados)
+ Test Files  17 passed (17)
+      Tests  653 passed (653)
+
+## Suíte completa (local, Windows)
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ FAIL  scripts/secret-scan.test.mjs > CLI em repositório Git real (temporário) > após corrigir o arquivo, a árvore passa mas o histórico continua acusando o commit
+ Test Files  2 failed | 46 passed (48)
+      Tests  2 failed | 1077 passed (1079)
+(main-audit: CRLF local por core.autocrlf=true; arquivo não alterado; passa no CI)
+(secret-scan: intermitência conhecida — testes de CLI com Git real estouram o timeout de 5 s do vitest sob carga paralela no Windows; isolado: 20/20 verdes)
+
+## tsc -b
+ok
+## eslint .
+ok
+## build
+✓ build ok (vite)
+✓ built in 194ms
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+Nenhuma credencial encontrada (237 arquivo(s) versionado(s)).
+Nenhuma credencial encontrada (10 arquivo(s) preparado(s)).
+## secret-scan isolado
+      Tests  20 passed (20)

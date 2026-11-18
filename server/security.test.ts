@@ -203,13 +203,47 @@ describe('superfície de escrita do servidor', () => {
       'server/policy/engine.ts',
       'server/projects/projectStore.ts',
       'server/projects/validation.ts',
+      // Issue #012 (D7/U4/D2): primitivas compartilhadas extraídas das aprovações + motor do ledger assinado.
+      'server/storage/canonical.ts',
+      'server/storage/errors.ts',
       'server/storage/jsonFile.ts',
+      'server/storage/lock.ts',
+      'server/storage/paths.ts',
+      'server/storage/signedLedger.ts',
+      'server/storage/subkeys.ts',
       'server/tasks/taskStore.ts',
       'server/tasks/validation.ts',
     ]);
     for (const file of projectFiles) {
       expect(file.code).not.toMatch(/github\/client|github\/queries|snapshotService|\bfetch\(|child_process|node:net|node:http/);
     }
+  });
+
+  it('armazenamento compartilhado (Issue #012, D7): sem ambiente, rede, execução nem dependência de núcleos', () => {
+    const files = server.filter((f) => f.path.startsWith('server/storage/'));
+    for (const file of files) {
+      expect(file.code).not.toMatch(/process\.env|node:child_process|node:net|node:http|node:https|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
+      // Primitivas genéricas: não conhecem aprovações, fila, sandbox nem controlador.
+      expect(file.code).not.toMatch(/from '\.\.\/(approvals|queue|sandbox|limits)\//);
+    }
+  });
+
+  it('fila (Issue #012, PR 1): fundação DORMENTE — sem rota, despacho, temporizador, execução nem acesso às aprovações', () => {
+    const files = server.filter((f) => f.path.startsWith('server/queue/'));
+    expect(files.map((f) => f.path).sort()).toEqual(['server/queue/barrierGate.ts', 'server/queue/contracts.ts', 'server/queue/documents.ts', 'server/queue/store.ts']);
+    for (const file of files) {
+      expect(file.code).not.toMatch(/process\.env|node:child_process|node:net|node:http|node:https|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
+      // Sem agendamento nem ciclo próprio neste PR.
+      expect(file.code).not.toMatch(/\bsetInterval\(|\bsetTimeout\(|\bsetImmediate\(/);
+      // A autoridade de barreira é INJETADA (interface estreita): a fila não importa o núcleo de
+      // aprovações, o sandbox nem o controlador da #022.
+      expect(file.code).not.toMatch(/approvals\/|sandbox\/(service|simulatedProvider|provider)|limits\/(controller|providers|simulatedApprovalVerifier)/);
+    }
+    // Só a inicialização do servidor usa a fila; nenhuma rota.
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/') && !f.path.startsWith('server/test/')), /queue\/(store|barrierGate|contracts|documents)/)).toEqual(['server/index.ts']);
+    expect(POST_ROUTES.some((route) => /queue|dispatch|enqueue|schedul|fila/.test(route))).toBe(false);
+    // Execução real continua desligada.
+    expect(server.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);
   });
 });
 

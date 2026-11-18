@@ -19,6 +19,9 @@ import { createAuditSequence, openAuditLog } from './audit/auditLog.ts';
 import { createSnapshotService } from './snapshotService.ts';
 import type { ApprovalsRuntime } from './http/approvalRoutes.ts';
 import { DEFAULT_POLICY } from './policy/defaultPolicy.ts';
+import { createBarrierGate, type BarrierAuthority } from './queue/barrierGate.ts';
+import { openQueueStore, type QueueStore } from './queue/store.ts';
+import { deriveSubkey, QUEUE_KEY_DOMAIN } from './storage/subkeys.ts';
 
 const logger = createConsoleLogger();
 
@@ -124,6 +127,55 @@ if (config.approvals.state === 'invalid') {
   }
 }
 
+// Fila de execução (Issue #012, PR 1): fundação persistente DORMENTE. Nada é admitido, agendado
+// nem despachado (sem rota, sem temporizador, sem executor). Ao abrir, o portão reenvia à
+// autoridade de barreira (#011) os pedidos pendentes e, se a integridade da fila estiver em dúvida,
+// aciona a barreira global. Caminhos e chaves nunca vão para o log.
+let queueStore: QueueStore | null = null;
+if (config.queue.state === 'invalid') {
+  logger.log('warn', 'Fila indisponível: configuração inválida.', { event: 'queue_config_invalid', reason: config.queue.reason });
+} else if (config.queue.state === 'configured' && config.approvals.state === 'configured') {
+  const settings = config.approvals;
+  const environment = { env: process.env };
+  const keyProvider = settings.key.kind === 'env' ? createEnvKeyProvider(process.env) : createFileKeyProvider(settings.key.path, environment);
+  try {
+    queueStore = await openQueueStore({
+      queueDir: config.queue.queueDir,
+      anchorDir: settings.anchorDir,
+      approvalsDir: settings.approvalsDir,
+      environment,
+      initialize: config.queue.initialize,
+      loadKey: async () => {
+        const master = await keyProvider.load();
+        try {
+          return deriveSubkey(master.key, QUEUE_KEY_DOMAIN);
+        } finally {
+          master.key.fill(0); // Cópia local da chave principal: descartada após a derivação.
+        }
+      },
+    });
+    const service = approvals?.service ?? null;
+    const authority: BarrierAuthority | null = service
+      ? { status: () => service.status(), barriers: () => service.barriers(), engage: (input) => service.engageBarrier(input) }
+      : null;
+    const gate = createBarrierGate({ authority, store: queueStore });
+    const reconciled = await gate.reconcile();
+    const status = queueStore.status();
+    const decision = gate.check(null);
+    logger.log(status.state === 'available' ? 'info' : 'warn', 'Fila de execução (dormente)', {
+      event: 'queue_opened',
+      state: status.state,
+      reason: status.reason ?? 'none',
+      openedAs: queueStore.openedAs() ?? 'none',
+      barriersConfirmed: reconciled.confirmed,
+      barriersFailed: reconciled.failed,
+      blocked: decision.open ? 'no' : decision.reason,
+    });
+  } catch {
+    logger.log('error', 'Fila indisponível: falha ao abrir o armazenamento.', { event: 'queue_open_failed' });
+  }
+}
+
 const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, approvals, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
@@ -147,10 +199,10 @@ if (config.credentials?.kind === 'gh-cli') {
   );
 }
 
-// Encerramento: libera o bloqueio de escritor único do armazenamento de aprovações.
+// Encerramento: libera os bloqueios de escritor único (aprovações e fila).
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    void (approvalStore?.close() ?? Promise.resolve()).finally(() => process.exit(0));
+    void Promise.allSettled([queueStore?.close(), approvalStore?.close()]).finally(() => process.exit(0));
   });
 }
 

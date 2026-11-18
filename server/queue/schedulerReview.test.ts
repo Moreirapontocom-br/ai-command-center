@@ -50,7 +50,7 @@ describe('R1 — liquidação só depois da persistência', () => {
     // Nenhuma vaga é reutilizada nesta sessão.
     expect((await s.scheduler.tick()).blocked).toBe('persist_failed');
     // O resultado repetido é adiado (bloqueio por falha): nada muda.
-    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'result_deferred_blocked' });
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'result_deferred_blocked', persisted: false, settlement: 'not_applicable' });
     expect(capacity(s)).toBe(1);
     // Reinício: o ledger (sem o desfecho) prevalece — interrompido, vaga ocupada.
     await s.restart();
@@ -73,23 +73,45 @@ describe('R1 — liquidação só depois da persistência', () => {
       }),
     });
     const id = await runningItem(s);
-    expect(await s.scheduler.onResult(await s.executor.report(tokenOf(s, id), 'completed'))).toEqual({ accepted: true, reason: 'completed' });
+    const result = await s.executor.report(tokenOf(s, id), 'completed');
+    // Desfecho GRAVADO, liquidação PENDENTE: o recibo não diz "aceito".
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'settlement_failed', persisted: true, settlement: 'pending' });
+    expect(s.scheduler.pendingSettlements()).toEqual([{ itemId: id, settlement: 'pending' }]);
     expect(itemOf(s, id)).toMatchObject({ state: 'succeeded', run: { capacity: 'released' } });
     expect(capacity(s)).toBe(1); // controlador não liquidado: vaga continua ocupada nesta sessão
+    // Repetição do mesmo resultado: continua sinalizando a pendência; nada é regravado nem liquidado.
+    const historyLength = s.store.history().length;
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'settlement_failed', persisted: true, settlement: 'pending' });
+    expect(capacity(s)).toBe(1);
+    expect(s.store.history().length).toBe(historyLength + 1); // só o registro `result_ignored`
+    expect(s.store.history().at(-1)!.data).toMatchObject({ event: 'queue.result_ignored', reason: 'settlement_unresolved' });
     expect(s.scheduler.status().blocked).toBe('settlement_failed');
     expect(events(s, 'queue.settlement_divergence').map((e) => e.data.reason)).toEqual(['settlement_failed']);
     expect((await tryAnother(s)).report.admitted).toEqual([]);
     await s.restart();
     expect(capacity(s)).toBe(0);
     expect(s.scheduler.status()).toEqual({ restored: true, blocked: null });
+    expect(s.scheduler.pendingSettlements()).toEqual([]);
+    // Após a restauração, a repetição é só um resultado atrasado (o ledger já o tem).
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'late_result', persisted: false, settlement: 'not_applicable' });
     expect(itemOf(s, id).run!.admission!.cost).toEqual({ status: 'none', reservedMinor: 0, confirmedMinor: null });
   });
 
   it('custo divergente entre ledger e controlador → bloqueio', async () => {
-    const s = await stack({ admission: (base) => ({ ...base, settle: (...args) => ({ ...base.settle(...args), status: 'unknown' as const }) }) });
+    const s = await stack({ admission: (base) => ({ ...base, settle: (...args) => ({ ...base.settle(...args), status: 'confirmed' as const, confirmedMinor: 700 }) }) });
     const id = await runningItem(s);
-    await s.scheduler.onResult(await s.executor.report(tokenOf(s, id), 'completed'));
+    const result = await s.executor.report(tokenOf(s, id), 'completed');
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'settlement_divergence', persisted: true, settlement: 'divergent' });
     expect(s.scheduler.status().blocked).toBe('settlement_divergence');
+    expect(s.scheduler.pendingSettlements()).toEqual([{ itemId: id, settlement: 'divergent' }]);
+    expect(itemOf(s, id)).toMatchObject({ state: 'succeeded', run: { capacity: 'released', admission: { cost: { status: 'none' } } } });
+    // Repetição: mesma sinalização, sem nova liquidação.
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'settlement_divergence', persisted: true, settlement: 'divergent' });
+    // Restauração pelo ledger após reinício: pendência some, vaga livre, custo do ledger.
+    await s.restart();
+    expect(s.scheduler.pendingSettlements()).toEqual([]);
+    expect(s.scheduler.status()).toEqual({ restored: true, blocked: null });
+    expect(capacity(s)).toBe(0);
   });
 
   it('cancelamento: falha ao gravar a parada confirmada → nada liquidado; a vaga continua ocupada', async () => {
@@ -102,18 +124,40 @@ describe('R1 — liquidação só depois da persistência', () => {
     expect(s.scheduler.status().blocked).toBe('persist_failed');
   });
 
+  it('cancelamento com parada confirmada e liquidação falha: gravado, pendência sinalizada, vaga ocupada', async () => {
+    let failSettle = true;
+    const s = await stack({
+      admission: (base) => ({
+        ...base,
+        settle: (...args) => {
+          if (failSettle) {
+            failSettle = false;
+            throw new Error('controller_down');
+          }
+          return base.settle(...args);
+        },
+      }),
+    });
+    const id = await runningItem(s);
+    expect(await s.scheduler.cancel('admin', PROJECT, id)).toMatchObject({ state: 'cancelled', run: { capacity: 'released' } });
+    expect(s.scheduler.pendingSettlements()).toEqual([{ itemId: id, settlement: 'pending' }]);
+    expect(s.scheduler.status().blocked).toBe('settlement_failed');
+    expect(capacity(s)).toBe(1);
+  });
+
   it('liquidação repetida é idempotente; resultado repetido é ignorado', async () => {
     const s = await stack();
     const id = await runningItem(s);
     const result = await s.executor.report(tokenOf(s, id), 'completed');
-    await s.scheduler.onResult(result);
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'completed', persisted: true, settlement: 'settled' });
+    expect(s.scheduler.pendingSettlements()).toEqual([]);
     const admissionId = itemOf(s, id).run!.admission!.admissionId;
     const usage = { cost: { kind: 'none' as const }, tokens: null };
     const first = s.admission.settle(subject(s, id), admissionId, 'completed', usage);
     expect(s.admission.settle(subject(s, id), admissionId, 'stopped', usage)).toEqual(first);
     expect(capacity(s)).toBe(0);
     expect(s.admission.controller()!.auditTrail().filter((e) => e.event === 'capacity_released')).toHaveLength(1);
-    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'late_result' });
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'late_result', persisted: false, settlement: 'not_applicable' });
   });
 
   it('custo desconhecido nunca é descartado (mesma regra conservadora do controlador)', () => {
@@ -129,7 +173,7 @@ describe('R1 — liquidação só depois da persistência', () => {
     const s = await stack();
     const id = await runningItem(s);
     const result = await s.executor.report(tokenOf(s, id), 'completed');
-    expect(await s.scheduler.onResult({ ...result, usage: { cost: { kind: 'none' }, tokens: 5 } })).toEqual({ accepted: false, reason: 'invalid_usage' });
+    expect(await s.scheduler.onResult({ ...result, usage: { cost: { kind: 'none' }, tokens: 5 } })).toEqual({ accepted: false, reason: 'invalid_usage', persisted: false, settlement: 'not_applicable' });
     expect(itemOf(s, id).state).toBe('running');
     expect(capacity(s)).toBe(1);
   });
@@ -143,7 +187,7 @@ describe('R2 — resultados durante bloqueio: só reconciliação, nunca despach
     const result = await s.executor.report(tokenOf(s, id), 'completed');
     await engage(s);
     const starts = startCalls(s);
-    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'completed' });
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'completed', persisted: true, settlement: 'settled' });
     expect(itemOf(s, id)).toMatchObject({ state: 'succeeded', run: { capacity: 'released' } });
     expect(capacity(s)).toBe(0);
     expect(events(s, 'queue.result_recorded').at(-1)!.data.detail).toContain(`under ${expected}`);
@@ -171,7 +215,7 @@ describe('R2 — resultados durante bloqueio: só reconciliação, nunca despach
     const kill = await s.scheduler.engageKillSwitch({ kind: 'global' }, 'emergency_stop');
     expect(kill.revoked).toEqual([queued.id]);
     expect(itemOf(s, id)).toMatchObject({ state: 'running', run: { capacity: 'held' } });
-    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'tool_error' });
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'tool_error', persisted: true, settlement: 'settled' });
     expect(itemOf(s, id)).toMatchObject({ state: 'failed', run: { capacity: 'released', outcome: { kind: 'failed_after_start' }, cancellation: { result: 'not_supported' } } });
     expect(events(s, 'queue.result_recorded').at(-1)!.data.detail).toContain('under kill_switch_engaged');
     await s.scheduler.tick();
@@ -186,8 +230,14 @@ describe('R2 — resultados durante bloqueio: só reconciliação, nunca despach
     const result = await s.executor.report(tokenOf(s, id), 'completed').catch(() => null);
     await s.scheduler.engageKillSwitch({ kind: 'project', projectId: PROJECT }, 'emergency_stop');
     expect(itemOf(s, id).state).toBe('revoked');
+    // Parada sem relato de consumo: o ledger grava `unknown` (conservador) e o controlador, já
+    // encerrado pelo kill switch, mantém `none` — mesma exposição (0): liquidação concluída.
+    expect(itemOf(s, id).run!.admission!.cost).toEqual({ status: 'unknown', reservedMinor: 0, confirmedMinor: null });
+    expect(s.scheduler.pendingSettlements()).toEqual([]);
+    expect(s.scheduler.status().blocked).toBeNull();
+    expect(capacity(s)).toBe(0);
     const late: ExecutionResult = result ?? { itemId: id, token: tokenOf(s, id), attempt: 1, epoch: itemOf(s, id).run!.dispatch!.epoch, outcome: 'succeeded', reason: null, usage: { cost: { kind: 'none' }, tokens: null } };
-    expect(await s.scheduler.onResult(late)).toEqual({ accepted: false, reason: 'late_result' });
+    expect(await s.scheduler.onResult(late)).toEqual({ accepted: false, reason: 'late_result', persisted: false, settlement: 'not_applicable' });
     expect(itemOf(s, id).state).toBe('revoked');
   });
 
@@ -196,7 +246,7 @@ describe('R2 — resultados durante bloqueio: só reconciliação, nunca despach
     const id = await runningItem(s);
     const result = await s.executor.report(tokenOf(s, id), 'completed');
     await s.restart({ restore: false });
-    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'result_deferred_not_restored' });
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: false, reason: 'result_deferred_not_restored', persisted: false, settlement: 'not_applicable' });
     expect(itemOf(s, id)).toMatchObject({ state: 'interrupted', run: { capacity: 'held', outcome: null } });
   });
 });

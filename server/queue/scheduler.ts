@@ -79,13 +79,30 @@ export interface TickReport {
   cancelRequested: string[];
 }
 
+/**
+ * Recibo de `onResult` — distingue as três situações (revisão final do PR 2):
+ * - `accepted: true`  → desfecho GRAVADO no ledger E liquidado no controlador (`settled`);
+ * - `accepted: false` + `persisted: true` → desfecho gravado (fonte de verdade), mas a liquidação
+ *   ficou `pending` (falhou) ou `divergent` (custo diferente); o agendador está bloqueado e a vaga
+ *   continua ocupada no controlador até o reinício reconstruí-lo do ledger;
+ * - `accepted: false` + `persisted: false` → nada gravado nem liquidado (ignorado ou adiado).
+ */
+export interface ResultReceipt {
+  accepted: boolean;
+  reason: string;
+  persisted: boolean;
+  settlement: 'settled' | 'pending' | 'divergent' | 'not_applicable';
+}
+
 export interface QueueScheduler {
   restore(): Promise<{ restored: boolean; reason: string | null }>;
   status(): { restored: boolean; blocked: string | null };
   submit(ownerId: string, raw: unknown): Promise<Readonly<QueueItem>>;
   tick(): Promise<TickReport>;
   cancel(ownerId: string, projectId: string, itemId: string): Promise<Readonly<QueueItem>>;
-  onResult(raw: unknown): Promise<{ accepted: boolean; reason: string }>;
+  onResult(raw: unknown): Promise<ResultReceipt>;
+  /** Itens cujo desfecho está gravado mas cuja liquidação no controlador falhou ou divergiu. */
+  pendingSettlements(): ReadonlyArray<{ itemId: string; settlement: 'pending' | 'divergent' }>;
   engageKillSwitch(scope: BarrierScope, reason: string): Promise<{ durable: boolean; revoked: string[]; cancellationRequested: string[] }>;
   get(ownerId: string, projectId: string, itemId: string): Readonly<QueueItem> | null;
   list(ownerId: string, projectId: string): ReadonlyArray<Readonly<QueueItem>>;
@@ -146,6 +163,8 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
   let ticking = false;
   /** Kill switch acionado NESTA instância: bloqueia imediatamente, antes de qualquer `await`. */
   const localKill = new Set<string>();
+  /** Liquidações incompletas desta sessão (o ledger já tem o desfecho). Nunca são refeitas sozinhas. */
+  const unsettled = new Map<string, 'pending' | 'divergent'>();
   /** Último motivo de recusa registrado por item (o histórico só recebe mudanças). */
   const lastRefusal = new Map<string, string>();
 
@@ -227,7 +246,12 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
    *   nenhuma vaga é reutilizada. No reinício o controlador é reconstruído do ledger.
    * - Liquidação repetida é idempotente no adaptador (vaga já liberada → nada muda).
    */
-  async function settleDurably(id: string, kind: 'completed' | 'failed' | 'stopped', usage: ExecutionUsage, write: (tx: QueueTransaction, it: QueueItem, cost: AdmissionSnapshot['cost']) => void) {
+  async function settleDurably(
+    id: string,
+    kind: 'completed' | 'failed' | 'stopped',
+    usage: ExecutionUsage,
+    write: (tx: QueueTransaction, it: QueueItem, cost: AdmissionSnapshot['cost']) => void,
+  ): Promise<'settled' | 'pending' | 'divergent'> {
     const item = current(id)!;
     const snapshot = item.run!.admission!;
     const cost = settledCost(snapshot.cost, item.run!.request.admission.mode, usage);
@@ -241,13 +265,28 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     try {
       settled = admission.settle(subjectOf(item), snapshot.admissionId, kind, usage);
     } catch {
+      unsettled.set(id, 'pending');
       await block('settlement_failed', id, item.projectId);
-      return;
+      return 'pending';
     }
-    if (settled.status !== cost.status || settled.reservedMinor !== cost.reservedMinor || settled.confirmedMinor !== cost.confirmedMinor) {
+    // Divergência = o que conta no orçamento difere (exposição, mesma regra do controlador:
+    // confirmado → valor confirmado; senão → reserva) ou só um dos lados está confirmado.
+    // `none` × `unknown` com a mesma exposição não é divergência: o ledger guarda o mais conservador
+    // e é dele que o controlador é reconstruído no reinício.
+    const exposure = (c: AdmissionSnapshot['cost']) => (c.status === 'confirmed' ? (c.confirmedMinor ?? 0) : c.reservedMinor);
+    if (exposure(settled) !== exposure(cost) || (settled.status === 'confirmed') !== (cost.status === 'confirmed')) {
+      unsettled.set(id, 'divergent');
       await block('settlement_divergence', id, item.projectId);
+      return 'divergent';
     }
+    return 'settled';
   }
+
+  /** Recibo a partir do desfecho gravado e do estado da liquidação. */
+  const receipt = (reason: string, settlement: 'settled' | 'pending' | 'divergent'): ResultReceipt =>
+    settlement === 'settled'
+      ? { accepted: true, reason, persisted: true, settlement }
+      : { accepted: false, reason: settlement === 'pending' ? 'settlement_failed' : 'settlement_divergence', persisted: true, settlement };
 
   // ---------- Restauração (Q1/Q2) ----------
 
@@ -800,7 +839,7 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     await store
       .commit((tx) => tx.append(entry({ event: 'queue.result_ignored', itemId: item?.id ?? null, projectId: item?.projectId ?? null, reason })))
       .catch(() => undefined);
-    return { accepted: false, reason };
+    return { accepted: false, reason, persisted: false, settlement: 'not_applicable' as const };
   }
 
   async function onResultNow(raw: unknown) {
@@ -812,6 +851,14 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     const dispatch = item.run.dispatch;
     // Vínculo: token, tentativa e época do despacho gravado.
     if (dispatch.token !== result.token || item.attempt !== result.attempt || dispatch.epoch !== result.epoch) return ignore(item, 'result_mismatch');
+    // Repetição do resultado de um item cuja liquidação ficou incompleta: o desfecho já está gravado;
+    // nada é regravado nem liquidado de novo (idempotente, bloqueio mantido) e o recibo continua
+    // sinalizando a pendência — inclusive com o agendador bloqueado.
+    const unresolved = unsettled.get(item.id);
+    if (unresolved) {
+      await ignore(item, 'settlement_unresolved');
+      return { accepted: false, reason: unresolved === 'pending' ? 'settlement_failed' : 'settlement_divergence', persisted: true, settlement: unresolved };
+    }
     if (isTerminal(item.state)) return ignore(item, 'late_result');
     // R2: com o controlador fora de confiança (não restaurado ou bloqueio por divergência/falha),
     // o resultado é ADIADO — nada é gravado nem liquidado; a vaga continua ocupada.
@@ -826,7 +873,7 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     const detail = barrier ? `attempt ${item.attempt} under ${barrier}` : `attempt ${item.attempt}`;
     if (item.state === 'running') {
       const reason = result.outcome === 'succeeded' ? 'completed' : safeReason(result.reason, 'executor_reported_failure');
-      await settleDurably(item.id, result.outcome === 'succeeded' ? 'completed' : 'failed', result.usage, (tx, it, cost) => {
+      const settlement = await settleDurably(item.id, result.outcome === 'succeeded' ? 'completed' : 'failed', result.usage, (tx, it, cost) => {
         move(tx, it, result.outcome, reason, {
           capacity: 'released',
           outcome: outcome(result.outcome === 'succeeded' ? 'completed' : 'failed_after_start', reason),
@@ -834,17 +881,17 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
         });
         tx.append(entry({ event: 'queue.result_recorded', itemId: it.id, projectId: it.projectId, reason, detail }));
       });
-      return { accepted: true, reason };
+      return receipt(reason, settlement);
     }
     if (item.state === 'interrupted') {
       // Comprovação de término pelo executor (Q8): libera a vaga; o item NÃO volta a executar.
       if (item.run.capacity !== 'held' || item.run.outcome !== null) return ignore(item, 'already_resolved');
-      await settleDurably(item.id, 'stopped', result.usage, (tx, it, cost) => {
+      const settlement = await settleDurably(item.id, 'stopped', result.usage, (tx, it, cost) => {
         Object.assign(it.run!, { capacity: 'released', outcome: outcome('ended_after_interruption', `reported_${result.outcome}`), admission: { ...it.run!.admission!, cost } });
         it.updatedAt = stamp(it);
         tx.append(entry({ event: 'queue.capacity_released', itemId: it.id, projectId: it.projectId, reason: 'executor_confirmed_end', detail: `reported ${result.outcome}${barrier ? ` under ${barrier}` : ''}` }));
       });
-      return { accepted: true, reason: 'interrupted_end_recorded' };
+      return receipt('interrupted_end_recorded', settlement);
     }
     return ignore(item, 'result_before_start');
   }
@@ -876,6 +923,7 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
   return {
     restore: () => serial(restoreNow),
     status: () => ({ restored, blocked: blockedReason }),
+    pendingSettlements: () => [...unsettled].map(([itemId, settlement]) => ({ itemId, settlement })),
     submit: (ownerId, raw) => serial(() => submitNow(ownerId, raw)),
     async tick() {
       // Proteção contra ciclos simultâneos: um ciclo por vez; o concorrente não espera nem repete.

@@ -149,7 +149,7 @@ describe('ciclo: prioridade, FIFO, duas aprovações e execução simulada', () 
     expect(events(s, 'queue.dispatch_intent', item.id)).toHaveLength(1);
     expect(capacity(s)).toBe(1);
     const result = await s.executor.report(tokenOf(s, item.id), 'completed');
-    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'completed' });
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'completed', persisted: true, settlement: 'settled' });
     expect(itemOf(s, item.id)).toMatchObject({ state: 'succeeded', run: { capacity: 'released', outcome: { kind: 'completed' } } });
     expect(capacity(s)).toBe(0);
     // Nada real: provedor simulado, sem código executado.
@@ -413,14 +413,14 @@ describe('falha antes de iniciar, resultado incerto, resultado atrasado', () => 
     const item = await s.scheduler.submit('admin', s.body());
     await driveToRunning(s, item.id);
     const result = await s.executor.report(tokenOf(s, item.id), 'completed');
-    expect(await s.scheduler.onResult({ ...result, token: '99999999-9999-4999-8999-999999999999' })).toEqual({ accepted: false, reason: 'result_mismatch' });
-    expect(await s.scheduler.onResult({ ...result, attempt: 2 })).toEqual({ accepted: false, reason: 'result_mismatch' });
-    expect(await s.scheduler.onResult({ ...result, epoch: result.epoch + 1 })).toEqual({ accepted: false, reason: 'result_mismatch' });
-    expect(await s.scheduler.onResult({ ...result, extra: true })).toEqual({ accepted: false, reason: 'invalid_result' });
+    expect(await s.scheduler.onResult({ ...result, token: '99999999-9999-4999-8999-999999999999' })).toEqual({ accepted: false, reason: 'result_mismatch', persisted: false, settlement: 'not_applicable' });
+    expect(await s.scheduler.onResult({ ...result, attempt: 2 })).toEqual({ accepted: false, reason: 'result_mismatch', persisted: false, settlement: 'not_applicable' });
+    expect(await s.scheduler.onResult({ ...result, epoch: result.epoch + 1 })).toEqual({ accepted: false, reason: 'result_mismatch', persisted: false, settlement: 'not_applicable' });
+    expect(await s.scheduler.onResult({ ...result, extra: true })).toEqual({ accepted: false, reason: 'invalid_result', persisted: false, settlement: 'not_applicable' });
     expect(itemOf(s, item.id).state).toBe('running');
-    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'completed' });
+    expect(await s.scheduler.onResult(result)).toEqual({ accepted: true, reason: 'completed', persisted: true, settlement: 'settled' });
     const closed = itemOf(s, item.id);
-    expect(await s.scheduler.onResult({ ...result, outcome: 'failed', reason: 'late' })).toEqual({ accepted: false, reason: 'late_result' });
+    expect(await s.scheduler.onResult({ ...result, outcome: 'failed', reason: 'late' })).toEqual({ accepted: false, reason: 'late_result', persisted: false, settlement: 'not_applicable' });
     expect(itemOf(s, item.id)).toEqual(closed);
     expect(events(s, 'queue.result_ignored').length).toBe(5);
   });
@@ -432,10 +432,10 @@ describe('falha antes de iniciar, resultado incerto, resultado atrasado', () => 
     const late = await s.executor.report(tokenOf(s, item.id), 'completed'); // resultado que chega "tarde"
     await s.restart();
     expect(capacity(s)).toBe(1);
-    expect(await s.scheduler.onResult(late)).toEqual({ accepted: true, reason: 'interrupted_end_recorded' });
+    expect(await s.scheduler.onResult(late)).toEqual({ accepted: true, reason: 'interrupted_end_recorded', persisted: true, settlement: 'settled' });
     expect(itemOf(s, item.id)).toMatchObject({ state: 'interrupted', run: { capacity: 'released', outcome: { kind: 'ended_after_interruption', reason: 'reported_succeeded' } } });
     expect(capacity(s)).toBe(0);
-    expect(await s.scheduler.onResult(late)).toEqual({ accepted: false, reason: 'already_resolved' });
+    expect(await s.scheduler.onResult(late)).toEqual({ accepted: false, reason: 'already_resolved', persisted: false, settlement: 'not_applicable' });
     await s.scheduler.tick();
     expect(itemOf(s, item.id).state).toBe('interrupted');
   });

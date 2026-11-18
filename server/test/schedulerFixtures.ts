@@ -14,7 +14,10 @@ import { createQueueAdmissionPort, type QueueAdmissionAdapter } from '../limits/
 import { DEFAULT_POLICY } from '../policy/defaultPolicy.ts';
 import { createBarrierGate, type BarrierGate } from '../queue/barrierGate.ts';
 import type { BarrierAuthority } from '../queue/contracts.ts';
-import type { AdmissionPort, ExecutorPort, TaskLookup } from '../queue/ports.ts';
+import type { AdmissionPort, ExecutorPort, LimitsEvidence, TaskLookup } from '../queue/ports.ts';
+import { QueueError } from '../queue/contracts.ts';
+import type { ControllerLimits } from '../limits/contracts.ts';
+import { limitsFingerprint, parseLimits } from '../limits/validation.ts';
 import { createQueueScheduler, type QueueScheduler } from '../queue/scheduler.ts';
 import type { QueueStore } from '../queue/store.ts';
 import { createSandboxQueueExecutor, type SandboxQueueExecutor } from '../sandbox/queueExecutor.ts';
@@ -60,6 +63,10 @@ export interface SchedulerStack {
   tasks: TaskLookup;
   /** Outro adaptador do controlador sobre as mesmas dependências (ainda não restaurado). */
   makeAdmission(): QueueAdmissionAdapter;
+  /** Faz `n` gravações do agendador falharem, depois de deixar passar `skip` (injeção de falha, R1). */
+  failCommits(n: number, skip?: number): void;
+  /** Altera os limites do controlador com aprovação de configuração do PO (#011). */
+  changeLimits(next: ControllerLimits): Promise<ControllerLimits>;
   /** Aprova todos os pedidos pendentes (cada um com prova própria de step-up). */
   approveAll(): Promise<number>;
   rejectAll(): Promise<number>;
@@ -76,6 +83,8 @@ export interface StackOptions {
   admission?: (base: QueueAdmissionAdapter) => AdmissionPort;
   /** `false`: o controlador fica SEM o núcleo de aprovações (aprovação ausente). */
   admissionApprovals?: boolean;
+  /** Evidência de limites: padrão = lida dos registros `limits.change` do #011; `null` = ausente. */
+  limitsHistory?: (() => LimitsEvidence) | null;
   providers?: ReturnType<typeof defaultProviderCatalog>;
   catalog?: Record<PolicyAction, PolicyActionInfo>;
   restore?: boolean;
@@ -135,8 +144,22 @@ export async function createSchedulerStack(options: StackOptions = {}): Promise<
   const catalog = options.catalog ?? testCatalog;
   const providers = options.providers ?? defaultProviderCatalog().map((p) => ({ ...p, status: 'available' as const, statusReason: 'verified_for_test' }));
 
+  /** R3: evidência dos limites a partir dos registros EXISTENTES do #011 (nenhuma fonte nova). */
+  const limitsFromApprovals = (): LimitsEvidence => {
+    let last: { at: string; fingerprint: string } | null = null;
+    for (const a of service.list('admin').filter((x) => x.binding.action === 'limits.change' && x.state === 'consumed')) {
+      for (const t of service.attemptsOf('admin', a.id)) {
+        if (t.state === 'succeeded') {
+          if (!last || t.outcomeAt! > last.at) last = { at: t.outcomeAt!, fingerprint: a.binding.paramsDigest };
+        } else if (t.state !== 'failed') return { kind: 'unknown' }; // resultado da alteração incerto
+      }
+    }
+    return last ? { kind: 'last_applied', fingerprint: last.fingerprint } : { kind: 'never_changed' };
+  };
+  const limitsHistory = options.limitsHistory === null ? undefined : (options.limitsHistory ?? limitsFromApprovals);
   const makeAdmission = () =>
     createQueueAdmissionPort({
+      limitsHistory,
       projects,
       tasks: tasksStore,
       policyCatalog: catalog,
@@ -159,7 +182,21 @@ export async function createSchedulerStack(options: StackOptions = {}): Promise<
     stack.executor = createSandboxQueueExecutor({ sandbox: stack.sandbox, provider: stack.provider });
     const executor = executorOverride ?? (options.executor ? options.executor(stack.executor) : stack.executor);
     const admission = options.admission ? options.admission(stack.admission) : stack.admission;
-    stack.scheduler = createQueueScheduler({ store: stack.store, gate: stack.gate, admission, executor, tasks, now });
+    // Gravações do agendador passam por um envoltório com injeção de falha (o portão usa o real).
+    const real = stack.store;
+    const store = { ...real, commit: <R>(change: Parameters<typeof real.commit<R>>[0]) => {
+        if (skipping > 0) {
+          skipping -= 1;
+          return real.commit(change);
+        }
+        if (failing > 0) {
+          failing -= 1;
+          return Promise.reject(new QueueError('store_write_failed'));
+        }
+        return real.commit(change);
+      },
+    };
+    stack.scheduler = createQueueScheduler({ store, gate: stack.gate, admission, executor, tasks, now });
     if (restore) await stack.scheduler.restore();
   }
 
@@ -180,6 +217,8 @@ export async function createSchedulerStack(options: StackOptions = {}): Promise<
   }
 
   let seq = 0;
+  let failing = 0;
+  let skipping = 0;
   Object.assign(stack, {
     h,
     clock,
@@ -189,6 +228,23 @@ export async function createSchedulerStack(options: StackOptions = {}): Promise<
     authority,
     tasks,
     makeAdmission,
+    failCommits(n: number, skip = 0) {
+      failing = n;
+      skipping = skip;
+    },
+    async changeLimits(next: ControllerLimits) {
+      const binding: ApprovalBinding = {
+        action: 'limits.change',
+        projectId: null,
+        resource: { type: 'limits', id: 'controller' },
+        target: { sha: null, ref: null },
+        subject: { kind: 'human', id: 'admin' },
+        paramsDigest: limitsFingerprint(parseLimits(next)),
+        policyVersion: DEFAULT_POLICY.version,
+      };
+      const confirmed = await service.confirmOwner({ ownerId: 'admin', binding, bindingDigest: bindingDigest(binding), proofId: await proof(), identity: CTX });
+      return stack.admission.controller()!.updateLimitsWithApproval({ kind: 'human', id: 'admin' }, next, confirmed.id);
+    },
     async approveAll() {
       const pending = service.list('admin').filter((a) => a.state === 'pending');
       for (const a of pending) {

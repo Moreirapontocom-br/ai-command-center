@@ -1,4 +1,4 @@
-import type { AdmissionDraft, AdmissionPort, AdmissionRestoreRecord, ExecutionUsage, QueueSubject } from '../queue/ports.ts';
+import type { AdmissionDraft, AdmissionPort, AdmissionRestoreRecord, ExecutionUsage, LimitsEvidence, QueueSubject } from '../queue/ports.ts';
 import { DEFAULT_LIMITS, type Admission, type AdmissionState } from './contracts.ts';
 import { createLimitsController, LimitsError, type LimitsController, type LimitsControllerOptions } from './controller.ts';
 import { limitsFingerprint, parseAdmissionRequest, requestFingerprint } from './validation.ts';
@@ -31,7 +31,17 @@ export interface QueueAdmissionAdapter extends AdmissionPort {
   controller(): LimitsController | null;
 }
 
-export function createQueueAdmissionPort(options: Omit<LimitsControllerOptions, 'restore'>): QueueAdmissionAdapter {
+export interface QueueAdmissionOptions extends Omit<LimitsControllerOptions, 'restore'> {
+  /**
+   * Evidência durável das alterações de limites (R3), lida dos registros EXISTENTES do núcleo de
+   * aprovações (#011: aprovações `limits.change` consumidas e suas tentativas) e injetada por quem
+   * monta o servidor. Ausente → `unknown` → o agendador não restaura (bloqueado).
+   */
+  limitsHistory?: () => LimitsEvidence;
+}
+
+export function createQueueAdmissionPort(input: QueueAdmissionOptions): QueueAdmissionAdapter {
+  const { limitsHistory, ...options } = input;
   const now = options.now ?? Date.now;
   let controller: LimitsController | null = null;
 
@@ -108,6 +118,13 @@ export function createQueueAdmissionPort(options: Omit<LimitsControllerOptions, 
   return {
     controller: () => controller,
     limitsFingerprint: currentFingerprint,
+    limitsEvidence(): LimitsEvidence {
+      if (!limitsHistory) return { kind: 'unknown' };
+      const evidence = limitsHistory();
+      if (evidence?.kind === 'never_changed') return { kind: 'never_changed' };
+      if (evidence?.kind === 'last_applied' && typeof evidence.fingerprint === 'string') return { kind: 'last_applied', fingerprint: evidence.fingerprint };
+      return { kind: 'unknown' };
+    },
 
     validate(params) {
       try {

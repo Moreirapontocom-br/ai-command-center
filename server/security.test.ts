@@ -268,6 +268,15 @@ describe('superfície de escrita do servidor', () => {
     }
     // O adaptador do executor só aceita provedor simulado e recusa execução real.
     expect(server.find((f) => f.path === 'server/sandbox/queueExecutor.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED \|\| options\.provider\.isolation !== 'simulated' \|\| options\.provider\.executesCode/);
+    // R4 (revisão do PR 2): nenhum resultado de executor chega por produção. As rotas HTTP não
+    // tocam a fila nem os adaptadores; ninguém fora dos módulos de origem cria os adaptadores;
+    // nenhuma rota recebe resultados/relatos de execução.
+    const httpFiles = server.filter((f) => f.path.startsWith('server/http/'));
+    expect(filesMatching(httpFiles, /queue\/|queueAdmission|queueExecutor|onResult|engageKillSwitch/)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/sandbox/')), /createSandboxQueueExecutor\(|from '[^']*sandbox\/queueExecutor/)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/limits/')), /createQueueAdmissionPort\(|from '[^']*limits\/queueAdmission/)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/')), /\.onResult\(/)).toEqual([]);
+    expect(POST_ROUTES.some((route) => /result|report|callback|webhook|executor|settle/.test(route))).toBe(false);
     expect(POST_ROUTES.some((route) => /queue|dispatch|enqueue|schedul|fila/.test(route))).toBe(false);
     // Execução real continua desligada.
     expect(server.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);

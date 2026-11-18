@@ -48,10 +48,19 @@ export interface ExecutionUsage {
   tokens: number | null;
 }
 
+/**
+ * Evidência DURÁVEL (registros existentes, nunca uma fonte nova) dos limites em vigor antes do
+ * reinício (R3): nenhuma alteração jamais aplicada; última alteração aplicada (impressão digital);
+ * ou impossível comprovar.
+ */
+export type LimitsEvidence = { kind: 'never_changed' } | { kind: 'last_applied'; fingerprint: string } | { kind: 'unknown' };
+
 /** Controlador de orçamento, quotas e kill switch (#022), adaptado. */
 export interface AdmissionPort {
   /** Impressão digital dos limites em vigor AGORA (Q2). */
   limitsFingerprint(): string;
+  /** Evidência dos limites anteriores ao reinício (R3). Ausente/erro = `unknown` = bloqueado. */
+  limitsEvidence(): LimitsEvidence;
   /** Validação semântica dos parâmetros na submissão. */
   validate(params: QueueAdmissionParams): { ok: true } | PortRefusal;
   /** Reconstrói o controlador a partir dos registros da fila. Lança se não puder comprovar (Q2). */

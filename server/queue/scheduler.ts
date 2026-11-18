@@ -13,6 +13,7 @@ import {
   QueueError,
   retryDelayMs,
   scopeKey,
+  type AdmissionSnapshot,
   type BarrierScope,
   type JsonValue,
   type QueueAdmissionParams,
@@ -23,7 +24,7 @@ import {
   type QueueRun,
 } from './contracts.ts';
 import { ACTOR_ID, checkAdmissionParams, checkExecutionParams, QueueDocumentError, REASON, UUID } from './documents.ts';
-import type { AdmissionPort, AdmissionRestoreRecord, ExecutionResult, ExecutorPort, QueueSubject, TaskLookup } from './ports.ts';
+import type { AdmissionPort, AdmissionRestoreRecord, ExecutionResult, ExecutionUsage, ExecutorPort, QueueSubject, TaskLookup } from './ports.ts';
 import { parseBarrierScope, type QueueStore, type QueueTransaction } from './store.ts';
 
 /**
@@ -113,6 +114,25 @@ function parseSubmit(raw: unknown): SubmitInput {
   return structuredClone(r) as unknown as SubmitInput;
 }
 
+/**
+ * Custo liquidado, calculado PELA FILA antes de gravar (R1): a mesma regra conservadora do
+ * controlador (#022) — confirmado pelo provedor → confirmado; desconhecido, API cobrada ou reserva
+ * estimada → `unknown` com a reserva inteira (nunca descartada); só `none` continua `none`.
+ */
+export function settledCost(reserved: AdmissionSnapshot['cost'], mode: string, usage: ExecutionUsage): AdmissionSnapshot['cost'] {
+  if (usage.cost.kind === 'confirmed') return { status: 'confirmed', reservedMinor: reserved.reservedMinor, confirmedMinor: usage.cost.amountMinor };
+  if (reserved.status === 'confirmed') return { ...reserved };
+  if (usage.cost.kind === 'unknown' || mode === 'metered_api' || reserved.status !== 'none') return { status: 'unknown', reservedMinor: reserved.reservedMinor, confirmedMinor: null };
+  return { status: 'none', reservedMinor: 0, confirmedMinor: null };
+}
+
+/**
+ * Bloqueios em que um resultado AINDA pode ser reconciliado (R2): o controlador continua confiável.
+ * Qualquer outro bloqueio do agendador (divergência, falha de gravação ou de liquidação, admissão
+ * incerta) adia o resultado: nada é gravado nem liquidado.
+ */
+const RESULT_SAFE_BLOCKS: ReadonlySet<string> = new Set(['limits_changed_unpersisted']);
+
 export function createQueueScheduler(options: QueueSchedulerOptions): QueueScheduler {
   const { store, gate, admission, executor, tasks } = options;
   const now = options.now ?? Date.now;
@@ -191,6 +211,44 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     if (status.state !== 'available') throw new QueueError(`store_${status.state}`);
   }
 
+  /** Bloqueia o agendador (o primeiro motivo prevalece) e registra no histórico, se possível. */
+  async function block(reason: string, itemId: string | null = null, projectId: string | null = null) {
+    blockedReason = blockedReason ?? reason;
+    await store.commit((tx) => tx.append(entry({ event: 'queue.settlement_divergence', itemId, projectId, reason }))).catch(() => undefined);
+  }
+
+  /**
+   * Liquidação DURÁVEL (R1). Ordem: 1) o ledger grava o desfecho, a vaga liberada e o custo
+   * conservador; 2) só então o controlador é liquidado; 3) o custo do controlador é conferido.
+   * - Falha na gravação: o controlador NÃO é tocado (vaga continua ocupada), o agendador bloqueia
+   *   e o erro sobe. No disco o item continua como estava (reinício → `interrupted`, vaga ocupada).
+   * - Falha ou divergência na liquidação: o ledger (fonte de verdade) já registra o desfecho; o
+   *   controlador fica com a vaga OCUPADA (mais restritivo) e o agendador bloqueia nesta sessão —
+   *   nenhuma vaga é reutilizada. No reinício o controlador é reconstruído do ledger.
+   * - Liquidação repetida é idempotente no adaptador (vaga já liberada → nada muda).
+   */
+  async function settleDurably(id: string, kind: 'completed' | 'failed' | 'stopped', usage: ExecutionUsage, write: (tx: QueueTransaction, it: QueueItem, cost: AdmissionSnapshot['cost']) => void) {
+    const item = current(id)!;
+    const snapshot = item.run!.admission!;
+    const cost = settledCost(snapshot.cost, item.run!.request.admission.mode, usage);
+    try {
+      await store.commit((tx) => write(tx, txItem(tx, id), cost));
+    } catch (error) {
+      await block('persist_failed', id, item.projectId);
+      throw error;
+    }
+    let settled: AdmissionSnapshot['cost'];
+    try {
+      settled = admission.settle(subjectOf(item), snapshot.admissionId, kind, usage);
+    } catch {
+      await block('settlement_failed', id, item.projectId);
+      return;
+    }
+    if (settled.status !== cost.status || settled.reservedMinor !== cost.reservedMinor || settled.confirmedMinor !== cost.confirmedMinor) {
+      await block('settlement_divergence', id, item.projectId);
+    }
+  }
+
   // ---------- Restauração (Q1/Q2) ----------
 
   async function blockForDivergence(reason: string) {
@@ -214,6 +272,17 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     }
     const problems: string[] = [];
     const records: AdmissionRestoreRecord[] = [];
+    // R3: o controlador restaurado nasce com os limites padrão. Só é aceito se houver EVIDÊNCIA
+    // durável de que os limites vigentes antes do reinício eram exatamente esses; sem evidência
+    // (ou com alteração aplicada para outros valores) → bloqueado, nunca mais permissivo.
+    let evidence: ReturnType<AdmissionPort['limitsEvidence']>;
+    try {
+      evidence = admission.limitsEvidence();
+    } catch {
+      evidence = { kind: 'unknown' };
+    }
+    if (evidence.kind === 'unknown') problems.push('limits_evidence_missing');
+    else if (evidence.kind === 'last_applied' && evidence.fingerprint !== baseline) problems.push('limits_unproven');
     for (const item of store.items()) {
       if (!item.run) {
         // Item do PR 1 além de `queued`: não há como comprovar vaga nem reserva (Q10) → bloqueia.
@@ -657,11 +726,10 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     }
     const latest = current(id)!;
     if (result === 'cancelled' && latest.run?.capacity === 'held' && !isTerminal(latest.state)) {
-      const cost = admission.settle(subjectOf(latest), latest.run.admission!.admissionId, 'stopped', { cost: { kind: 'unknown' }, tokens: null });
       // De `interrupted` para `failed` exigiria desfecho prévio: a parada vira cancelamento.
       const to = latest.state === 'interrupted' && terminal === 'failed' ? 'cancelled' : terminal;
-      await store.commit((tx) => {
-        const it = txItem(tx, id);
+      // Parada sem relato de consumo: custo desconhecido (a reserva continua contando).
+      await settleDurably(id, 'stopped', { cost: { kind: 'unknown' }, tokens: null }, (tx, it, cost) => {
         move(tx, it, to, reason, {
           capacity: 'released',
           outcome: it.run!.outcome ?? outcome('stop_confirmed', reason),
@@ -745,31 +813,36 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     // Vínculo: token, tentativa e época do despacho gravado.
     if (dispatch.token !== result.token || item.attempt !== result.attempt || dispatch.epoch !== result.epoch) return ignore(item, 'result_mismatch');
     if (isTerminal(item.state)) return ignore(item, 'late_result');
-    const subject = subjectOf(item);
-    const admissionId = item.run.admission.admissionId;
+    // R2: com o controlador fora de confiança (não restaurado ou bloqueio por divergência/falha),
+    // o resultado é ADIADO — nada é gravado nem liquidado; a vaga continua ocupada.
+    if (!restored) return ignore(item, 'result_deferred_not_restored');
+    if (blockedReason !== null && !RESULT_SAFE_BLOCKS.has(blockedReason)) return ignore(item, 'result_deferred_blocked');
+    // Consumo informado incoerente com o modo (tokens fora de API cobrada): recusado ANTES de gravar.
+    if (item.run.request.admission.mode !== 'metered_api' && result.usage.tokens !== null) return ignore(item, 'invalid_usage');
+    // R2/D3: barreira, kill switch ou bloqueio de limites NÃO impedem a reconciliação de uma
+    // execução anterior — só registram desfecho e liberam a vaga comprovadamente livre. Nada é
+    // despachado, reintentado ou reativado aqui (nenhum caminho de `onResult` cria item ou despacho).
+    const barrier = blockedFor(item.projectId);
+    const detail = barrier ? `attempt ${item.attempt} under ${barrier}` : `attempt ${item.attempt}`;
     if (item.state === 'running') {
-      const cost = admission.settle(subject, admissionId, result.outcome === 'succeeded' ? 'completed' : 'failed', result.usage);
       const reason = result.outcome === 'succeeded' ? 'completed' : safeReason(result.reason, 'executor_reported_failure');
-      await store.commit((tx) => {
-        const it = txItem(tx, item.id);
+      await settleDurably(item.id, result.outcome === 'succeeded' ? 'completed' : 'failed', result.usage, (tx, it, cost) => {
         move(tx, it, result.outcome, reason, {
           capacity: 'released',
           outcome: outcome(result.outcome === 'succeeded' ? 'completed' : 'failed_after_start', reason),
           admission: { ...it.run!.admission!, cost },
         });
-        tx.append(entry({ event: 'queue.result_recorded', itemId: it.id, projectId: it.projectId, reason, detail: `attempt ${it.attempt}` }));
+        tx.append(entry({ event: 'queue.result_recorded', itemId: it.id, projectId: it.projectId, reason, detail }));
       });
       return { accepted: true, reason };
     }
     if (item.state === 'interrupted') {
       // Comprovação de término pelo executor (Q8): libera a vaga; o item NÃO volta a executar.
       if (item.run.capacity !== 'held' || item.run.outcome !== null) return ignore(item, 'already_resolved');
-      const cost = admission.settle(subject, admissionId, 'stopped', result.usage);
-      await store.commit((tx) => {
-        const it = txItem(tx, item.id);
+      await settleDurably(item.id, 'stopped', result.usage, (tx, it, cost) => {
         Object.assign(it.run!, { capacity: 'released', outcome: outcome('ended_after_interruption', `reported_${result.outcome}`), admission: { ...it.run!.admission!, cost } });
         it.updatedAt = stamp(it);
-        tx.append(entry({ event: 'queue.capacity_released', itemId: it.id, projectId: it.projectId, reason: 'executor_confirmed_end', detail: `reported ${result.outcome}` }));
+        tx.append(entry({ event: 'queue.capacity_released', itemId: it.id, projectId: it.projectId, reason: 'executor_confirmed_end', detail: `reported ${result.outcome}${barrier ? ` under ${barrier}` : ''}` }));
       });
       return { accepted: true, reason: 'interrupted_end_recorded' };
     }

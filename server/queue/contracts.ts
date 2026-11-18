@@ -233,6 +233,7 @@ export const QUEUE_EVENTS = [
   'queue.restore_completed',
   'queue.restore_blocked',
   'queue.killswitch_engaged',
+  'queue.settlement_divergence',
 ] as const;
 export type QueueEvent = (typeof QUEUE_EVENTS)[number];
 

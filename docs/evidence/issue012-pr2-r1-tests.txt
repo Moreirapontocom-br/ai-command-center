@@ -1,0 +1,126 @@
+# Issue #012 — PR 2, revisão R1–R4: testes (gerado em 2026-11-18T03:52:07Z, commit 3e5d932b7754a7eae11db3d44c738924000a5656)
+
+## Testes da revisão e do agendador (verbose)
+ ✓ server/security.test.ts > superfície de escrita do servidor > a única chamada de rede do servidor é a do cliente GraphQL 3ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > o único endpoint da API do GitHub é o GraphQL fixo 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > só o provedor gh-cli cria subprocessos, e sempre com os argumentos congelados 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > POST só em login/logout (Issue #003), projetos (Issue #004), tarefas (Issue #005) e decisões de aprovação (Issue #011); o resto é GET/HEAD 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > políticas: sem rota de escrita, e o motor não grava nada nem usa I/O (Issue #020) 0ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > sandbox (Issue #021): sem execução real, sem I/O e sem rota HTTP 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > limites (Issue #022): sem I/O, sem rede, sem execução, sem conectores de IA e sem rota HTTP 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > aprovações (Issue #011): núcleo sem rede, sem execução e sem verificador simulado; ligado só pelos pontos revisados 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006) 0ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > projetos e tarefas gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issues #004/#005) 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > armazenamento compartilhado (Issue #012, D7): sem ambiente, rede, execução nem dependência de núcleos 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > fila (Issue #012, PR 1/PR 2): DORMENTE — sem rota, temporizador, execução real nem acesso às aprovações 4ms
+ ✓ server/security.test.ts > GraphQL somente leitura > todo documento exportado é uma query sem mutation/subscription 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > a allowlist tem exatamente os documentos de queries.ts 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > nenhum arquivo do servidor declara uma operação mutation/subscription 5ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (0) 2ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (1) 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (2) 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (3) 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (4) 0ms
+ ✓ server/security.test.ts > frontend > nunca fala diretamente com a API do GitHub 0ms
+ ✓ server/security.test.ts > frontend > um único ponto de rede; POST só para as rotas de escrita do próprio ACC 1ms
+ ✓ server/security.test.ts > frontend > não guarda sessão nem senha no navegador 1ms
+ ✓ server/limits/queueAdmission.test.ts > restauração do controlador (Q1/Q2) > vaga ocupada, aprovação consumida e idempotência restauradas; nada novo cabe na vaga 7ms
+ ✓ server/limits/queueAdmission.test.ts > restauração do controlador (Q1/Q2) > custo não confirmado continua comprometido (conservador); confirmado conta pelo valor confirmado 1ms
+ ✓ server/limits/queueAdmission.test.ts > restauração do controlador (Q1/Q2) > admissões incertas (intenção sem reserva) contam no rate limit 1ms
+ ✓ server/limits/queueAdmission.test.ts > restauração do controlador (Q1/Q2) > incoerência → nenhum controlador (aprovação repetida, impressão digital, vaga em terminal, restauração dupla) 1ms
+ ✓ server/limits/queueAdmission.test.ts > restauração do controlador (Q1/Q2) > controlador direto: restauração inválida lança e nunca libera nada 1ms
+ ✓ server/limits/queueAdmission.test.ts > restauração do controlador (Q1/Q2) > antes de restaurar, nada é admitido 0ms
+ ✓ server/queue/scheduler.test.ts > submissão (idempotência, identidade, projeto) > mesma chave + mesmo pedido → mesmo item; conteúdo diferente → conflito; nada executa 135ms
+ ✓ server/queue/scheduler.test.ts > submissão (idempotência, identidade, projeto) > valida identidade, projeto, tarefa, agente, parâmetros e chaves reservadas 95ms
+ ✓ server/queue/schedulerDocuments.test.ts > regras de alteração da extensão `run` > vaga não é liberada sem desfecho comprovado; terminal sem término informado é recusado 264ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > falha ao gravar o resultado: o controlador NÃO é liquidado, a vaga continua ocupada e o agendador bloqueia 304ms
+ ✓ server/queue/scheduler.test.ts > submissão (idempotência, identidade, projeto) > bloqueado (barreira/kill switch) → nada novo entra na fila 101ms
+ ✓ server/queue/schedulerDocuments.test.ts > regras de alteração da extensão `run` > pedido, reserva e despacho gravados são imutáveis; desfecho não é apagado 221ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > falha ao liquidar depois de gravar: ledger com o desfecho, controlador mais restritivo, bloqueio; reinício reconstrói do ledger 258ms
+ ✓ server/queue/schedulerDocuments.test.ts > regras de alteração da extensão `run` > `interrupted` não vai a terminal nem libera vaga sem comprovação; não volta a executar 235ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > custo divergente entre ledger e controlador → bloqueio 223ms
+ ✓ server/queue/schedulerDocuments.test.ts > regras de alteração da extensão `run` > `queued → failed` só com recusa definitiva; item do PR 1 nunca vai a `failed` nem ganha `run` 102ms
+ ✓ server/queue/scheduler.test.ts > ciclo: prioridade, FIFO, duas aprovações e execução simulada > ordena por prioridade e depois FIFO; só o primeiro elegível ocupa a vaga 514ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > cancelamento: falha ao gravar a parada confirmada → nada liquidado; a vaga continua ocupada 203ms
+ ✓ server/queue/schedulerDocuments.test.ts > regras de alteração da extensão `run` > item novo nasce sem vaga/reserva; sucessor exige antecessor com não início comprovado 195ms
+ ✓ server/queue/scheduler.test.ts > ciclo: prioridade, FIFO, duas aprovações e execução simulada > uma tarefa por vez: itens da mesma tarefa esperam a vez (sem disputar a aprovação pendente) 324ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > liquidação repetida é idempotente; resultado repetido é ignorado 206ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > custo desconhecido nunca é descartado (mesma regra conservadora do controlador) 1ms
+ ✓ server/queue/schedulerDocuments.test.ts > formato estrito (Q10) > extensão parcial, campo extra, vaga ocupada em terminal ou aprovação incoerente → inválido 195ms
+ ✓ server/queue/schedulerDocuments.test.ts > formato estrito (Q10) > documentos gravados pelo PR 2 reabrem íntegros; os do PR 1 continuam legíveis 224ms
+ ✓ server/queue/scheduler.test.ts > ciclo: prioridade, FIFO, duas aprovações e execução simulada > Q3: aprovação de admissão (limits) e de execução (sandbox) são distintas e de uso único 192ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > consumo incoerente com o modo é recusado antes de gravar ou liquidar 196ms
+ ✓ server/queue/scheduler.test.ts > ciclo: prioridade, FIFO, duas aprovações e execução simulada > integração: intenção gravada antes do despacho, início confirmado, término e vaga liberada 187ms
+ ✓ server/queue/schedulerReview.test.ts > R2 — resultados durante bloqueio: só reconciliação, nunca despacho/reintento/reativação > barreira global 200ms
+ ✓ server/queue/scheduler.test.ts > ciclo: prioridade, FIFO, duas aprovações e execução simulada > ciclos simultâneos: o concorrente não roda; a admissão e o início acontecem uma única vez 188ms
+ ✓ server/queue/schedulerReview.test.ts > R2 — resultados durante bloqueio: só reconciliação, nunca despacho/reintento/reativação > barreira de projeto 207ms
+ ✓ server/queue/schedulerReview.test.ts > R2 — resultados durante bloqueio: só reconciliação, nunca despacho/reintento/reativação > kill switch com parada não confirmada: o resultado tardio reconcilia; revogados continuam revogados 223ms
+ ✓ server/queue/scheduler.test.ts > limites de custo e concorrência > concorrência: a segunda tarefa espera (recuperável) e é admitida quando a vaga é liberada 311ms
+ ✓ server/queue/schedulerReview.test.ts > R2 — resultados durante bloqueio: só reconciliação, nunca despacho/reintento/reativação > resultado atrasado depois da parada confirmada pelo kill switch é ignorado 226ms
+ ✓ server/queue/scheduler.test.ts > limites de custo e concorrência > custo: API cobrada com orçamento R$ 0 → recusa definitiva, nada reservado nem despachado 256ms
+ ✓ server/queue/schedulerReview.test.ts > R2 — resultados durante bloqueio: só reconciliação, nunca despacho/reintento/reativação > controlador fora de confiança (não restaurado) → resultado adiado, nada gravado nem liquidado 205ms
+ ✓ server/queue/schedulerReview.test.ts > R3 — limites: reiniciar nunca amplia limites reduzidos > limites padrão, nunca alterados (evidência no #011) → restaura 86ms
+ ✓ server/queue/scheduler.test.ts > limites de custo e concorrência > gasto indisponível no catálogo → recuperável (não falha a tarefa) 165ms
+ ✓ server/queue/scheduler.test.ts > reinício (Q1/Q2/Q8, G1/G2) > controlador reconstruído do ledger: vaga, reserva e aprovações preservadas; nada é redespachado 274ms
+ ✓ server/queue/schedulerReview.test.ts > R3 — limites: reiniciar nunca amplia limites reduzidos > limites reduzidos: bloqueia na sessão; após reinício (com pendente e interrompido) não restaura e aciona a barreira 238ms
+ ✓ server/queue/schedulerReview.test.ts > R3 — limites: reiniciar nunca amplia limites reduzidos > limites alterados e depois devolvidos aos padrões (comprovado) → restaura 141ms
+ ✓ server/queue/schedulerReview.test.ts > R3 — limites: reiniciar nunca amplia limites reduzidos > sem evidência dos limites anteriores → bloqueado (mesmo com limites padrão) 78ms
+ ✓ server/queue/schedulerReview.test.ts > R3 — limites: reiniciar nunca amplia limites reduzidos > alteração de limites com desfecho incerto no #011 → bloqueado 90ms
+ ✓ server/queue/scheduler.test.ts > reinício (Q1/Q2/Q8, G1/G2) > reinício DURANTE o despacho: a intenção gravada vira `interrupted`, sem novo despacho 367ms
+ ✓ server/queue/schedulerReview.test.ts > escolhas técnicas mantidas pelo PO > 1) `sandbox.execute` é aprovada antes da admissão 113ms
+ ✓ server/queue/scheduler.test.ts > reinício (Q1/Q2/Q8, G1/G2) > admitido e não despachado no reinício: expira, libera a vaga e a reserva continua registrada 157ms
+ ✓ server/queue/schedulerReview.test.ts > escolhas técnicas mantidas pelo PO > 2) uma execução por tarefa por vez (inclusive enquanto um item da tarefa está interrompido) 172ms
+ ✓ server/queue/scheduler.test.ts > reinício (Q1/Q2/Q8, G1/G2) > Q2: limites diferentes dos gravados → bloqueado, barreira global acionada, nada admitido 193ms
+ ✓ server/queue/schedulerReview.test.ts > escolhas técnicas mantidas pelo PO > 3) submissões bloqueadas durante kill switch ou barreira 92ms
+ ✓ server/queue/scheduler.test.ts > reinício (Q1/Q2/Q8, G1/G2) > Q2: limites alterados durante a sessão (sem persistência) → agendador bloqueado 81ms
+ ✓ server/queue/scheduler.test.ts > reinício (Q1/Q2/Q8, G1/G2) > sem restauração nada é admitido 74ms
+ ✓ server/queue/schedulerReview.test.ts > escolhas técnicas mantidas pelo PO > 4) `interrupted` nunca volta a executar; a vaga só sai com confirmação confiável do executor 208ms
+ ✓ server/queue/scheduler.test.ts > falha antes de iniciar, resultado incerto, resultado atrasado > autorização vencida antes do preparo → não iniciado comprovado → sucessor com backoff e NOVAS aprovações 278ms
+ ✓ server/queue/scheduler.test.ts > falha antes de iniciar, resultado incerto, resultado atrasado > no máximo 3 tentativas (30 s, 60 s); não iniciado sem reintento autorizado → só falha 437ms
+ ✓ server/queue/scheduler.test.ts > falha antes de iniciar, resultado incerto, resultado atrasado > não iniciado sem reintento autorizado (ex.: execução real desligada) → falha sem sucessor 154ms
+ ✓ server/queue/scheduler.test.ts > falha antes de iniciar, resultado incerto, resultado atrasado > resultado incerto (falha parcial do provedor, erro, timeout) → `interrupted`, vaga ocupada, sem reintento 375ms
+ ✓ server/queue/scheduler.test.ts > falha antes de iniciar, resultado incerto, resultado atrasado > resultado atrasado, de outro token, tentativa ou época é ignorado; terminal nunca muda 225ms
+ ✓ server/queue/scheduler.test.ts > falha antes de iniciar, resultado incerto, resultado atrasado > Q8: término comprovado de um `interrupted` libera a vaga, mas o item NÃO volta a executar 214ms
+ ✓ server/queue/scheduler.test.ts > cancelamento > queued → cancelled; terminal → invalid_transition; de outro dono/projeto → not_found 106ms
+ ✓ server/queue/scheduler.test.ts > cancelamento > admitted → cancelled com a reserva liberada (nunca despachado) 179ms
+ ✓ server/queue/scheduler.test.ts > cancelamento > running: parada confirmada → cancelled e vaga liberada; sem confirmação → continua ocupada 452ms
+ ✓ server/queue/scheduler.test.ts > cancelamento > interrupted após reinício: o executor não conhece a execução → vaga continua ocupada 224ms
+ ✓ server/queue/scheduler.test.ts > kill switch (Q4) e revogação > projeto: barreira durável, revoga pendentes, pede parada das execuções; outro projeto intacto 239ms
+ ✓ server/queue/scheduler.test.ts > kill switch (Q4) e revogação > global: nada mais é admitido; liberar a barreira NÃO reativa revogados; reintento nunca é criado 255ms
+ ✓ server/queue/scheduler.test.ts > kill switch (Q4) e revogação > execução sem parada confirmada: continua ocupando a vaga e nada novo despacha 197ms
+ ✓ server/queue/scheduler.test.ts > expiração (Q9) > queued expira em 24 h (preparação descartada); legado do PR 1 também 108ms
+ ✓ server/queue/scheduler.test.ts > expiração (Q9) > admitted sem despacho em 60 s → expira e libera a reserva 195ms
+ ✓ server/queue/scheduler.test.ts > expiração (Q9) > execução além do prazo: pede a parada; sem confirmação a vaga NÃO é liberada 415ms
+ ✓ server/queue/scheduler.test.ts > recusas recuperáveis x definitivas (Q5) e aprovações > provedor temporariamente indisponível: continua queued (histórico sem repetição) e é admitido depois 220ms
+ ✓ server/queue/scheduler.test.ts > recusas recuperáveis x definitivas (Q5) e aprovações > provedor não verificado (catálogo real) → recuperável, nunca falha; expira pelo TTL 117ms
+ ✓ server/queue/scheduler.test.ts > recusas recuperáveis x definitivas (Q5) e aprovações > aprovação ausente (sem núcleo no controlador) → recuperável; nada admitido 144ms
+ ✓ server/queue/scheduler.test.ts > recusas recuperáveis x definitivas (Q5) e aprovações > aprovação rejeitada ou vencida → novo pedido pendente; o item nunca é admitido sem aprovação válida 190ms
+ ✓ server/queue/scheduler.test.ts > recusas recuperáveis x definitivas (Q5) e aprovações > recusa definitiva (política negada no executor) → `queued → failed` classificado 82ms
+ ✓ server/queue/scheduler.test.ts > compatibilidade com o PR 1 (Q10) e processos > item do PR 1 `queued` é lido, nunca admitido e expira; item do PR 1 em curso bloqueia a restauração 201ms
+ ✓ server/queue/scheduler.test.ts > compatibilidade com o PR 1 (Q10) e processos > outro processo segurando a fila → indisponível; nada é admitido nem restaurado 980ms
+ ✓ server/queue/scheduler.test.ts > compatibilidade com o PR 1 (Q10) e processos > dois agendadores na mesma fila: um único despacho por item (intenções gravadas e conferidas) 160ms
+ ✓ server/queue/scheduler.test.ts > adaptador do executor (simulado) > idempotente por token; outro token para o mesmo item é recusado sem tocar no provedor 159ms
+ ✓ server/queue/scheduler.test.ts > adaptador do executor (simulado) > recusa provedor que executa código ou não é simulado 68ms
+ Test Files  5 passed (5)
+      Tests  100 passed (100)
+
+## Suíte completa (resumo)
+     × a auditoria roda em push na main e manualmente, só com permissões de leitura 8ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ Test Files  1 failed | 51 passed (52)
+      Tests  1 failed | 1155 passed (1156)
+
+## scripts/secret-scan.test.mjs isolado (timeout intermitente conhecido sob carga)
+ Test Files  1 passed (1)
+      Tests  20 passed (20)
+
+## Verificações
+tsc server: ok
+eslint: ok
+✓ built in 203ms
+Nenhuma credencial encontrada (251 arquivo(s) versionado(s)).
+Nenhuma credencial encontrada (66 commit(s) do histórico de HEAD).
+server/index.ts alterado em relação à main: 0
+server/http alterado em relação à main: 0
+REAL_EXECUTION_ENABLED: REAL_EXECUTION_ENABLED = false as const

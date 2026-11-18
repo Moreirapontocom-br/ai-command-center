@@ -149,7 +149,16 @@ export async function openQueueStore(options: OpenQueueStoreOptions): Promise<Qu
         tx.append(entry({ event: 'queue.item_interrupted', itemId: item.id, projectId: item.projectId, from, to: 'interrupted', reason: 'instance_restart' }));
       } else if (item.state === 'admitted') {
         Object.assign(item, { state: 'expired', reason: 'instance_restart', updatedAt: at, closedAt: at, stateEpoch: tx.epoch });
+        // PR 2: nunca despachado (a intenção de despacho tiraria o item de `admitted`) → a vaga é
+        // liberada com o desfecho que o comprova; a reserva de custo continua registrada (Q1/Q9).
+        if (item.run) Object.assign(item.run, { capacity: 'released', outcome: { kind: 'not_dispatched', reason: 'instance_restart', retryable: false, at } });
         tx.append(entry({ event: 'queue.item_expired', itemId: item.id, projectId: item.projectId, from: 'admitted', to: 'expired', reason: 'instance_restart' }));
+      } else if (item.state === 'queued' && item.run && item.run.admissionIntentAt !== null) {
+        // PR 2: admissão possivelmente feita no controlador e não gravada. Nada foi despachado, mas
+        // a aprovação pode ter sido consumida: o item expira (sem retomada) e a intenção continua
+        // contando nos limites restaurados (G2).
+        Object.assign(item, { state: 'expired', reason: 'admission_uncertain', updatedAt: at, closedAt: at, stateEpoch: tx.epoch });
+        tx.append(entry({ event: 'queue.item_expired', itemId: item.id, projectId: item.projectId, from: 'queued', to: 'expired', reason: 'admission_uncertain' }));
       }
     }
     tx.append(entry({ event: 'queue.store_opened', reason: 'epoch_started', detail: `epoch ${tx.epoch}` }));

@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
 import { AGENT_IDS, POLICY_ACTIONS, type AgentRef, type PolicyAction } from '../../shared/contracts.ts';
 import {
+  ADMISSION_STATES,
+  BUDGET_CURRENCY,
   HARD_CEILINGS,
   USAGE_MODES,
+  type Admission,
   type AdmissionRequestInput,
   type ControllerLimits,
   type HumanApproval,
@@ -149,4 +152,44 @@ export function parseHumanApproval(raw: unknown): HumanApproval {
   if (isAgentId(by.id)) fail('approver_not_human');
   if (typeof raw.approvedAt !== 'string' || typeof raw.expiresAt !== 'string') fail('invalid_approval');
   return raw as unknown as HumanApproval;
+}
+
+const ADMISSION_FIELDS = ['id', 'idempotencyKey', 'ownerId', 'projectId', 'taskId', 'agentId', 'action', 'mode', 'state', 'reason', 'admittedAt', 'deadline', 'finishedAt', 'cost', 'tokens', 'cancellation', 'capacity', 'approvalIds'];
+const isIso = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
+
+/**
+ * Admissão restaurada da fonte persistente (Issue #012, PR 2). Estrita: campo extra/ausente ou
+ * combinação incoerente (vaga ocupada sem término lógico ainda ativo, custo confirmado sem valor,
+ * término sem data...) é recusada. Devolve uma cópia própria.
+ */
+export function parseRestoredAdmission(raw: unknown): Admission {
+  if (!isPlainObject(raw)) return fail('restore_invalid');
+  exactKeys(raw, ADMISSION_FIELDS, 'restore_invalid');
+  const a = raw as Record<string, unknown>;
+  if (typeof a.id !== 'string' || !UUID.test(a.id) || typeof a.idempotencyKey !== 'string' || !IDEMPOTENCY_KEY.test(a.idempotencyKey)) fail('restore_invalid');
+  if (typeof a.ownerId !== 'string' || !HUMAN_ID.test(a.ownerId) || typeof a.projectId !== 'string' || !UUID.test(a.projectId) || typeof a.taskId !== 'string' || !UUID.test(a.taskId)) fail('restore_invalid');
+  if (!isAgentId(a.agentId) || typeof a.action !== 'string' || !Object.hasOwn(POLICY_ACTIONS, a.action) || !(USAGE_MODES as readonly unknown[]).includes(a.mode)) fail('restore_invalid');
+  if (!(ADMISSION_STATES as readonly unknown[]).includes(a.state) || !(a.reason === null || (typeof a.reason === 'string' && REASON_TOKEN.test(a.reason)))) fail('restore_invalid');
+  if (!isIso(a.admittedAt) || !isIso(a.deadline) || !(a.finishedAt === null || isIso(a.finishedAt))) fail('restore_invalid');
+  if ((a.state === 'admitted') !== (a.finishedAt === null)) fail('restore_invalid');
+  const cost = a.cost;
+  if (!isPlainObject(cost)) return fail('restore_invalid');
+  exactKeys(cost, ['status', 'reservedMinor', 'confirmedMinor', 'currency'], 'restore_invalid');
+  if (!['none', 'estimated', 'confirmed', 'unknown'].includes(cost.status as string) || !isInt(cost.reservedMinor, 0, HARD_CEILINGS.budgetMinor) || cost.currency !== BUDGET_CURRENCY) fail('restore_invalid');
+  if ((cost.status === 'confirmed') !== (cost.confirmedMinor !== null) || !(cost.confirmedMinor === null || isInt(cost.confirmedMinor, 0, Number.MAX_SAFE_INTEGER))) fail('restore_invalid');
+  if (cost.status === 'none' && cost.reservedMinor !== 0) fail('restore_invalid');
+  if (a.tokens !== null) {
+    if (!isPlainObject(a.tokens)) return fail('restore_invalid');
+    exactKeys(a.tokens, ['ceiling', 'reported'], 'restore_invalid');
+    if (!isInt(a.tokens.ceiling, 1, HARD_CEILINGS.meteredApiTokenCeilingPerTask) || !(a.tokens.reported === null || isInt(a.tokens.reported, 0, Number.MAX_SAFE_INTEGER))) fail('restore_invalid');
+  }
+  if ((a.mode === 'metered_api') !== (a.tokens !== null)) fail('restore_invalid');
+  if (a.cancellation !== null) {
+    if (!isPlainObject(a.cancellation)) return fail('restore_invalid');
+    exactKeys(a.cancellation, ['requestedAt', 'result'], 'restore_invalid');
+    if (!isIso(a.cancellation.requestedAt) || !['pending', 'cancelled', 'not_supported', 'failed'].includes(a.cancellation.result as string)) fail('restore_invalid');
+  }
+  if (a.capacity !== 'held' && a.capacity !== 'released') fail('restore_invalid');
+  if (!Array.isArray(a.approvalIds) || a.approvalIds.length > 2 || !a.approvalIds.every((id) => typeof id === 'string' && APPROVAL_ID.test(id)) || new Set(a.approvalIds).size !== a.approvalIds.length) fail('restore_invalid');
+  return structuredClone(raw) as unknown as Admission;
 }

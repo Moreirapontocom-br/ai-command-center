@@ -107,6 +107,8 @@ describe('superfície de escrita do servidor', () => {
     expect(files.map((f) => f.path).sort()).toEqual([
       'server/sandbox/contracts.ts',
       'server/sandbox/provider.ts',
+      // Issue #012, PR 2: adaptador SIMULADO do executor da fila (só tipos de queue/ports.ts).
+      'server/sandbox/queueExecutor.ts',
       'server/sandbox/service.ts',
       'server/sandbox/simulatedProvider.ts',
       'server/sandbox/validation.ts',
@@ -126,6 +128,8 @@ describe('superfície de escrita do servidor', () => {
       'server/limits/contracts.ts',
       'server/limits/controller.ts',
       'server/limits/providers.ts',
+      // Issue #012, PR 2: adaptador do controlador para a fila (só tipos de queue/ports.ts).
+      'server/limits/queueAdmission.ts',
       'server/limits/simulatedApprovalVerifier.ts',
       'server/limits/validation.ts',
     ]);
@@ -228,9 +232,17 @@ describe('superfície de escrita do servidor', () => {
     }
   });
 
-  it('fila (Issue #012, PR 1): fundação DORMENTE — sem rota, despacho, temporizador, execução nem acesso às aprovações', () => {
+  it('fila (Issue #012, PR 1/PR 2): DORMENTE — sem rota, temporizador, execução real nem acesso às aprovações', () => {
     const files = server.filter((f) => f.path.startsWith('server/queue/'));
-    expect(files.map((f) => f.path).sort()).toEqual(['server/queue/barrierGate.ts', 'server/queue/contracts.ts', 'server/queue/documents.ts', 'server/queue/store.ts']);
+    expect(files.map((f) => f.path).sort()).toEqual([
+      'server/queue/barrierGate.ts',
+      'server/queue/classification.ts',
+      'server/queue/contracts.ts',
+      'server/queue/documents.ts',
+      'server/queue/ports.ts',
+      'server/queue/scheduler.ts',
+      'server/queue/store.ts',
+    ]);
     for (const file of files) {
       expect(file.code).not.toMatch(/process\.env|node:child_process|node:net|node:http|node:https|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
       // Sem agendamento nem ciclo próprio neste PR.
@@ -240,7 +252,31 @@ describe('superfície de escrita do servidor', () => {
       expect(file.code).not.toMatch(/approvals\/|sandbox\/(service|simulatedProvider|provider)|limits\/(controller|providers|simulatedApprovalVerifier)/);
     }
     // Só a inicialização do servidor usa a fila; nenhuma rota.
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/') && !f.path.startsWith('server/test/')), /queue\/(store|barrierGate|contracts|documents)/)).toEqual(['server/index.ts']);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/') && !f.path.startsWith('server/test/')), /queue\/(store|barrierGate|contracts|documents|classification)/)).toEqual(['server/index.ts']);
+    // PR 2 (Q7): o agendador NÃO é instanciado em produção — nenhum arquivo fora da fila o usa.
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/')), /queue\/scheduler|createQueueScheduler|QueueScheduler/)).toEqual([]);
+    expect(server.find((f) => f.path === 'server/index.ts')!.code).not.toMatch(/queue\/scheduler|createQueueScheduler|queueAdmission|queueExecutor|\.tick\(/);
+    // As interfaces estreitas (`ports.ts`) só têm tipos e só os dois adaptadores as importam, por `import type`.
+    expect(files.find((f) => f.path === 'server/queue/ports.ts')!.code).toMatch(/^import type /m);
+    expect(files.find((f) => f.path === 'server/queue/ports.ts')!.code).not.toMatch(/^import \{|^export (const|function|class)/m);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/')), /queue\/ports/).sort()).toEqual(['server/limits/queueAdmission.ts', 'server/sandbox/queueExecutor.ts']);
+    for (const path of ['server/limits/queueAdmission.ts', 'server/sandbox/queueExecutor.ts']) {
+      const code = server.find((f) => f.path === path)!.code;
+      expect(code).toMatch(/^import type \{[^}]+\} from '\.\.\/queue\/ports\.ts';$/m);
+      expect(code).not.toMatch(/from '\.\.\/queue\/(?!ports\.ts)/);
+      expect(code).not.toMatch(/approvals\/|\bsetInterval\(|\bsetTimeout\(/);
+    }
+    // O adaptador do executor só aceita provedor simulado e recusa execução real.
+    expect(server.find((f) => f.path === 'server/sandbox/queueExecutor.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED \|\| options\.provider\.isolation !== 'simulated' \|\| options\.provider\.executesCode/);
+    // R4 (revisão do PR 2): nenhum resultado de executor chega por produção. As rotas HTTP não
+    // tocam a fila nem os adaptadores; ninguém fora dos módulos de origem cria os adaptadores;
+    // nenhuma rota recebe resultados/relatos de execução.
+    const httpFiles = server.filter((f) => f.path.startsWith('server/http/'));
+    expect(filesMatching(httpFiles, /queue\/|queueAdmission|queueExecutor|onResult|engageKillSwitch/)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/sandbox/')), /createSandboxQueueExecutor\(|from '[^']*sandbox\/queueExecutor/)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/limits/')), /createQueueAdmissionPort\(|from '[^']*limits\/queueAdmission/)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/')), /\.onResult\(/)).toEqual([]);
+    expect(POST_ROUTES.some((route) => /result|report|callback|webhook|executor|settle/.test(route))).toBe(false);
     expect(POST_ROUTES.some((route) => /queue|dispatch|enqueue|schedul|fila/.test(route))).toBe(false);
     // Execução real continua desligada.
     expect(server.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);

@@ -40,6 +40,7 @@ import {
   parseAdmissionRequest,
   parseHumanApproval,
   parseLimits,
+  parseRestoredAdmission,
   REASON_TOKEN,
   requestFingerprint,
 } from './validation.ts';
@@ -119,6 +120,20 @@ export interface LimitsControllerOptions {
   now?: () => number;
   generateId?: () => string;
   logger?: Logger;
+  /**
+   * Restauração a partir da fonte persistente (Issue #012, PR 2 — Q1): admissões, reservas, custo,
+   * vagas e aprovações consumidas, reconstruídas do ledger da fila. Validação ESTRITA: qualquer
+   * incoerência lança `LimitsError('restore_invalid')` e nenhum controlador é criado (Q2). Os
+   * limites NÃO são restaurados (não têm persistência comprovada): o controlador nasce com
+   * `DEFAULT_LIMITS`, e quem restaura confere a impressão digital gravada.
+   */
+  restore?: ControllerRestore;
+}
+
+export interface ControllerRestore {
+  admissions: Array<{ admission: Admission; fingerprint: string }>;
+  /** Admissões possivelmente feitas e não gravadas: contam nos limites de solicitações. */
+  uncertain: Array<{ agentId: AgentRef; mode: UsageMode; at: string }>;
 }
 
 const MAX_AUDIT_ENTRIES = 1000;
@@ -146,6 +161,43 @@ export function createLimitsController(options: LimitsControllerOptions) {
   const killProjects = new Map<string, KillSwitchState>();
   const auditTrail: ControllerAuditEntry[] = [];
   let auditSeq = 0;
+  /**
+   * Admissões POSSIVELMENTE feitas antes de um reinício e nunca gravadas (Issue #012, PR 2): não têm
+   * reserva nem vaga (nada foi despachado), mas contam no rate limit e nas quotas oficiais (G2).
+   */
+  const uncertainAdmissions: Array<{ agentId: AgentRef; mode: UsageMode; at: number }> = [];
+
+  if (options.restore !== undefined) applyRestore(options.restore);
+
+  /** Restauração estrita (Q1/Q2): tudo ou nada; nunca cria permissão, vaga livre nem orçamento. */
+  function applyRestore(raw: ControllerRestore) {
+    const invalid = (): never => {
+      throw new LimitsError('restore_invalid');
+    };
+    if (typeof raw !== 'object' || raw === null || !Array.isArray(raw.admissions) || !Array.isArray(raw.uncertain)) invalid();
+    const ids = new Set<string>();
+    for (const entry of raw.admissions) {
+      let admission: Admission;
+      try {
+        admission = parseRestoredAdmission(entry?.admission);
+      } catch {
+        return invalid();
+      }
+      if (typeof entry.fingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(entry.fingerprint)) invalid();
+      const idemKey = `${admission.ownerId}|${admission.idempotencyKey}`;
+      if (ids.has(admission.id) || byIdempotency.has(idemKey)) invalid();
+      for (const approvalId of admission.approvalIds) if (usedApprovals.has(approvalId)) invalid();
+      ids.add(admission.id);
+      admissions.set(admission.id, admission);
+      byIdempotency.set(idemKey, { admissionId: admission.id, fingerprint: entry.fingerprint });
+      for (const approvalId of admission.approvalIds) usedApprovals.add(approvalId);
+    }
+    for (const u of raw.uncertain) {
+      if (!isAgentId(u?.agentId) || !(['subscription_assisted', 'official_integration', 'metered_api'] as unknown[]).includes(u.mode) || typeof u.at !== 'string' || !Number.isFinite(Date.parse(u.at))) invalid();
+      uncertainAdmissions.push({ agentId: u.agentId, mode: u.mode, at: Date.parse(u.at) });
+    }
+    audit({ event: 'controller_restored', actor: 'system:acc', projectId: null, admissionId: null, decision: 'recorded', reason: 'restored_from_queue' });
+  }
 
   const actorLabel = (actor: ControllerActor | { kind: 'agent'; id: AgentRef }) => `${actor.kind}:${actor.id}`;
 
@@ -470,7 +522,8 @@ export function createLimitsController(options: LimitsControllerOptions) {
       for (const limit of officialLimits) {
         const since = now() - limit.windowSeconds * 1000;
         const recent = [...admissions.values()].filter((a) => a.agentId === input.agentId && a.mode === input.mode && Date.parse(a.admittedAt) > since);
-        if (recent.length >= limit.count) deny('provider_request_limit', ctx);
+        const uncertainRecent = uncertainAdmissions.filter((u) => u.agentId === input.agentId && u.mode === input.mode && u.at > since).length;
+        if (recent.length + uncertainRecent >= limit.count) deny('provider_request_limit', ctx);
       }
 
       // Custo: SEMPRE pelo catálogo do servidor. Desconhecido = bloqueado.
@@ -485,7 +538,8 @@ export function createLimitsController(options: LimitsControllerOptions) {
       const occupied = [...admissions.values()].filter(holdsCapacity).length;
       if (occupied >= limits.maxConcurrent) deny('concurrency_limit', ctx);
       const windowStart = now() - limits.rateLimit.windowSeconds * 1000;
-      if ([...admissions.values()].filter((a) => Date.parse(a.admittedAt) > windowStart).length >= limits.rateLimit.count) deny('rate_limited', ctx);
+      const inWindow = [...admissions.values()].filter((a) => Date.parse(a.admittedAt) > windowStart).length + uncertainAdmissions.filter((u) => u.at > windowStart).length;
+      if (inWindow >= limits.rateLimit.count) deny('rate_limited', ctx);
 
       // Autorização da #020 para a ação em si.
       const actionEval = policyCheck(ownerId, input, input.action, approvals.action ?? null);

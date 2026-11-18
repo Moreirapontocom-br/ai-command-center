@@ -125,8 +125,8 @@ Nenhum teste existente foi alterado para ocultar regressão; os contratos da #01
 
 ## 7. Testes executados
 
-- Novos: **56** (`scheduler.test.ts` 43, `schedulerDocuments.test.ts` 7, `queueAdmission.test.ts` 6), cobrindo os itens 1–19 do pedido (lista nominal em `docs/evidence/issue012-pr2-tests.txt`).
-- Suíte completa local: **1134 de 1135** aprovados. A única falha é `scripts/main-audit.test.mjs`, falha **local conhecida e preexistente** no Windows (`core.autocrlf=true` faz checkout dos workflows com CRLF; nenhum workflow foi alterado neste PR; na CI Linux passa).
+- Novos: **77** (`scheduler.test.ts` 43, `schedulerReview.test.ts` 21 — revisão R1–R4, `schedulerDocuments.test.ts` 7, `queueAdmission.test.ts` 6), cobrindo os itens 1–19 do pedido (lista nominal em `docs/evidence/issue012-pr2-tests.txt`).
+- Suíte completa local (após a revisão, `docs/evidence/issue012-pr2-r1-tests.txt`): **1155 de 1156**. Numa execução anterior, `scripts/secret-scan.test.mjs` teve o timeout intermitente conhecido sob carga no Windows (passa isolado, 20/20). A única falha é `scripts/main-audit.test.mjs`, falha **local conhecida e preexistente** no Windows (`core.autocrlf=true` faz checkout dos workflows com CRLF; nenhum workflow foi alterado neste PR; na CI Linux passa).
 - TypeScript (`tsc -p tsconfig.server.json` e `tsc -b` no build), ESLint (0 problemas), build (ok), varredura de segredos (`tracked` e `history`: nenhuma credencial), verificações estruturais (`security.test.ts`, `hardening.test.ts`): ok.
 - Regressão #011/#020/#021/#022: todas as suítes existentes aprovadas sem alteração.
 - CI do GitHub: ver PR.
@@ -164,6 +164,66 @@ O armazenamento de aprovações (#011) ainda expõe referências internas mutáv
 8. **Kill switch do controlador** é em memória; após reinício o bloqueio vem da barreira durável da #011 (o portão a consulta antes de admitir e de despachar).
 9. **Múltiplas instâncias:** o bloqueio de processo do armazenamento impede duas instâncias; dois agendadores no mesmo processo só existem em teste.
 
-## 12. Parecer
+## 12. Revisão independente (R1–R4) — correções
 
-O PR 2 implementa o agendamento e o controle completos em modo **dormente e simulado**, com G1–G3 demonstradas por testes, CI local verde (exceto a falha preexistente do Windows) e nenhuma execução real habilitada. Os pontos de §9 são escolhas que **restringem** e ficam para validação do revisor e do PO; §11 lista o que permanece fora do escopo aprovado. **Pronto para revisão independente**; não pronto para merge sem a aprovação explícita do PO.
+Revisão sobre `7dca472`. Arquivos: `server/queue/scheduler.ts`, `ports.ts`, `contracts.ts` (evento `queue.settlement_divergence`), `server/limits/queueAdmission.ts`, `server/security.test.ts`, `server/test/schedulerFixtures.ts`; testes novos em `server/queue/schedulerReview.test.ts` (21).
+
+### R1 — Liquidação só depois da persistência (corrigido)
+Problema confirmado: `onResultNow()` e `requestCancellation()` liquidavam o controlador **antes** de gravar o ledger; uma falha de gravação deixava o controlador com a vaga livre e o ledger com a execução em curso.
+
+Protocolo novo (`settleDurably`):
+1. A fila calcula o custo liquidado com a mesma regra conservadora do controlador (`settledCost`: confirmado → confirmado; desconhecido, API cobrada ou reserva estimada → `unknown` com a reserva inteira; só `none` permanece `none`).
+2. **Grava o ledger** (desfecho, vaga liberada, custo). Falha → o controlador **não é tocado** (vaga ocupada), o agendador bloqueia (`persist_failed`) e o erro sobe; no reinício o item vira `interrupted` com a vaga ocupada.
+3. **Só então liquida o controlador.** Falha → o ledger já tem o desfecho; o controlador fica com a vaga **ocupada** (mais restritivo) e o agendador bloqueia (`settlement_failed`). Custo divergente → `settlement_divergence`. Nenhuma vaga é reutilizada na sessão; no reinício o controlador é reconstruído do ledger.
+4. Liquidação repetida é idempotente no adaptador (vaga já liberada → nada muda); resultado repetido → `late_result`.
+5. Consumo incoerente com o modo é recusado **antes** de gravar (`invalid_usage`).
+
+Testes com falhas injetadas: gravação do resultado; liquidação após gravação (+ reinício); custo divergente; gravação da parada confirmada no cancelamento; idempotência; custo desconhecido preservado; consumo incoerente.
+
+### R2 — Resultados durante bloqueio (definido e testado)
+Regra explícita em `onResultNow()`:
+- **Barreira global, barreira de projeto, kill switch e bloqueio por limites alterados na sessão:** o resultado é aceito **apenas como reconciliação** de execução anterior (token, tentativa e época gravados) — registra o desfecho e libera a vaga comprovadamente livre; o histórico anota `under <motivo>`. `onResult` não tem nenhum caminho que despache, crie sucessor ou reative item.
+- **Controlador fora de confiança** (não restaurado, ou bloqueio por divergência/falha de gravação/liquidação/admissão incerta): o resultado é **adiado** (`result_deferred_*`), sem gravar nem liquidar; a vaga continua ocupada.
+- Terminal (inclusive revogado pelo kill switch) → `late_result`.
+
+Testes: barreira global, barreira de projeto, kill switch com parada não confirmada + resultado tardio, resultado atrasado após parada confirmada, controlador não restaurado.
+
+### R3 — Limites personalizados (problema confirmado e corrigido)
+Problema confirmado: na versão revisada, uma redução de limites seguida de reinício **sem** reservas gravadas com os limites novos fazia o controlador renascer com `DEFAULT_LIMITS` (mais permissivos) e restaurar normalmente.
+
+Correção, **sem fonte de persistência nova**: a restauração exige **evidência durável** dos limites anteriores, lida dos registros já existentes do núcleo de aprovações (#011): toda alteração de limites passa por aprovação de configuração `limits.change`, cujo `paramsDigest` é a impressão digital dos limites aplicados, e por uma tentativa com resultado gravado. A evidência é injetada no adaptador (`limitsHistory`) — o controlador e a fila continuam sem importar o núcleo.
+- nunca alterados → restaura;
+- última alteração aplicada = limites padrão → restaura;
+- última alteração aplicada ≠ padrão → **bloqueado** (`limits_unproven`) + barreira global; nenhum controlador é criado;
+- sem evidência, ou alteração com desfecho incerto no #011 → **bloqueado** (`limits_evidence_missing`);
+- alteração durante a sessão → bloqueado (`limits_changed_unpersisted`), como antes.
+
+Testes: padrão; reduzidos com tarefa pendente e interrompida (reservas e itens intactos, nada liberado); reduzidos e devolvidos ao padrão; sem evidência; desfecho incerto.
+
+Limitação: o leitor de evidência do teste consulta o dono `admin` (modelo de administrador único). A montagem futura em produção deve usar o mesmo leitor; sem ele, o agendador não restaura.
+
+### R4 — Autenticidade do executor (validado e documentado)
+- Nenhuma autenticação de executor real foi integrada (conforme pedido).
+- Teste estrutural novo: nenhum arquivo de `server/http/` referencia a fila, os adaptadores, `onResult` ou o kill switch da fila; ninguém fora dos módulos de origem cria os adaptadores; ninguém fora da fila chama `.onResult(`; nenhuma rota POST de resultado/relato/callback/webhook/executor. O agendador continua não instanciado no `server/index.ts`.
+- Portanto, nesta etapa, **somente simulações controladas em teste** fornecem resultados.
+- **Exigência antes de habilitar execução real:** os resultados deverão ser autenticados na origem (identidade do executor real, verificada pelo servidor) e ter integridade comprovada (assinatura/MAC sobre item, token, tentativa, época, desfecho e consumo, com proteção contra repetição), além de idempotência e consulta duráveis no executor. O vínculo token/tentativa/época atual **não** é autenticação.
+
+### Escolhas técnicas mantidas (testes correspondentes)
+| Escolha | Teste |
+|---|---|
+| 1. `sandbox.execute` antes da admissão | `schedulerReview.test.ts` › escolha 1; `scheduler.test.ts` › Q3 |
+| 2. Uma execução por tarefa por vez | escolha 2 (inclui item `interrupted`); `scheduler.test.ts` › uma tarefa por vez |
+| 3. Submissões bloqueadas com kill switch/barreira | escolha 3; `scheduler.test.ts` › bloqueado |
+| 4. `interrupted` não volta a executar; vaga só com confirmação confiável | escolha 4; `scheduler.test.ts` › Q8 |
+
+Observação sobre a escolha 4: nas transições, `interrupted` continua um estado de saída só para `failed`/`cancelled`/`revoked` (contrato do PR 1); para fins de execução ele é terminal — nenhuma transição o leva de volta a `dispatching`/`running`.
+
+### Riscos residuais após a revisão
+1. Um bloqueio por `persist_failed`/`settlement_*` vale até o reinício (não há desbloqueio na sessão); resultados chegados nesse intervalo são adiados e o item fica `interrupted` no reinício.
+2. A regra de custo existe em dois lugares (`settledCost` e o controlador); a divergência é detectada e bloqueia, mas mudanças futuras na regra do controlador exigem atualizar as duas.
+3. A evidência de limites depende da disciplina de que **toda** alteração de limites passe pelo fluxo de aprovação `limits.change` da #011 (hoje é o único caminho em produção; o verificador simulado só existe em testes).
+4. Os riscos de §11 continuam válidos (em particular, o item 4 de §11 — a autenticação de resultados — fica explicitamente como exigência para habilitar execução real).
+
+## 13. Parecer
+
+O PR 2 implementa o agendamento e o controle completos em modo **dormente e simulado**, com G1–G3 demonstradas por testes e nenhuma execução real habilitada. As correções da revisão (§12) fecham R1 e R3 (problemas confirmados), definem e testam R2 e documentam R4. Os pontos de §9 são escolhas que **restringem** e ficam para validação do revisor e do PO; §11 lista o que permanece fora do escopo aprovado. **Pronto para revisão independente**; não pronto para merge sem a aprovação explícita do PO.

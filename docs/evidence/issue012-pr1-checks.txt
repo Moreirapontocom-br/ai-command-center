@@ -1,0 +1,38 @@
+# Issue #012 PR 1 — verificações (gerado em 2026-11-18T01:31:20Z)
+
+base origin/main: a65b238cc5aba09adee0d5975f969c0152b207a6
+branch: feature/012-queue-foundation
+
+## tsc -b
+ok (sem erros)
+
+## eslint .
+ok (sem erros)
+
+## npm run build
+✓ built in 232ms
+
+## check:secrets (dist) / check:csp
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+
+## check-secrets tracked / staged
+Nenhuma credencial encontrada (234 arquivo(s) versionado(s)).
+Nenhuma credencial encontrada (27 arquivo(s) preparado(s)).
+
+## Fumaça do servidor (fila dormente; diretórios temporários fora do Git/OneDrive; chave aleatória descartada)
+### 1) primeira instalação (ACC_QUEUE_INITIALIZE=if_absent)
+{"level":"info","message":"Aprovações","event":"approvals_opened","state":"available","reason":"none","globalBarrier":true}
+{"level":"info","message":"Fila de execução (dormente)","event":"queue_opened","state":"available","reason":"none","openedAs":"initial_install","barriersConfirmed":1,"barriersFailed":0,"blocked":"global_barrier"}
+### 2) reinício (encerrado por timeout → bloqueio abandonado retomado)
+{"level":"info","message":"Aprovações","event":"approvals_opened","state":"available","reason":"none","globalBarrier":true}
+{"level":"info","message":"Fila de execução (dormente)","event":"queue_opened","state":"available","reason":"none","openedAs":"restart","barriersConfirmed":0,"barriersFailed":0,"blocked":"global_barrier"}
+### 3) anchor da fila adulterado
+{"level":"info","message":"Aprovações","event":"approvals_opened","state":"available","reason":"none","globalBarrier":true}
+{"level":"warn","message":"Fila de execução (dormente)","event":"queue_opened","state":"unavailable","reason":"document_invalid","openedAs":"none","barriersConfirmed":1,"barriersFailed":0,"blocked":"queue_store_unavailable"}
+
+## Escopo
+REAL_EXECUTION_ENABLED: REAL_EXECUTION_ENABLED = false as const
+linhas alteradas em server/http: 0
+arquivos de teste da #011/#020/#021/#022 alterados: 0
+.github alterado: 0

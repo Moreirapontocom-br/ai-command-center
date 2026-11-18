@@ -1,9 +1,10 @@
 // @vitest-environment node
+import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { createFineGrainedTokenProvider } from './auth/credentials.ts';
 import type { ExecFileLike } from './auth/ghCli.ts';
-import { ConfigError, loadConfig, resolveApprovalsConfig } from './config.ts';
+import { ConfigError, loadConfig, resolveApprovalsConfig, resolveQueueConfig } from './config.ts';
 import { createConsoleLogger, redact } from './logger.ts';
 import { hashPassword } from './auth/password.ts';
 import { TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD, testPasswordHash } from './test/authFixtures.ts';
@@ -284,3 +285,35 @@ describe('aprovações (Issue #011, PR 2)', () => {
   });
 });
 
+describe('fila de execução (Issue #012, PR 1 — dormente)', () => {
+  const root = process.platform === 'win32' ? 'C:\\acc-test' : '/acc-test';
+  const abs = (...names: string[]) => join(root, ...names);
+  const approvals = { ACC_APPROVALS_DIR: abs('a'), ACC_APPROVALS_ANCHOR_DIR: abs('b'), ACC_APPROVAL_KEY: 'k'.repeat(64) };
+  it('sem variáveis: desligada', () => {
+    expect(loadConfig({}).queue).toEqual({ state: 'disabled' });
+    expect(loadConfig(approvals).queue).toEqual({ state: 'disabled' });
+  });
+
+  it('configurada: diretório absoluto exclusivo; inicialização só explícita', () => {
+    expect(loadConfig({ ...approvals, ACC_QUEUE_DIR: abs('q') }).queue).toEqual({ state: 'configured', queueDir: abs('q'), initialize: 'never' });
+    expect(loadConfig({ ...approvals, ACC_QUEUE_DIR: abs('q'), ACC_QUEUE_INITIALIZE: 'if_absent' }).queue).toMatchObject({ state: 'configured', initialize: 'if_absent' });
+  });
+
+  it('incompleta, insegura ou sem aprovações: inválida com motivo-token (nunca repete valores)', () => {
+    const cases: Array<[Record<string, string>, string]> = [
+      [{ ...approvals, ACC_QUEUE_INITIALIZE: 'if_absent' }, 'queue_dir_required'],
+      [{ ...approvals, ACC_QUEUE_DIR: 'relativo-canario' }, 'queue_dir_must_be_absolute'],
+      [{ ...approvals, ACC_QUEUE_DIR: abs('q'), ACC_QUEUE_INITIALIZE: 'sempre' }, 'queue_initialize_invalid'],
+      [{ ACC_QUEUE_DIR: abs('q') }, 'approvals_required'],
+      [{ ...approvals, ACC_QUEUE_DIR: abs('a') }, 'queue_dir_must_be_separate'],
+      [{ ...approvals, ACC_QUEUE_DIR: abs('B') }, 'queue_dir_must_be_separate'],
+      [{ ...approvals, ACC_QUEUE_DIR: abs('a', 'fila') }, 'queue_dir_must_be_separate'],
+      [{ ...approvals, ACC_QUEUE_DIR: root }, 'queue_dir_must_be_separate'],
+    ];
+    for (const [env, reason] of cases) {
+      const result = resolveQueueConfig(env, resolveApprovalsConfig(env));
+      expect(result).toEqual({ state: 'invalid', reason });
+      expect(JSON.stringify(result)).not.toContain('canario');
+    }
+  });
+});

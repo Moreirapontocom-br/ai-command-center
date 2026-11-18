@@ -60,6 +60,12 @@ Os dados fictícios são identificados de três formas:
 - **Interface:** página *Aprovações* (lista, detalhe do vínculo exato com resumo recalculado no navegador, parâmetros exatos somente leitura conferidos contra o `paramsDigest` — correção R1, `shared/approvalPresentation.ts` —, aprovar/rejeitar/revogar com senha, histórico). Aprovar exige os parâmetros apresentados e o `presentationDigest`; rejeitar nunca depende deles.
 - **Limites intencionais:** nenhuma rota executa, admite, inicia sandbox, aciona ou libera o kill switch (N9) ou altera limites; execução real continua desligada. A barreira global inicial permanece ativa: sua liberação operacional depende de etapa futura aprovada pelo Product Owner (R2). Detalhes em `docs/IMPLEMENTATION_REPORT_011_PR2.md`.
 
+## Issue #012 — fila de execução (PR 1: fundação persistente, dormente)
+
+- **Primitivas compartilhadas** (`server/storage/`): `canonical` (JSON canônico + MAC por namespace), `paths` (caminhos fora do Git/pastas sincronizadas), `lock` (escritor único, mesma máquina/disco local), `subkeys` (HKDF-SHA256 por domínio) e `signedLedger` (ledger + histórico encadeado + anchor + quarentena, mesmo desenho da #011). Os módulos de aprovações viraram reexportações com os mesmos bytes, nomes de arquivo e códigos de erro.
+- **Fila** (`server/queue/`): registros persistidos com transições impostas na gravação; reinício marca `dispatching`/`running` como `interrupted` (sem retomada) e `admitted` como `expired`; toda linhagem nova nasce bloqueada. O portão (`barrierGate`) só bloqueia: a barreira durável da #011, injetada por interface estreita, é a única autoridade que libera.
+- **Limites intencionais:** sem admissão, agendamento, despacho, rota, interface ou temporizador (PR 2); execução real desligada. Detalhes em `docs/IMPLEMENTATION_REPORT_012_PR1.md`.
+
 ## Fora do escopo (não implementado)
 
 Integrações com provedores de IA, escrita no GitHub, webhooks, banco de dados, autenticação de usuários, execução automática de agentes e deploy público.

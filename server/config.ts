@@ -1,4 +1,4 @@
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import type { AdminAccount } from './auth/adminAuth.ts';
 import { MIN_CONFIG_SCRYPT_N, parsePasswordHash, PasswordHashFormatError } from './auth/password.ts';
 import { createFineGrainedTokenProvider, type CredentialProvider } from './auth/credentials.ts';
@@ -49,6 +49,8 @@ export interface ServerConfig {
   auditFile: string;
   /** Aprovações humanas (Issue #011, PR 2). Nunca contém a chave (só de onde lê-la). */
   approvals: ApprovalsConfig;
+  /** Fila de execução (Issue #012, PR 1 — dormente). */
+  queue: QueueConfig;
 }
 
 /**
@@ -95,6 +97,38 @@ export function resolveApprovalsConfig(env: Record<string, string | undefined>):
     key: hasKey ? { kind: 'env' } : { kind: 'file', path: resolve(keyFile) },
     initialize: initialize === 'if_absent' ? 'if_absent' : 'never',
   };
+}
+
+/**
+ * Configuração da fila de execução (Issue #012, PR 1 — fundação persistente, DORMENTE):
+ * - `ACC_QUEUE_DIR`: caminho ABSOLUTO exclusivo da fila, separado (e não aninhado) dos diretórios
+ *   de aprovações e de anchors; fora do Git e de pastas sincronizadas (validado de novo ao abrir);
+ * - anchor no diretório de anchors das aprovações (`ACC_APPROVALS_ANCHOR_DIR`, U6) e chave derivada
+ *   por HKDF da chave das aprovações (U5): por isso a fila EXIGE aprovações configuradas;
+ * - `ACC_QUEUE_INITIALIZE=if_absent`: primeira instalação EXPLÍCITA (nasce com barreira global, U7).
+ *
+ * Sem `ACC_QUEUE_DIR` nem `ACC_QUEUE_INITIALIZE`: `disabled`. Os valores nunca vão para mensagens/logs.
+ */
+export type QueueConfig =
+  | { state: 'disabled' }
+  | { state: 'invalid'; reason: string }
+  | { state: 'configured'; queueDir: string; initialize: 'never' | 'if_absent' };
+
+export function resolveQueueConfig(env: Record<string, string | undefined>, approvals: ApprovalsConfig): QueueConfig {
+  const dir = env.ACC_QUEUE_DIR?.trim() ?? '';
+  const initialize = env.ACC_QUEUE_INITIALIZE?.trim() ?? '';
+  if (dir === '' && initialize === '') return { state: 'disabled' };
+  if (dir === '') return { state: 'invalid', reason: 'queue_dir_required' };
+  if (!isAbsolute(dir)) return { state: 'invalid', reason: 'queue_dir_must_be_absolute' };
+  if (initialize !== '' && initialize !== 'if_absent') return { state: 'invalid', reason: 'queue_initialize_invalid' };
+  if (approvals.state !== 'configured') return { state: 'invalid', reason: 'approvals_required' };
+  const queueDir = resolve(dir);
+  const key = (path: string) => resolve(path).toLowerCase().replace(/[\\/]+$/, '');
+  const nested = (a: string, b: string) => key(a) === key(b) || key(a).startsWith(`${key(b)}${sep}`) || key(a).startsWith(`${key(b)}/`);
+  for (const other of [approvals.approvalsDir, approvals.anchorDir]) {
+    if (nested(queueDir, other) || nested(other, queueDir)) return { state: 'invalid', reason: 'queue_dir_must_be_separate' };
+  }
+  return { state: 'configured', queueDir, initialize: initialize === 'if_absent' ? 'if_absent' : 'never' };
 }
 
 export class ConfigError extends Error {
@@ -236,6 +270,7 @@ export function loadConfig(
   const credentials = resolveCredentials(env, deployment, ghCliOverrides);
   const admin = resolveAdmin(env);
   const dataDir = resolve(env.ACC_DATA_DIR?.trim() || 'data');
+  const approvals = resolveApprovalsConfig(env);
 
   return {
     deployment,
@@ -258,6 +293,7 @@ export function loadConfig(
     projectsFile: join(dataDir, 'projects.json'),
     tasksFile: join(dataDir, 'tasks.json'),
     auditFile: join(dataDir, 'audit.json'),
-    approvals: resolveApprovalsConfig(env),
+    approvals,
+    queue: resolveQueueConfig(env, approvals),
   };
 }

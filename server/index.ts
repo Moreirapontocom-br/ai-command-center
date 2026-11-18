@@ -138,8 +138,14 @@ if (config.queue.state === 'invalid') {
   const settings = config.approvals;
   const environment = { env: process.env };
   const keyProvider = settings.key.kind === 'env' ? createEnvKeyProvider(process.env) : createFileKeyProvider(settings.key.path, environment);
+  // A MESMA autoridade vai para o armazenamento (confirma remoções de pedidos, R2) e para o portão.
+  const service = approvals?.service ?? null;
+  const authority: BarrierAuthority | null = service
+    ? { status: () => service.status(), barriers: () => service.barriers(), engage: (input) => service.engageBarrier(input) }
+    : null;
   try {
     queueStore = await openQueueStore({
+      authority,
       queueDir: config.queue.queueDir,
       anchorDir: settings.anchorDir,
       approvalsDir: settings.approvalsDir,
@@ -154,10 +160,6 @@ if (config.queue.state === 'invalid') {
         }
       },
     });
-    const service = approvals?.service ?? null;
-    const authority: BarrierAuthority | null = service
-      ? { status: () => service.status(), barriers: () => service.barriers(), engage: (input) => service.engageBarrier(input) }
-      : null;
     const gate = createBarrierGate({ authority, store: queueStore });
     const reconciled = await gate.reconcile();
     const status = queueStore.status();

@@ -127,4 +127,26 @@ describe('motor de ledger assinado', () => {
     expect(b.status()).toEqual({ state: 'unavailable', reason: 'key_invalid' });
     expect(await code(b.recover({ actorId: 'admin', reason: 'integrity_failure' }))).toBe('recovery_refused_key_invalid');
   });
+
+  it('R1: body() e history() são congelados em profundidade; checkChange recebe época e permissão', async () => {
+    const t = await setup();
+    const seen: unknown[] = [];
+    const l = await t.open({ initialize: 'if_absent', spec: { ...spec, checkChange: (_b, _a, ctx) => void seen.push(ctx) } });
+    await l.commit((tx) => void (tx.body.count = 2));
+    expect(Object.isFrozen(l.body())).toBe(true);
+    expect(Object.isFrozen(l.history())).toBe(true);
+    expect(Object.isFrozen(l.history()[0])).toBe(true);
+    expect(() => ((l.body() as Body).count = 99)).toThrow(TypeError);
+    expect(() => (l.history() as unknown[]).push('x')).toThrow(TypeError);
+    expect(l.body().count).toBe(2);
+    await l.commit((tx) => void (tx.body.count = 3), { token: 1 });
+    expect(seen.at(-2)).toEqual({ epoch: 1, allow: null });
+    expect(seen.at(-1)).toEqual({ epoch: 1, allow: { token: 1 } });
+    // Depois de reabrir, o estado continua íntegro (MAC) e congelado.
+    await l.close();
+    ledgers.splice(0);
+    const again = await t.open();
+    expect(again.body()).toEqual({ count: 3 });
+    expect(Object.isFrozen(again.body())).toBe(true);
+  });
 });

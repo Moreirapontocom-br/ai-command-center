@@ -113,35 +113,91 @@ export function checkQueueEntry(raw: unknown): QueueHistoryData {
   return e as unknown as QueueHistoryData;
 }
 
+/** Identidade do item: nunca muda depois de gravada. */
 const IMMUTABLE: ReadonlyArray<keyof QueueItem> = ['idempotencyKey', 'ownerId', 'projectId', 'taskId', 'agentId', 'createdAt'];
+/** Campos que só mudam JUNTO com uma transição de estado (R3). */
+const TRANSITION_ONLY: ReadonlyArray<keyof QueueItem> = ['state', 'reason', 'stateEpoch', 'closedAt', 'approvalId', 'attempt'];
 
 /**
- * Regras entre a versão gravada e a nova (impostas em TODA gravação):
- * - itens nunca são removidos e seus campos de identidade nunca mudam;
- * - item novo nasce `queued`, tentativa 0, sem aprovação;
- * - mudança de estado só pelas transições de `QUEUE_TRANSITIONS` (terminais e `revoked` nunca
- *   voltam; nada retorna a `queued`); a tentativa nunca diminui e só cresce ao entrar em `dispatching`;
- * - a aprovação vinculada nunca é trocada depois de definida.
+ * Permissão de remoção de UM pedido de barreira (R2). Só o armazenamento da fila a fornece, por um
+ * caminho interno (`clearBarrierRequest`) e depois de confirmar a barreira durável na autoridade;
+ * o `commit` público nunca repassa permissões.
  */
-export function checkQueueChange(before: Readonly<QueueBody>, after: Readonly<QueueBody>): void {
+export interface BarrierClearance {
+  kind: 'clear_barrier';
+  scopeKey: string;
+}
+
+const isClearance = (allow: unknown): allow is BarrierClearance =>
+  typeof allow === 'object' && allow !== null && (allow as BarrierClearance).kind === 'clear_barrier' && typeof (allow as BarrierClearance).scopeKey === 'string';
+const time = (iso: string) => Date.parse(iso);
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Regras entre a versão gravada e a nova, impostas em TODA gravação (inclusive na abertura de época).
+ *
+ * Itens existentes (R3):
+ * - nunca são removidos; identidade (`IMMUTABLE`) nunca muda;
+ * - terminais (inclusive `revoked`) nunca mudam em nada;
+ * - SEM transição: `state`, `reason`, `stateEpoch`, `closedAt`, `approvalId` e `attempt` não mudam;
+ *   `priority` só muda enquanto `queued` (repriorização prevista para o PR 2); `updatedAt` não regride;
+ * - COM transição: só as de `QUEUE_TRANSITIONS`; `stateEpoch` = época da gravação; `updatedAt` não
+ *   regride; tentativa só cresce (+1) ao entrar em `dispatching`; aprovação só pode ser vinculada
+ *   (de `null`) ao entrar em `admitted` e nunca é trocada; terminal exige `closedAt = updatedAt`;
+ *   `priority` não muda na mesma gravação.
+ *
+ * Itens novos: `queued`, tentativa 0, sem aprovação, sem motivo, sem encerramento,
+ * `stateEpoch` = época da gravação e `updatedAt = createdAt`.
+ *
+ * Pedidos de barreira (R2): podem ser ACRESCENTADOS (com a época da gravação); os existentes nunca
+ * são alterados e só são removidos com `BarrierClearance` do mesmo escopo — um por gravação.
+ */
+export function checkQueueChange(before: Readonly<QueueBody>, after: Readonly<QueueBody>, context: { epoch: number; allow: unknown }): void {
   const next = new Map(after.items.map((item) => [item.id, item]));
   for (const old of before.items) {
     const item = next.get(old.id);
     if (!item) fail('item removido');
-    for (const field of IMMUTABLE) if (item![field] !== old[field]) fail('campo imutável alterado');
-    if (old.approvalId !== null && item!.approvalId !== old.approvalId) fail('aprovação trocada');
-    if (item!.attempt < old.attempt) fail('tentativa regrediu');
-    if (item!.state !== old.state) {
-      if (!QUEUE_TRANSITIONS[old.state].includes(item!.state)) fail('transição proibida');
-      if (item!.attempt !== old.attempt + (item!.state === 'dispatching' ? 1 : 0)) fail('tentativa incoerente');
-    } else if (item!.attempt !== old.attempt) {
-      fail('tentativa sem transição');
+    const now = item!;
+    for (const field of IMMUTABLE) if (now[field] !== old[field]) fail('campo imutável alterado');
+    if (isTerminal(old.state)) {
+      if (!sameJson(now, old)) fail('item terminal alterado');
+      continue;
     }
-    if (isTerminal(old.state) && JSON.stringify(item) !== JSON.stringify(old)) fail('item terminal alterado');
+    if (time(now.updatedAt) < time(old.updatedAt)) fail('updatedAt regrediu');
+    if (now.state === old.state) {
+      for (const field of TRANSITION_ONLY) if (now[field] !== old[field]) fail('campo alterado sem transição');
+      if (now.priority !== old.priority && old.state !== 'queued') fail('prioridade fora da fila');
+      continue;
+    }
+    if (!QUEUE_TRANSITIONS[old.state].includes(now.state)) fail('transição proibida');
+    if (now.stateEpoch !== context.epoch) fail('época da transição');
+    if (now.attempt !== old.attempt + (now.state === 'dispatching' ? 1 : 0)) fail('tentativa incoerente');
+    if (now.priority !== old.priority) fail('prioridade alterada na transição');
+    if (old.approvalId !== null ? now.approvalId !== old.approvalId : now.approvalId !== null && now.state !== 'admitted') fail('aprovação trocada');
+    if (isTerminal(now.state) && now.closedAt !== now.updatedAt) fail('encerramento incoerente');
   }
   const known = new Set(before.items.map((item) => item.id));
   for (const item of after.items) {
     if (known.has(item.id)) continue;
-    if (item.state !== 'queued' || item.attempt !== 0 || item.approvalId !== null || item.closedAt !== null) fail('item novo inválido');
+    if (item.state !== 'queued' || item.attempt !== 0 || item.approvalId !== null || item.closedAt !== null || item.reason !== null) fail('item novo inválido');
+    if (item.stateEpoch !== context.epoch || item.updatedAt !== item.createdAt) fail('item novo inválido');
+  }
+
+  const remaining = new Map(after.pendingBarriers.map((b) => [scopeKey(b.scope), b]));
+  let removed = 0;
+  for (const old of before.pendingBarriers) {
+    const key = scopeKey(old.scope);
+    const now = remaining.get(key);
+    if (now) {
+      if (!sameJson(now, old)) fail('pedido de barreira alterado');
+      continue;
+    }
+    if (!isClearance(context.allow) || context.allow.scopeKey !== key) fail('pedido de barreira removido sem confirmação');
+    removed += 1;
+  }
+  if (removed > 1) fail('mais de um pedido de barreira removido');
+  const previous = new Set(before.pendingBarriers.map((b) => scopeKey(b.scope)));
+  for (const barrier of after.pendingBarriers) {
+    if (!previous.has(scopeKey(barrier.scope)) && barrier.epoch !== context.epoch) fail('pedido de barreira com época incoerente');
   }
 }

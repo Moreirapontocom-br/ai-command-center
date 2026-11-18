@@ -123,5 +123,29 @@ export class QueueError extends Error {
   }
 }
 
+/**
+ * Interface ESTREITA da autoridade de barreira (núcleo de aprovações #011, adaptado no `index.ts`).
+ * É a única que pode LIBERAR execução; a fila só a consulta e pede acionamentos.
+ */
+export interface BarrierAuthority {
+  status(): { state: 'available' | 'degraded' | 'unavailable'; reason: string | null };
+  barriers(): { durable: { global: unknown; projects: Record<string, unknown> }; volatile: readonly string[] };
+  engage(input: { scope: BarrierScope; actor: { kind: 'system'; id: string }; reason: string }): Promise<void>;
+}
+
+/** A autoridade confirma a barreira DURÁVEL no escopo? Qualquer erro ou dúvida → `false`. */
+export function authorityConfirms(authority: BarrierAuthority | null | undefined, scope: BarrierScope): boolean {
+  try {
+    if (!authority || authority.status().state !== 'available') return false;
+    const durable = authority.barriers().durable;
+    if (!durable || typeof durable !== 'object') return false;
+    if (scope.kind === 'global') return durable.global !== null && durable.global !== undefined;
+    const projects = durable.projects;
+    return typeof projects === 'object' && projects !== null && Object.hasOwn(projects, scope.projectId) && projects[scope.projectId] != null;
+  } catch {
+    return false;
+  }
+}
+
 export const isTerminal = (state: QueueItemState) => QUEUE_TERMINAL_STATES.includes(state);
 export const scopeKey = (scope: BarrierScope) => (scope.kind === 'global' ? 'global' : `project:${scope.projectId}`);

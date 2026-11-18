@@ -14,17 +14,19 @@ import {
   type WriteBytes,
 } from '../storage/signedLedger.ts';
 import {
+  authorityConfirms,
   QUEUE_IN_FLIGHT_STATES,
   QUEUE_SYSTEM_ACTOR,
   QueueError,
   scopeKey,
+  type BarrierAuthority,
   type BarrierScope,
   type PendingBarrier,
   type QueueBody,
   type QueueHistoryData,
   type QueueItem,
 } from './contracts.ts';
-import { checkQueueBody, checkQueueChange, checkQueueEntry, REASON, UUID } from './documents.ts';
+import { checkQueueBody, checkQueueChange, checkQueueEntry, REASON, UUID, type BarrierClearance } from './documents.ts';
 
 /**
  * Armazenamento durável da fila (Issue #012, PR 1 — D2/U6/U7), sobre o motor genérico
@@ -69,6 +71,11 @@ export interface OpenQueueStoreOptions {
   alive?: (pid: number) => boolean;
   maxLedgerBytes?: number;
   maxHistoryBytes?: number;
+  /**
+   * Autoridade de barreira (#011). Só ela confirma a remoção de um pedido de barreira pendente (R2);
+   * sem autoridade, nenhum pedido é removido. Deve ser a MESMA instância entregue ao `barrierGate`.
+   */
+  authority?: BarrierAuthority | null;
 }
 
 export type QueueTransaction = LedgerTransaction<QueueBody, QueueHistoryData>;
@@ -77,14 +84,21 @@ export interface QueueStore {
   status(): { state: LedgerState; reason: string | null };
   openedAs(): OpenedAs | null;
   epoch(): number;
+  /** Leituras CONGELADAS em profundidade (R1): modificar lança `TypeError`; o estado não muda. */
   items(): readonly Readonly<QueueItem>[];
   pendingBarriers(): readonly Readonly<PendingBarrier>[];
   history(): ReadonlyArray<Readonly<HistoryEntry<QueueHistoryData>>>;
-  /** Alteração atômica e validada (transições impostas). Para o PR 2 e para os testes. */
+  /**
+   * Alteração atômica e validada (`checkQueueChange`). Para o PR 2 e para os testes. Nunca remove
+   * nem altera pedidos de barreira (R2).
+   */
   commit<R>(change: (tx: QueueTransaction) => R): Promise<R>;
   /** Grava (de forma durável) um pedido de barreira ainda não confirmado na autoridade. */
   recordBarrierRequest(scope: BarrierScope, reason: string): Promise<void>;
-  /** Remove o pedido — SÓ depois que a autoridade confirmou a barreira durável. */
+  /**
+   * Remove o pedido — SÓ se a autoridade injetada na abertura confirmar a barreira durável no
+   * escopo, verificado dentro da operação serializada. Caso contrário: `barrier_not_confirmed`.
+   */
   clearBarrierRequest(scope: BarrierScope): Promise<void>;
   /** Recuperação ADMINISTRATIVA: sem rota; a autorização humana é responsabilidade de quem chama. */
   recover(input: { actorId: string; reason: string }): Promise<{ quarantineId: string }>;
@@ -125,8 +139,10 @@ export async function openQueueStore(options: OpenQueueStoreOptions): Promise<Qu
   function onEpoch(tx: QueueTransaction, info: EpochInfo) {
     if (info.lockRecovered) tx.append(entry({ event: 'queue.lock_recovered', reason: 'stale_lock' }));
     if (info.unapplied) tx.append(entry({ event: 'queue.history_unapplied', reason: 'ledger_write_lost', detail: `seq ${info.unapplied.first}-${info.unapplied.last}` }));
-    const at = iso();
+    const nowIso = iso();
     for (const item of tx.body.items) {
+      // Relógio atrasado nunca faz `updatedAt` regredir (a regra é imposta em `checkQueueChange`).
+      const at = Date.parse(item.updatedAt) > Date.parse(nowIso) ? item.updatedAt : nowIso;
       if (QUEUE_IN_FLIGHT_STATES.includes(item.state)) {
         const from = item.state;
         Object.assign(item, { state: 'interrupted', reason: 'instance_restart', updatedAt: at, stateEpoch: tx.epoch });
@@ -179,7 +195,10 @@ export async function openQueueStore(options: OpenQueueStoreOptions): Promise<Qu
   const toQueueError = (error: unknown): never => {
     throw error instanceof StorageError ? new QueueError(error.code) : error;
   };
+  // `commit` público: NUNCA repassa permissão (`allow`) ao motor — pedidos de barreira não podem ser
+  // removidos por aqui (R2). Só `clearBarrierRequest` abaixo fornece a permissão, após confirmar.
   const commit = <R>(change: (tx: QueueTransaction) => R) => ledger.commit(change).catch(toQueueError);
+  const authority = options.authority ?? null;
 
   return {
     status: () => ledger.status(),
@@ -200,12 +219,18 @@ export async function openQueueStore(options: OpenQueueStoreOptions): Promise<Qu
     },
     async clearBarrierRequest(rawScope) {
       const scope = parseBarrierScope(rawScope);
-      return commit((tx) => {
-        const index = tx.body.pendingBarriers.findIndex((b) => scopeKey(b.scope) === scopeKey(scope));
-        if (index < 0) return;
-        const [removed] = tx.body.pendingBarriers.splice(index, 1);
-        tx.append(entry({ event: 'queue.barrier_confirmed', projectId: scope.kind === 'project' ? scope.projectId : null, reason: removed.reason, detail: `scope ${scope.kind}` }));
-      });
+      const clearance: BarrierClearance = { kind: 'clear_barrier', scopeKey: scopeKey(scope) };
+      return ledger
+        .commit((tx) => {
+          const index = tx.body.pendingBarriers.findIndex((b) => scopeKey(b.scope) === scopeKey(scope));
+          if (index < 0) return;
+          // Confirmação DENTRO da operação serializada, na autoridade injetada na abertura (R2):
+          // sem barreira durável confirmada, nada é removido.
+          if (!authorityConfirms(authority, scope)) throw new QueueError('barrier_not_confirmed');
+          const [removed] = tx.body.pendingBarriers.splice(index, 1);
+          tx.append(entry({ event: 'queue.barrier_confirmed', projectId: scope.kind === 'project' ? scope.projectId : null, reason: removed.reason, detail: `scope ${scope.kind}` }));
+        }, clearance)
+        .catch(toQueueError);
     },
     recover: (input) => ledger.recover(input).catch(toQueueError),
     close: () => ledger.close(),

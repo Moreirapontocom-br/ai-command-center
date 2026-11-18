@@ -109,8 +109,12 @@ export interface SignedLedgerSpec<B, D> {
   checkBody(raw: unknown): B;
   /** Validação ESTRITA dos dados de uma entrada do histórico (lança em qualquer problema). */
   checkEntry(raw: unknown): D;
-  /** Regras entre versões (ex.: transições permitidas). Lança para recusar a alteração. */
-  checkChange?(before: Readonly<B>, after: Readonly<B>): void;
+  /**
+   * Regras entre versões (ex.: transições permitidas). Lança para recusar a alteração. `context`
+   * traz a época da gravação e a permissão opaca que o DONO do motor (nunca um chamador público)
+   * passou a `commit` — ex.: a remoção de um pedido de barreira já confirmado (R2).
+   */
+  checkChange?(before: Readonly<B>, after: Readonly<B>, context: ChangeContext): void;
   /** Abertura de cada época (reinício normal): ajustes conservadores no estado. */
   onEpoch(tx: LedgerTransaction<B, D>, info: EpochInfo): void;
   /** Linhagem nova (primeira instalação ou recuperação). */
@@ -118,6 +122,13 @@ export interface SignedLedgerSpec<B, D> {
 }
 
 export type WriteBytes = (path: string, content: Buffer) => Promise<void>;
+
+export interface ChangeContext {
+  /** Época da gravação. */
+  epoch: number;
+  /** Permissão opaca concedida pelo dono do motor para ESTA gravação (padrão `null`). */
+  allow: unknown;
+}
 
 export interface OpenSignedLedgerOptions<B, D> {
   spec: SignedLedgerSpec<B, D>;
@@ -144,10 +155,18 @@ export interface SignedLedger<B, D> {
   openedAs(): OpenedAs | null;
   lineage(): string;
   epoch(): number;
+  /**
+   * Leituras (R1): o estado devolvido é CONGELADO em profundidade, em tempo de execução. Qualquer
+   * tentativa de modificação lança `TypeError` (módulos ES são estritos) e o estado interno não
+   * muda; só `commit` altera o estado.
+   */
   body(): Readonly<B>;
   history(): ReadonlyArray<Readonly<HistoryEntry<D>>>;
-  /** Aplica uma alteração atômica. `change` é síncrona; se lançar, nada é gravado. */
-  commit<R>(change: (tx: LedgerTransaction<B, D>) => R): Promise<R>;
+  /**
+   * Aplica uma alteração atômica. `change` é síncrona e recebe CÓPIAS; se lançar, nada é gravado.
+   * `allow` é repassado a `checkChange`: só o dono do motor o fornece (nunca exponha o parâmetro).
+   */
+  commit<R>(change: (tx: LedgerTransaction<B, D>) => R, allow?: unknown): Promise<R>;
   /** Recuperação ADMINISTRATIVA (só quando indisponível por integridade/ausência). */
   recover(input: { actorId: string; reason: string }): Promise<{ quarantineId: string }>;
   close(): Promise<void>;
@@ -227,6 +246,15 @@ const isHex64 = (v: unknown): v is string => typeof v === 'string' && HEX64.test
 const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID.test(v);
 const isKeyId = (v: unknown): v is string => typeof v === 'string' && KEY_ID.test(v);
 const sha = (data: Buffer) => createHash('sha256').update(data).digest('hex');
+
+/** Congela objetos e arrays em profundidade (valores JSON) e devolve o próprio valor. */
+export function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+    for (const key of Object.keys(value)) deepFreeze((value as Record<string, unknown>)[key]);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 async function readOptional(path: string): Promise<{ raw: unknown } | null> {
   if (!(await checkRegularFile(path))) return null;
@@ -427,17 +455,18 @@ export async function openSignedLedger<B, D>(options: OpenSignedLedgerOptions<B,
     const anchor = sign<AnchorDocument>('anchor', { format: formats.anchor, version: DOCUMENT_VERSION, lineage, keyId, epoch: next.epoch, ledger: { generation, head }, history: { seq: tip.seq, head: tip.head }, updatedAt: at });
     writes.push(() => write(paths().anchor, canonicalJson(anchor)));
     for (const step of writes) await step();
-    return { lineage, generation, head, epoch: next.epoch, body: structuredClone(next.body), items: structuredClone(next.items) };
+    // R1: o estado em memória é congelado em profundidade; nenhuma leitura permite alterá-lo.
+    return { lineage, generation, head, epoch: next.epoch, body: deepFreeze(structuredClone(next.body)), items: deepFreeze(structuredClone(next.items)) };
   }
 
   /** Executa `change` sobre rascunhos e valida o resultado (sem gravar). */
-  function draft<R>(base: Loaded<B, D>, epoch: number, change: (tx: LedgerTransaction<B, D>) => R, forceLedger = false) {
+  function draft<R>(base: Loaded<B, D>, epoch: number, change: (tx: LedgerTransaction<B, D>) => R, forceLedger = false, allow: unknown = null) {
     const body = structuredClone(base.body);
     const pending: D[] = [];
     const result = change({ body, epoch, append: (data) => pending.push(structuredClone(data)) });
     if (spec.checkChange) {
       try {
-        spec.checkChange(base.body, body);
+        spec.checkChange(base.body, body, { epoch, allow });
       } catch {
         throw new StorageError('change_rejected');
       }
@@ -600,11 +629,11 @@ export async function openSignedLedger<B, D>(options: OpenSignedLedgerOptions<B,
     epoch: () => opened().epoch,
     body: () => opened().body,
     history: () => opened().items,
-    commit(change) {
+    commit(change, allow = null) {
       return enqueue(async () => {
         if (state !== 'available' || !current) throw new StorageError(state === 'degraded' ? 'store_degraded' : 'store_unavailable');
         const base = current;
-        const d = draft(base, base.epoch, change);
+        const d = draft(base, base.epoch, change, false, allow);
         if (!d.changed) return d.result;
         try {
           current = await persist(base, { body: d.body, items: d.items, epoch: base.epoch });

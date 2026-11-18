@@ -63,8 +63,8 @@ function fakeAuthority() {
 describe('portão de barreira — decisões (D3)', () => {
   it('linhagem nova nasce bloqueada; reconcile aciona a barreira global e só a liberação na autoridade abre', async () => {
     const h = await setup();
-    const store = await h.open({ initialize: 'if_absent' });
     const { state, authority, release } = fakeAuthority();
+    const store = await h.open({ initialize: 'if_absent' , authority });
     const gate = createBarrierGate({ authority, store });
     expect(gate.check(null)).toEqual({ open: false, reason: 'queue_barrier_pending' });
     expect(await gate.reconcile()).toEqual({ confirmed: 1, failed: 0 });
@@ -81,8 +81,8 @@ describe('portão de barreira — decisões (D3)', () => {
 
   it('cada fonte bloqueia sozinha (fail-closed)', async () => {
     const h = await setup();
-    const store = await h.open({ initialize: 'if_absent' });
     const { state, authority } = fakeAuthority();
+    const store = await h.open({ initialize: 'if_absent' , authority });
     await createBarrierGate({ authority, store }).reconcile();
     state.global = null;
     let kill: boolean | 'throw' = false;
@@ -128,8 +128,8 @@ describe('portão de barreira — decisões (D3)', () => {
 
   it('acionamento: grava o pedido ANTES; falha da autoridade mantém bloqueado e o pedido sobrevive ao reinício', async () => {
     const h = await setup();
-    const store = await h.open({ initialize: 'if_absent' });
     const { state, authority, release } = fakeAuthority();
+    const store = await h.open({ initialize: 'if_absent' , authority });
     await createBarrierGate({ authority, store }).reconcile();
     release();
     const gate = createBarrierGate({ authority, store });
@@ -141,7 +141,7 @@ describe('portão de barreira — decisões (D3)', () => {
     await store.close();
 
     // Reinício: o pedido continua gravado; ao reconciliar, é reenviado à autoridade.
-    const again = await h.open();
+    const again = await h.open({ authority });
     const gate2 = createBarrierGate({ authority, store: again });
     expect(gate2.check(PROJECT)).toEqual({ open: false, reason: 'queue_barrier_pending' });
     expect(await gate2.reconcile()).toEqual({ confirmed: 0, failed: 1 });
@@ -154,8 +154,8 @@ describe('portão de barreira — decisões (D3)', () => {
 
   it('autoridade que "aceita" mas não confirma a barreira durável → pedido mantido, bloqueado', async () => {
     const h = await setup();
-    const store = await h.open({ initialize: 'if_absent' });
     const { state, authority } = fakeAuthority();
+    const store = await h.open({ initialize: 'if_absent' , authority });
     state.engageIgnored = true;
     const gate = createBarrierGate({ authority, store });
     expect(await gate.reconcile()).toEqual({ confirmed: 0, failed: 1 });
@@ -170,8 +170,8 @@ describe('portão de barreira — decisões (D3)', () => {
       if (ctl.fail) throw new Error('EIO');
       await writeFileAtomic(path, content);
     };
-    const store = await h.open({ initialize: 'if_absent', writeFile: write });
     const { state, authority, release } = fakeAuthority();
+    const store = await h.open({ initialize: 'if_absent', writeFile: write , authority });
     await createBarrierGate({ authority, store }).reconcile();
     release();
     const gate = createBarrierGate({ authority, store });
@@ -202,8 +202,8 @@ describe('portão de barreira — decisões (D3)', () => {
 
   it('entradas inválidas são recusadas; acionamentos concorrentes são serializados', async () => {
     const h = await setup();
-    const store = await h.open({ initialize: 'if_absent' });
     const { state, authority } = fakeAuthority();
+    const store = await h.open({ initialize: 'if_absent' , authority });
     const gate = createBarrierGate({ authority, store });
     expect(await queueCode(gate.engage({ kind: 'project', projectId: 'x' } as never, 'ok'))).toBe('invalid_scope');
     expect(await queueCode(gate.engage({ kind: 'global' }, 'Inválido!'))).toBe('invalid_reason');
@@ -237,7 +237,7 @@ describe('portão de barreira — com o núcleo de aprovações REAL (#011)', ()
   it('mesmo diretório de anchors, arquivos e domínios independentes; barreira acionada pela fila é durável na #011', async () => {
     const h = await setup();
     const approvals = await approvalsFor(h);
-    const queue = await h.open({ initialize: 'if_absent' });
+    const queue = await h.open({ initialize: 'if_absent', authority: approvals.authority });
     expect(approvals.store.status().state).toBe('available');
     const gate = createBarrierGate({ authority: approvals.authority, store: queue });
     // Instalação nova das aprovações já tem barreira global: a fila está bloqueada de qualquer jeito.
@@ -279,7 +279,7 @@ describe('portão de barreira — com o núcleo de aprovações REAL (#011)', ()
       if (ctl.fail) throw new Error('EIO');
       await writeFileAtomic(path, content);
     });
-    const queue = await h.open({ initialize: 'if_absent' });
+    const queue = await h.open({ initialize: 'if_absent', authority: approvals.authority });
     const gate = createBarrierGate({ authority: approvals.authority, store: queue });
     ctl.fail = true;
     expect(await gate.reconcile()).toEqual({ confirmed: 0, failed: 1 });

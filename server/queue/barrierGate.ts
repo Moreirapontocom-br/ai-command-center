@@ -1,4 +1,4 @@
-import { QUEUE_SYSTEM_ACTOR, QueueError, scopeKey, type BarrierScope } from './contracts.ts';
+import { authorityConfirms, QUEUE_SYSTEM_ACTOR, QueueError, scopeKey, type BarrierAuthority, type BarrierScope } from './contracts.ts';
 import { REASON } from './documents.ts';
 import { parseBarrierScope, type QueueStore } from './store.ts';
 
@@ -23,12 +23,8 @@ import { parseBarrierScope, type QueueStore } from './store.ts';
  * admissão, a cada ciclo, imediatamente antes do despacho e no tratamento de resultados.
  */
 
-/** Interface ESTREITA da autoridade (adaptada do serviço de aprovações no `index.ts`). */
-export interface BarrierAuthority {
-  status(): { state: 'available' | 'degraded' | 'unavailable'; reason: string | null };
-  barriers(): { durable: { global: unknown; projects: Record<string, unknown> }; volatile: readonly string[] };
-  engage(input: { scope: BarrierScope; actor: { kind: 'system'; id: string }; reason: string }): Promise<void>;
-}
+/** Interface ESTREITA da autoridade (definida em `contracts.ts`; adaptada no `index.ts`). */
+export type { BarrierAuthority };
 
 export type GateDecision = { open: true } | { open: false; reason: string };
 
@@ -119,16 +115,7 @@ export function createBarrierGate(options: {
     }
   };
 
-  /** A autoridade confirma a barreira DURÁVEL no escopo? (qualquer erro → não) */
-  function confirmed(scope: BarrierScope): boolean {
-    try {
-      if (!authority || authority.status().state !== 'available') return false;
-      const durable = authority.barriers().durable;
-      return scope.kind === 'global' ? durable.global != null : durable.projects?.[scope.projectId] != null;
-    } catch {
-      return false;
-    }
-  }
+  const confirmed = (scope: BarrierScope) => authorityConfirms(authority, scope);
 
   async function engageNow(scope: BarrierScope, reason: string): Promise<EngageResult> {
     let recorded = false;
@@ -149,6 +136,7 @@ export function createBarrierGate(options: {
     if (!confirmed(scope)) return { durable: false, recorded };
     if (recorded) {
       try {
+        // A fila confirma de novo, na SUA autoridade, antes de remover o pedido (R2).
         await store!.clearBarrierRequest(scope);
       } catch {
         // Pedido continua gravado (ou a fila degradou): segue bloqueada; nada é liberado.

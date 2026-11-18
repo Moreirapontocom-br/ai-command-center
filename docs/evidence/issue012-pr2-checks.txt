@@ -1,0 +1,44 @@
+# Issue #012 — PR 2: verificações (gerado em 2026-11-18T03:35:32Z, commit 76012c5ef8cc7cb328723c47af13a9e202251501)
+base origin/main: b1fd7e6d067a116afa54525f2050550eb3972e17
+
+## TypeScript (tsc -b via build) / ESLint / build
+tsc server: ok
+eslint: ok (0 problemas)
+
+✓ built in 189ms
+
+## Varredura de segredos
+Nenhuma credencial encontrada (247 arquivo(s) versionado(s)).
+Nenhuma credencial encontrada (64 commit(s) do histórico de HEAD).
+
+## Falha local conhecida (Windows, core.autocrlf=true): scripts/main-audit.test.mjs
+core.autocrlf=true
+workflows alterados neste PR: 0
+  .github/workflows/ci.yml:         Unicode text, UTF-8 text, with CRLF line terminators
+  .github/workflows/main-audit.yml: Unicode text, UTF-8 text, with CRLF line terminators
+
+## Ausência de execução real / agendador dormente
+REAL_EXECUTION_ENABLED: REAL_EXECUTION_ENABLED = false as const
+server/index.ts menciona o agendador/adaptadores: 0 ocorrência(s)
+temporizadores em server/queue (código): 0 arquivo(s)
+rede/subprocesso em server/queue (código): 0 arquivo(s)
+rotas POST novas: 0
+arquivos de server/ fora de testes que importam queue/scheduler: 0
+
+## Diferença em relação à main
+ server/limits/controller.ts             |  58 ++-
+ server/limits/queueAdmission.test.ts    | 115 +++++
+ server/limits/queueAdmission.ts         | 201 ++++++++
+ server/limits/validation.ts             |  43 ++
+ server/queue/classification.ts          |  73 +++
+ server/queue/contracts.ts               | 144 +++++-
+ server/queue/documents.ts               | 246 ++++++++-
+ server/queue/ports.ts                   | 101 ++++
+ server/queue/scheduler.test.ts          | 748 ++++++++++++++++++++++++++++
+ server/queue/scheduler.ts               | 849 ++++++++++++++++++++++++++++++++
+ server/queue/schedulerDocuments.test.ts | 149 ++++++
+ server/queue/store.ts                   |   9 +
+ server/sandbox/queueExecutor.ts         | 155 ++++++
+ server/security.test.ts                 |  33 +-
+ server/test/schedulerFixtures.ts        | 260 ++++++++++
+ 15 files changed, 3174 insertions(+), 10 deletions(-)

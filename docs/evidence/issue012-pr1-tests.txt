@@ -1,0 +1,167 @@
+# Issue #012 PR 1 — testes (gerado em 2026-11-17T22:46:41Z, base origin/main a65b238cc5aba09adee0d5975f969c0152b207a6)
+
+## Suítes novas e estruturais (storage, fila, configuração, security, hardening)
+ ✓ server/storage/compat.test.ts > canonical/MAC (U4): mesmos bytes da #011 > vetores fixos: JSON canônico, SHA-256, MAC do ledger e keyId 5ms
+ ✓ server/storage/compat.test.ts > canonical/MAC (U4): mesmos bytes da #011 > erros: aprovações recebem ApprovalError; o módulo compartilhado, StorageError — mesmos códigos 1ms
+ ✓ server/storage/compat.test.ts > paths (U4): mesmas regras e códigos > ApprovalError com os códigos de antes (pelo shim) e StorageError (direto) 17ms
+ ✓ server/storage/compat.test.ts > lock (D7): mesmos nomes, códigos e semântica > shim mantém nomes de arquivo e API pública da #011 21ms
+ ✓ server/storage/compat.test.ts > lock (D7): mesmos nomes, códigos e semântica > retomada: store_locked dentro da exclusão continua store_locked (não vira lock_recovery_failed) 29ms
+ ✓ server/storage/compat.test.ts > lock (D7): mesmos nomes, códigos e semântica > falha inesperada na retomada → lock_recovery_failed (ambas as classes) 23ms
+ ✓ server/storage/compat.test.ts > lock (D7): mesmos nomes, códigos e semântica > bloqueios de armazenamentos diferentes no mesmo diretório não interferem (nomes distintos) 11ms
+ ✓ server/storage/subkeys.test.ts > derivação de subchaves (HKDF) > é HKDF-SHA256 com sal fixo e info = domínio; determinística 4ms
+ ✓ server/storage/subkeys.test.ts > derivação de subchaves (HKDF) > domínios diferentes → chaves e keyIds independentes; nenhum coincide com a chave principal 1ms
+ ✓ server/storage/subkeys.test.ts > derivação de subchaves (HKDF) > separação de domínio criptográfico: MAC da fila nunca valida como MAC das aprovações (e vice-versa) 1ms
+ ✓ server/storage/subkeys.test.ts > derivação de subchaves (HKDF) > material secreto nunca é serializado nem exibido 2ms
+ ✓ server/storage/subkeys.test.ts > derivação de subchaves (HKDF) > entradas inválidas são recusadas 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > a única chamada de rede do servidor é a do cliente GraphQL 3ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > o único endpoint da API do GitHub é o GraphQL fixo 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > só o provedor gh-cli cria subprocessos, e sempre com os argumentos congelados 2ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > POST só em login/logout (Issue #003), projetos (Issue #004), tarefas (Issue #005) e decisões de aprovação (Issue #011); o resto é GET/HEAD 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > políticas: sem rota de escrita, e o motor não grava nada nem usa I/O (Issue #020) 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > sandbox (Issue #021): sem execução real, sem I/O e sem rota HTTP 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > limites (Issue #022): sem I/O, sem rede, sem execução, sem conectores de IA e sem rota HTTP 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > aprovações (Issue #011): núcleo sem rede, sem execução e sem verificador simulado; ligado só pelos pontos revisados 3ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006) 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > projetos e tarefas gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issues #004/#005) 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > armazenamento compartilhado (Issue #012, D7): sem ambiente, rede, execução nem dependência de núcleos 1ms
+ ✓ server/security.test.ts > superfície de escrita do servidor > fila (Issue #012, PR 1): fundação DORMENTE — sem rota, despacho, temporizador, execução nem acesso às aprovações 2ms
+ ✓ server/security.test.ts > GraphQL somente leitura > todo documento exportado é uma query sem mutation/subscription 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > a allowlist tem exatamente os documentos de queries.ts 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > nenhum arquivo do servidor declara uma operação mutation/subscription 3ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (0) 2ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (1) 1ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (2) 1ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (3) 0ms
+ ✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (4) 0ms
+ ✓ server/security.test.ts > frontend > nunca fala diretamente com a API do GitHub 0ms
+ ✓ server/security.test.ts > frontend > um único ponto de rede; POST só para as rotas de escrita do próprio ACC 1ms
+ ✓ server/security.test.ts > frontend > não guarda sessão nem senha no navegador 1ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > alteração recusada (checkChange/checkBody/entrada) não grava nem degrada 75ms
+ ✓ server/config.test.ts > configuração > sem token, inicia em modo demonstração 5ms
+ ✓ server/config.test.ts > configuração > aceita token fine-grained 1ms
+ ✓ server/config.test.ts > configuração > recusa tokens que não são fine-grained, sem repetir o valor na mensagem 2ms
+ ✓ server/config.test.ts > configuração > recusa credenciais em variáveis VITE_ (seriam embutidas no frontend) 2ms
+ ✓ server/config.test.ts > configuração > recusa expor o servidor fora do loopback 1ms
+ ✓ server/config.test.ts > configuração > valida a porta 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > sem GITHUB_AUTH, mantém o comportamento fine-grained 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > GITHUB_AUTH=gh-cli ativa o GitHub CLI sem executar nada ao carregar a configuração 2ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > gh-cli não detecta nada automaticamente: sem GITHUB_AUTH, sem token, é modo demonstração 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > recusa GITHUB_AUTH=gh-cli junto com GITHUB_TOKEN (configuração ambígua) 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > recusa valores desconhecidos sem repetir o valor 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > gh-cli é exclusivo para desenvolvimento local 1ms
+ ✓ server/config.test.ts > seleção da autenticação (GITHUB_AUTH) > GH_PATH precisa ser absoluto e só vale com gh-cli 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > recusa gh-cli sem ACC_DEPLOYMENT, sem executar o gh 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > recusa gh-cli com ACC_DEPLOYMENT=production 0ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > recusa valores desconhecidos de ACC_DEPLOYMENT sem repetir o valor (inclusive variações de "local") 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > aceita gh-cli com ACC_DEPLOYMENT=local (espaços nas pontas ignorados) e registra o ambiente 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > ACC_DEPLOYMENT=local não relaxa as demais restrições do gh-cli 1ms
+ ✓ server/config.test.ts > gh-cli restrito a ACC_DEPLOYMENT=local (Issue #003) > fine-grained continua funcionando com ou sem ACC_DEPLOYMENT 1ms
+ ✓ server/config.test.ts > proteção contra exposição de credenciais > o provedor de credencial não revela o token ao ser serializado ou inspecionado 1ms
+ ✓ server/config.test.ts > proteção contra exposição de credenciais > o logger mascara tokens e chaves privadas 3ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > sem administrador: admin=null (login indisponível); cookie não Secure fora de produção 0ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > primeira instalação legítima: só com if_absent; nasce com barreira global pendente 75ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — decisões (D3) > linhagem nova nasce bloqueada; reconcile aciona a barreira global e só a liberação na autoridade abre 75ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > limite de tamanho: recusa antes de gravar, sem degradar 53ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — decisões (D3) > cada fonte bloqueia sozinha (fail-closed) 45ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > documento com campo extra ou formato de outro núcleo → document_invalid; MAC de outro namespace → mac_invalid 109ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > especificação inválida é recusada 4ms
+ ✓ server/storage/signedLedger.test.ts > motor de ledger assinado > chave ausente ou curta → indisponível (key_unavailable/key_invalid), sem criar documentos 27ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > reinício íntegro: época nova, estado e pedidos preservados, histórico encadeado 73ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — decisões (D3) > acionamento: grava o pedido ANTES; falha da autoridade mantém bloqueado e o pedido sobrevive ao reinício 92ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — decisões (D3) > autoridade que "aceita" mas não confirma a barreira durável → pedido mantido, bloqueado 33ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — decisões (D3) > falha ao gravar o pedido na fila: fila degradada (bloqueada) e a autoridade é acionada mesmo assim 41ms
+ ✓ server/hardening.test.ts > cabeçalhos de segurança da API > estão presentes em sucesso e em todas as respostas de erro 55ms
+ ✓ server/hardening.test.ts > cabeçalhos de segurança da API > também na resposta 429 do rate limit 11ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa sem porta 7ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa porta errada 7ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa subdomínio que imita localhost 6ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa IP de rede local 5ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > estado de execução incerto: dispatching/running → interrupted; admitted → expired; nada é retomado 196ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — decisões (D3) > integridade da fila em dúvida → reconcile aciona a barreira global (queue_integrity) 69ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > aceita e-mail + hash scrypt forte; cookie Secure em produção 341ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > recusa senha em texto puro no ambiente, sem repetir o valor 1ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa 0.0.0.0 7ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa Origin "null" (sandbox/arquivo local) 6ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa Origin com outra porta 6ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa Origin https da mesma máquina 8ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > recusa Origin com sufixo enganoso 6ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > aceita Host de loopback 127.0.0.1 6ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > aceita Host de loopback localhost 6ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > aceita Host de loopback LOCALHOST 5ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > aceita Host de loopback [::1] 6ms
+ ✓ server/hardening.test.ts > Host, Origin e loopback > aceita navegação same-origin e sem Origin (ferramentas locais) 6ms
+ ✓ server/hardening.test.ts > cabeçalhos sensíveis nunca aparecem em respostas ou logs > Cookie, Authorization e Set-Cookie enviados pelo cliente não são ecoados 9ms
+ ✓ server/hardening.test.ts > cabeçalhos sensíveis nunca aparecem em respostas ou logs > erro interno cuja causa contém cookie/credenciais não vaza na resposta nem no log 7ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara campos sensíveis pelo NOME, qualquer que seja o valor 1ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara cabeçalho Cookie em texto livre na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara Set-Cookie em JSON na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara Authorization Basic na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara Basic solto na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara token em query string na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara senha em formulário na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara token OAuth do gh na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > mascara token fine-grained na mensagem 0ms
+ ✓ server/hardening.test.ts > logger: mascaramento > meta não sobrescreve time/level/message 1ms
+ ✓ server/hardening.test.ts > logger: mascaramento > não mascara campos operacionais legítimos 0ms
+ ✓ server/hardening.test.ts > CSP do frontend > produção: sem inline, sem eval, sem origens externas 0ms
+ ✓ server/hardening.test.ts > CSP do frontend > desenvolvimento: só relaxa script/style inline e WebSocket de loopback (HMR) 0ms
+ ✓ server/hardening.test.ts > CSP do frontend > o navegador nunca é autorizado a falar diretamente com o GitHub 0ms
+ ✓ server/hardening.test.ts > CSP do frontend > o Vite aplica a política de produção no preview e a de desenvolvimento no dev server 1ms
+ ✓ server/hardening.test.ts > CSP do frontend > index.html não tem script/estilo inline nem handlers de evento 1ms
+ ✓ server/hardening.test.ts > integração GitHub exclusivamente de leitura (Issue #003) > o único método HTTP declarado no servidor é o POST do GraphQL (leitura via query) 1ms
+ ✓ server/hardening.test.ts > integração GitHub exclusivamente de leitura (Issue #003) > nenhuma referência a endpoints REST de escrita, permissões ou administração 3ms
+ ✓ server/hardening.test.ts > integração GitHub exclusivamente de leitura (Issue #003) > os documentos aprovados não mencionam campos de mutation conhecidos 0ms
+ ✓ server/hardening.test.ts > integração GitHub exclusivamente de leitura (Issue #003) > em execução, o cliente só envia query aprovada ao endpoint fixo, sem cookies 6ms
+ ✓ server/hardening.test.ts > integração GitHub exclusivamente de leitura (Issue #003) > o snapshot entregue ao navegador não contém o token nem cabeçalhos de autenticação 8ms
+ ✓ server/hardening.test.ts > integração GitHub exclusivamente de leitura (Issue #003) > o frontend não lê variáveis de ambiente nem monta cabeçalhos de autenticação 1ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > revogado nunca é reativado; terminais nunca mudam; itens nunca são removidos 49ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > falha entre gravações: ledger não gravado → degradado; reabre com entradas marcadas como não aplicadas 57ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — decisões (D3) > entradas inválidas são recusadas; acionamentos concorrentes são serializados 59ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > falha entre gravações: anchor não gravado → aceita o ledger uma geração à frente 55ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — com o núcleo de aprovações REAL (#011) > mesmo diretório de anchors, arquivos e domínios independentes; barreira acionada pela fila é durável na #011 124ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — com o núcleo de aprovações REAL (#011) > arquivos da fila no diretório de anchors não são vestígio para as aprovações (instalação em qualquer ordem) 70ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > exige e-mail e hash juntos e válidos, sem repetir valores 313ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > recusa hash com custo scrypt abaixo do mínimo 2ms
+ ✓ server/config.test.ts > administrador do ACC (Issue #003, PR 2) > variáveis VITE_ de senha, sessão ou administrador são recusadas (iriam para o bundle) 0ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > sem variáveis: desligado; o restante da configuração continua válido 0ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > configuração completa: caminhos absolutos, anchor separado, chave por ambiente ou arquivo, inicialização explícita 1ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > incompleta, ambígua ou insegura: inválida com motivo-token (nunca repete valores) 1ms
+ ✓ server/config.test.ts > aprovações (Issue #011, PR 2) > chave com prefixo VITE_ é recusada (seria exposta ao navegador) 0ms
+ ✓ server/config.test.ts > fila de execução (Issue #012, PR 1 — dormente) > sem variáveis: desligada 1ms
+ ✓ server/config.test.ts > fila de execução (Issue #012, PR 1 — dormente) > configurada: diretório absoluto exclusivo; inicialização só explícita 1ms
+ ✓ server/config.test.ts > fila de execução (Issue #012, PR 1 — dormente) > incompleta, insegura ou sem aprovações: inválida com motivo-token (nunca repete valores) 1ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > anchor ausente, marcador ausente, documentos ausentes com vestígios → indisponível 126ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — com o núcleo de aprovações REAL (#011) > aprovações com gravação falhando: barreira só volátil → fila bloqueada e pedido mantido 71ms
+ ✓ server/queue/barrierGate.test.ts > portão de barreira — com o núcleo de aprovações REAL (#011) > a chave da fila (HKDF) é independente da chave das aprovações 84ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > ledger adulterado (MAC), substituído por cópia antiga (rollback) ou de outra linhagem → indisponível 204ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > chave diferente → key_mismatch; documento malformado → document_invalid 39ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > histórico inconsistente: cópia antiga (rollback) ou entrada alterada (hash) → indisponível 95ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > nova linhagem por recuperação: quarentena verificada, época maior, barreira global pendente 71ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > recuperação interrompida: falha ao gravar a nova linhagem restaura os originais e continua indisponível 124ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > quarentena com falha de cópia: nada é alterado e a fila continua indisponível 44ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > perda total (inclusive os arquivos do diretório de anchor): sem if_absent indisponível; com if_absent, linhagem nova BLOQUEADA 50ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > separação de diretórios: anchor = dados, dados dentro das aprovações, dentro de repositório Git → recusado 11ms
+ ✓ server/queue/store.test.ts > fila — inicialização (Condição A) > vestígio isolado (temporário ou quarentena) impede a "primeira instalação" 54ms
+ ✓ server/queue/store.test.ts > fila — concorrência (Condição B) > commits simultâneos no mesmo processo: serializados, nenhum perdido, histórico contínuo 385ms
+ ✓ server/queue/store.test.ts > fila — concorrência (Condição B) > segunda instância no mesmo processo → store_locked (nunca dois escritores) 26ms
+ ✓ server/queue/store.test.ts > fila — concorrência (Condição B) > recuperações concorrentes: exatamente uma executa 71ms
+ ✓ server/storage/lock.test.ts > bloqueio compartilhado — processos reais > disputa simultânea entre 5 processos: no máximo um segura o bloqueio por vez 4305ms
+ ✓ server/storage/lock.test.ts > bloqueio compartilhado — processos reais > processo vivo segura: este processo é recusado; morto (SIGKILL) → retomada única e registrada 2005ms
+ ✓ server/storage/lock.test.ts > bloqueio compartilhado — processos reais > bloqueio de OUTRA máquina nunca é retomado (sem garantia distribuída: fail-closed) 6ms
+ ✓ server/storage/lock.test.ts > bloqueio compartilhado — processos reais > mesmo processo: segunda aquisição recusada; liberação só remove o próprio bloqueio 7ms
+ ✓ server/queue/store.test.ts > fila — concorrência (Condição B) > processos reais: escritores concorrentes se alternam pelo bloqueio; nada se perde nem corrompe 3807ms
+ ✓ server/queue/store.test.ts > fila — concorrência (Condição B) > processo real segurando o bloqueio: outra instância recusada; processo morto → retomada registrada 1022ms
+ ✓ server/queue/store.test.ts > fila — concorrência (Condição B) > processo morto com item em curso: reabertura marca interrupted (sem retomada) 1011ms
+ Test Files  9 passed (9)
+      Tests  151 passed (151)
+
+## Regressão da Issue #011 e vizinhas (arquivos de teste inalterados nesta branch)
+ Test Files  17 passed (17)
+      Tests  653 passed (653)
+
+## Suíte completa (local, Windows)
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ Test Files  1 failed | 46 passed (47)
+      Tests  1 failed | 1064 passed (1065)
+
+Observação: scripts/main-audit.test.mjs falha só localmente porque core.autocrlf=true faz o checkout dos workflows com CRLF; o arquivo não foi alterado nesta branch e passa no CI (Linux, LF).

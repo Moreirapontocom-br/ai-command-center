@@ -224,6 +224,23 @@ Observação sobre a escolha 4: nas transições, `interrupted` continua um esta
 3. A evidência de limites depende da disciplina de que **toda** alteração de limites passe pelo fluxo de aprovação `limits.change` da #011 (hoje é o único caminho em produção; o verificador simulado só existe em testes).
 4. Os riscos de §11 continuam válidos (em particular, o item 4 de §11 — a autenticação de resultados — fica explicitamente como exigência para habilitar execução real).
 
+### Ajuste final — sinalização da liquidação (revisão sobre `1cdabb1`)
+**Confirmado:** em `1cdabb1`, `settleDurably()` não devolvia o resultado da liquidação e `onResult()` respondia `accepted: true` mesmo com a liquidação falha ou divergente (o próprio teste da R1 afirmava `accepted: true` nesse caso).
+
+**Correção** (ordem ledger → controlador mantida):
+- `settleDurably()` devolve `settled` | `pending` (liquidação falhou) | `divergent` (exposição diferente).
+- `onResult()` devolve um recibo `ResultReceipt` com `accepted`, `reason`, `persisted` e `settlement`:
+  - `accepted: true` **só** quando o desfecho foi gravado **e** liquidado (`settlement: 'settled'`);
+  - `accepted: false, persisted: true, settlement: 'pending' | 'divergent'` (motivo `settlement_failed` / `settlement_divergence`) quando gravado e não liquidado;
+  - `accepted: false, persisted: false, settlement: 'not_applicable'` quando nada foi gravado (ignorado ou adiado).
+- A repetição do mesmo resultado para um item com liquidação incompleta devolve a **mesma** sinalização, sem regravar nem liquidar de novo (só registra `result_ignored` / `settlement_unresolved`); vale também com o agendador bloqueado.
+- `pendingSettlements()` lista as liquidações incompletas da sessão (cobre também o cancelamento e o kill switch, que devolvem o item e não um recibo).
+- Bloqueio conservador e restauração pelo ledger inalterados: após o reinício a pendência desaparece, o controlador é reconstruído do ledger e a repetição vira `late_result`.
+
+**Achado durante o ajuste:** a comparação estrita de custo acusava divergência quando o kill switch do controlador já havia encerrado a admissão (custo `none`) e a fila gravava a parada como `unknown`, ambos com reserva 0. A divergência passou a ser medida pelo que conta no orçamento — a **exposição** (regra do controlador: confirmado → valor confirmado; senão → reserva) e a condição de confirmado — e o ledger continua guardando o valor mais conservador. Uma diferença real de exposição continua bloqueando (teste).
+
+Testes: falha da liquidação (recibo, pendência, repetição, reinício), divergência de custo (recibo, repetição, reinício), cancelamento com liquidação falha, liquidação normal (`settled`), parada pelo kill switch sem falsa divergência. Evidência: `docs/evidence/issue012-pr2-r2-checks.txt`.
+
 ## 13. Parecer
 
 O PR 2 implementa o agendamento e o controle completos em modo **dormente e simulado**, com G1–G3 demonstradas por testes e nenhuma execução real habilitada. As correções da revisão (§12) fecham R1 e R3 (problemas confirmados), definem e testam R2 e documentam R4. Os pontos de §9 são escolhas que **restringem** e ficam para validação do revisor e do PO; §11 lista o que permanece fora do escopo aprovado. **Pronto para revisão independente**; não pronto para merge sem a aprovação explícita do PO.

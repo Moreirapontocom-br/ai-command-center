@@ -1,0 +1,26 @@
+# Issue #012 — PR 2, ajuste final (sinalização da liquidação) — gerado em 2026-11-18T04:16:00Z, commit 881f7323308c2730c05c302c7fea8b02c0913ccc
+
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > falha ao gravar o resultado: o controlador NÃO é liquidado, a vaga continua ocupada e o agendador bloqueia 216ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > falha ao liquidar depois de gravar: ledger com o desfecho, controlador mais restritivo, bloqueio; reinício reconstrói do ledger 186ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > custo divergente entre ledger e controlador → bloqueio 173ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > cancelamento: falha ao gravar a parada confirmada → nada liquidado; a vaga continua ocupada 155ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > cancelamento com parada confirmada e liquidação falha: gravado, pendência sinalizada, vaga ocupada 159ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > liquidação repetida é idempotente; resultado repetido é ignorado 156ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > custo desconhecido nunca é descartado (mesma regra conservadora do controlador) 0ms
+ ✓ server/queue/schedulerReview.test.ts > R1 — liquidação só depois da persistência > consumo incoerente com o modo é recusado antes de gravar ou liquidar 150ms
+      Tests  22 passed (22)
+
+## Suíte completa
+     × a auditoria roda em push na main e manualmente, só com permissões de leitura 8ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ Test Files  1 failed | 51 passed (52)
+      Tests  1 failed | 1156 passed (1157)
+(única falha: scripts/main-audit.test.mjs — CRLF local no Windows, preexistente; nenhum workflow alterado: 0)
+
+tsc server: ok
+eslint: ok
+✓ built in 184ms
+Nenhuma credencial encontrada (252 arquivo(s) versionado(s)).
+Nenhuma credencial encontrada (68 commit(s) do histórico de HEAD).
+server/index.ts / server/http alterados: 0
+server/approvals alterado: 0

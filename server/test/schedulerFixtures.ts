@@ -61,6 +61,8 @@ export interface SchedulerStack {
   executor: SandboxQueueExecutor;
   scheduler: QueueScheduler;
   tasks: TaskLookup;
+  /** Projetos e tarefas da pilha (Issue #028: o gateway usa os mesmos). */
+  fixtures: { projects: { get(owner: string, id: string): Project | null }; tasks: { get(owner: string, projectId: string, id: string): Task | null }; allTasks: Map<string, Task> };
   /** Outro adaptador do controlador sobre as mesmas dependências (ainda não restaurado). */
   makeAdmission(): QueueAdmissionAdapter;
   /** Faz `n` gravações do agendador falharem, depois de deixar passar `skip` (injeção de falha, R1). */
@@ -88,6 +90,8 @@ export interface StackOptions {
   providers?: ReturnType<typeof defaultProviderCatalog>;
   catalog?: Record<PolicyAction, PolicyActionInfo>;
   restore?: boolean;
+  /** Tarefas extras (Issue #028): outros agentes atribuídos. */
+  extraTasks?: Array<{ projectId: string; taskId: string; agentId: string }>;
 }
 
 export async function createSchedulerStack(options: StackOptions = {}): Promise<SchedulerStack> {
@@ -122,16 +126,18 @@ export async function createSchedulerStack(options: StackOptions = {}): Promise<
 
   const projectA = { id: PROJECT, ownerId: 'admin', repositories: [REPO] } as unknown as Project;
   const projectB = { id: PROJECT_B, ownerId: 'admin', repositories: [REPO] } as unknown as Project;
-  const taskOf = (projectId: string, id: string) => ({ id, projectId, status: 'in_progress', assignee: { kind: 'agent', agentId: 'claude-code' } }) as Task;
+  const taskOf = (projectId: string, id: string, agentId = 'claude-code') => ({ id, projectId, status: 'in_progress', assignee: { kind: 'agent', agentId } }) as Task;
   const allTasks = new Map([
     [`${PROJECT}|${TASK}`, taskOf(PROJECT, TASK)],
     [`${PROJECT}|${TASK_B}`, taskOf(PROJECT, TASK_B)],
     [`${PROJECT}|${TASK_C}`, taskOf(PROJECT, TASK_C)],
     [`${PROJECT}|${TASK_D}`, taskOf(PROJECT, TASK_D)],
     [`${PROJECT_B}|${TASK}`, taskOf(PROJECT_B, TASK)],
+    ...(options.extraTasks ?? []).map((t) => [`${t.projectId}|${t.taskId}`, taskOf(t.projectId, t.taskId, t.agentId)] as [string, Task]),
   ]);
   const projects = { get: (owner: string, id: string) => (owner !== 'admin' ? null : id === PROJECT ? projectA : id === PROJECT_B ? projectB : null) };
   const tasksStore = { get: (owner: string, projectId: string, id: string) => (owner === 'admin' ? (allTasks.get(`${projectId}|${id}`) ?? null) : null) };
+  stack.fixtures = { projects, tasks: tasksStore, allTasks };
   const tasks: TaskLookup = {
     check({ ownerId, projectId, taskId, agentId }) {
       if (!projects.get(ownerId, projectId)) return 'not_found';

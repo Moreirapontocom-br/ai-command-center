@@ -475,6 +475,8 @@ export const POLICY_ACTIONS = {
   'task.status_change': { category: 'task', risk: 'medium', critical: false, available: true },
   'task.complete': { category: 'task', risk: 'medium', critical: false, available: true },
   'tool.use': { category: 'tool', risk: 'medium', critical: false, available: false },
+  // Issue #028 (D2): invocação de um agente pelo Agent Gateway. Indisponível até haver adaptador aprovado.
+  'agent.invoke': { category: 'tool', risk: 'medium', critical: false, available: false },
   'change.prepare': { category: 'change', risk: 'medium', critical: false, available: false },
   'sandbox.execute': { category: 'sandbox', risk: 'high', critical: false, available: false },
   'approval.request': { category: 'approval', risk: 'low', critical: false, available: false },

@@ -174,11 +174,14 @@ describe('superfície de escrita do servidor', () => {
     // PR 2: só estes pontos revisados usam o núcleo — a configuração/abertura do servidor, as rotas
     // de decisão do administrador e os componentes que pedem/consomem aprovações (#021/#022).
     expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts|maintenance|presentation)/).sort()).toEqual([
+      // Issue #028 (I1): só o TIPO `ApprovalCoordinator` (pedido, reserva de uso único e resultado).
+      'server/gateway/service.ts',
       'server/http/approvalRoutes.ts',
       'server/index.ts',
       'server/limits/controller.ts',
       'server/sandbox/service.ts',
     ]);
+    expect(server.find((f) => f.path === 'server/gateway/service.ts')!.code).toMatch(/^import type \{ ApprovalCoordinator \} from '\.\.\/approvals\/service\.ts';$/m);
     // As rotas de aprovação não alcançam execução, sandbox, controlador nem verificador simulado.
     const routes = server.find((f) => f.path === 'server/http/approvalRoutes.ts')!.code;
     expect(routes).not.toMatch(/sandbox\/(service|simulatedProvider|provider)|limits\/(controller|providers|simulatedApprovalVerifier)|engageBarrier|releaseBarrier|recover\(|reserve\(|recordOutcome/);
@@ -213,6 +216,8 @@ describe('superfície de escrita do servidor', () => {
       'server/storage/jsonFile.ts',
       'server/storage/lock.ts',
       'server/storage/paths.ts',
+      // Issue #028 (P3): conteúdos cifrados (AES-256-GCM) com referência no ledger do dono.
+      'server/storage/sealedBlobs.ts',
       'server/storage/signedLedger.ts',
       'server/storage/subkeys.ts',
       'server/tasks/taskStore.ts',
@@ -259,8 +264,18 @@ describe('superfície de escrita do servidor', () => {
     // As interfaces estreitas (`ports.ts`) só têm tipos e só os dois adaptadores as importam, por `import type`.
     expect(files.find((f) => f.path === 'server/queue/ports.ts')!.code).toMatch(/^import type /m);
     expect(files.find((f) => f.path === 'server/queue/ports.ts')!.code).not.toMatch(/^import \{|^export (const|function|class)/m);
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/')), /queue\/ports/).sort()).toEqual(['server/limits/queueAdmission.ts', 'server/sandbox/queueExecutor.ts']);
-    for (const path of ['server/limits/queueAdmission.ts', 'server/sandbox/queueExecutor.ts']) {
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/')), /queue\/ports/).sort()).toEqual([
+      // Issue #028 (D6): executor do gateway e executor composto, só pelos TIPOS.
+      'server/gateway/routingExecutor.ts',
+      'server/gateway/service.ts',
+      'server/limits/queueAdmission.ts',
+      'server/sandbox/queueExecutor.ts',
+    ]);
+    // O serviço do gateway importa as portas só por tipo (as demais regras dele estão no bloco da #028:
+    // ele usa o TIPO do coordenador de aprovações e um temporizador de prazo da invocação simulada).
+    expect(server.find((f) => f.path === 'server/gateway/service.ts')!.code).toMatch(/^import type \{[^}]+\} from '\.\.\/queue\/ports\.ts';$/m);
+    expect(server.find((f) => f.path === 'server/gateway/service.ts')!.code).not.toMatch(/from '\.\.\/queue\/(?!ports\.ts)/);
+    for (const path of ['server/gateway/routingExecutor.ts', 'server/limits/queueAdmission.ts', 'server/sandbox/queueExecutor.ts']) {
       const code = server.find((f) => f.path === path)!.code;
       expect(code).toMatch(/^import type \{[^}]+\} from '\.\.\/queue\/ports\.ts';$/m);
       expect(code).not.toMatch(/from '\.\.\/queue\/(?!ports\.ts)/);
@@ -280,6 +295,51 @@ describe('superfície de escrita do servidor', () => {
     expect(POST_ROUTES.some((route) => /queue|dispatch|enqueue|schedul|fila/.test(route))).toBe(false);
     // Execução real continua desligada.
     expect(server.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);
+  });
+  it('Agent Gateway (Issue #028): DORMENTE e SIMULADO — sem rede, credencial, ambiente, subprocesso, rota nem ligação em produção', () => {
+    const files = server.filter((f) => f.path.startsWith('server/gateway/'));
+    expect(files.map((f) => f.path).sort()).toEqual([
+      'server/gateway/adapters.ts',
+      'server/gateway/content.ts',
+      'server/gateway/contracts.ts',
+      'server/gateway/documents.ts',
+      'server/gateway/routingExecutor.ts',
+      'server/gateway/secretScan.ts',
+      'server/gateway/service.ts',
+      'server/gateway/store.ts',
+    ]);
+    for (const file of files) {
+      // Nenhuma rede, I/O direto, subprocesso, código dinâmico, ambiente, cookie ou sessão de conta de IA.
+      expect(file.code).not.toMatch(/node:fs|node:child_process|node:net|node:http|node:https|node:dns|node:tls|node:vm|node:worker_threads|\bfetch\(|XMLHttpRequest|WebSocket|\beval\(|new Function\(|process\.env|document\.cookie|setCookie|set-cookie/i);
+      // Nunca o controlador (#022), o sandbox (#021), o núcleo de aprovações em si, a fila em si nem os simulados de outros módulos.
+      expect(file.code).not.toMatch(/limits\/(controller|providers|simulatedApprovalVerifier|queueAdmission)|sandbox\/(service|simulatedProvider|provider|queueExecutor)|approvals\/(store|identity|keyProvider|binding|presentation|documents|lock|paths|maintenance)|queue\/(scheduler|store|barrierGate|documents|classification)/);
+    }
+    // Adaptadores: só o tipo `simulated`; nenhum adaptador "official"/real é construído.
+    const adapters = files.find((f) => f.path === 'server/gateway/adapters.ts')!.code;
+    expect(adapters).toMatch(/kind: 'simulated'/);
+    expect(adapters).not.toMatch(/kind: '(official|real|managed)'/);
+    expect(files.find((f) => f.path === 'server/gateway/contracts.ts')!.code).toMatch(/readonly kind: 'simulated';/);
+    // O executor composto recusa executores que não sejam simulados.
+    expect(files.find((f) => f.path === 'server/gateway/routingExecutor.ts')!.code).toMatch(/gateway\.kind !== 'simulated' \|\| sandbox\.kind !== 'simulated'/);
+    // Dormente: nada fora do módulo (exceto testes) cria ou importa o gateway; nenhuma ligação no index.
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/gateway/')), /gateway\/|createGateway|createRoutingExecutor|openGatewayStore/)).toEqual([]);
+    expect(server.find((f) => f.path === 'server/index.ts')!.code).not.toMatch(/gateway|sealedBlobs/i);
+    // Nenhuma rota HTTP do gateway, de invocação, handoff ou resultado.
+    expect(POST_ROUTES.some((route) => /gateway|agent|invoke|handoff|relay|scope|content/.test(route))).toBe(false);
+    // `.onResult(` continua só dentro da fila (o gateway entrega por `drain`).
+    expect(filesMatching(files, /\.onResult\(/)).toEqual([]);
+    // Execução real continua desligada.
+    expect(server.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);
+  });
+
+  it('Agent Gateway (Issue #028): conteúdo só cifrado pela primitiva de armazenamento; nada de conteúdo em logs', () => {
+    const files = server.filter((f) => f.path.startsWith('server/gateway/'));
+    // Nenhum arquivo do gateway registra log nem escreve no console.
+    expect(filesMatching(files, /console\.|logger\.|\.log\(/)).toEqual([]);
+    // A primitiva cifra com AES-256-GCM e não conhece gateway, aprovações, fila, sandbox nem controlador.
+    const blobs = server.find((f) => f.path === 'server/storage/sealedBlobs.ts')!.code;
+    expect(blobs).toMatch(/aes-256-gcm/);
+    expect(blobs).not.toMatch(/gateway\/|approvals\/|queue\/|sandbox\/|limits\//);
   });
 });
 

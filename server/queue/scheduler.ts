@@ -823,7 +823,10 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     if (!isPlain(raw)) return null;
     const r = raw as Record<string, unknown>;
     const keys = ['itemId', 'token', 'attempt', 'epoch', 'outcome', 'reason', 'usage'];
-    if (Object.keys(r).length !== keys.length || !keys.every((k) => Object.hasOwn(r, k))) return null;
+    // Issue #028 (I8): a prova de origem é o único campo opcional (texto hexadecimal fixo).
+    const extra = Object.keys(r).filter((k) => !keys.includes(k));
+    if (!keys.every((k) => Object.hasOwn(r, k)) || extra.length > 1 || (extra.length === 1 && extra[0] !== 'proof')) return null;
+    if (Object.hasOwn(r, 'proof') && (typeof r.proof !== 'string' || !/^[0-9a-f]{64}$/.test(r.proof))) return null;
     if (typeof r.itemId !== 'string' || !UUID.test(r.itemId) || typeof r.token !== 'string' || !UUID.test(r.token)) return null;
     if (!Number.isSafeInteger(r.attempt) || !Number.isSafeInteger(r.epoch) || (r.outcome !== 'succeeded' && r.outcome !== 'failed')) return null;
     if (!(r.reason === null || (typeof r.reason === 'string' && REASON.test(r.reason)))) return null;
@@ -851,6 +854,16 @@ export function createQueueScheduler(options: QueueSchedulerOptions): QueueSched
     const dispatch = item.run.dispatch;
     // Vínculo: token, tentativa e época do despacho gravado.
     if (dispatch.token !== result.token || item.attempt !== result.attempt || dispatch.epoch !== result.epoch) return ignore(item, 'result_mismatch');
+    // I8 (Issue #028): o executor que declara autenticação precisa reconhecer a origem do resultado.
+    if (typeof executor.verifyResult === 'function') {
+      let authentic: boolean;
+      try {
+        authentic = executor.verifyResult(structuredClone(result)) === true;
+      } catch {
+        authentic = false;
+      }
+      if (!authentic) return ignore(item, 'result_unauthenticated');
+    }
     // Repetição do resultado de um item cuja liquidação ficou incompleta: o desfecho já está gravado;
     // nada é regravado nem liquidado de novo (idempotente, bloqueio mantido) e o recibo continua
     // sinalizando a pendência — inclusive com o agendador bloqueado.

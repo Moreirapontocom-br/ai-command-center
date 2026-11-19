@@ -1,0 +1,89 @@
+Issue #028 — PR 2 (implementação integral, dormente e simulada) — Testes
+================================================================
+
+Data: 2026-11-19. Windows 11, Node v24.18.1, vitest 5.1.0.
+Comando: npx vitest run server/gateway server/security.test.ts --reporter=verbose
+Resultado: 72 aprovados (47 novos do gateway + 25 estruturais, 2 deles novos).
+Observação: o caractere 'x' entre palavras em um título (canal × envio externo) faz parte do nome do teste.
+
+✓ server/gateway/contracts.test.ts > política (D2) > `agent.invoke` existe, é `tool`/médio, não crítica, INDISPONÍVEL no catálogo real e exige aprovação de agentes
+✓ server/gateway/contracts.test.ts > apresentação do escopo (I1, #011 R1) > listas do navegador espelham as do servidor
+✓ server/gateway/contracts.test.ts > apresentação do escopo (I1, #011 R1) > formato fechado: canal × envio externo, um agente, orçamento só em API cobrada, sem segredo
+✓ server/gateway/contracts.test.ts > apresentação do escopo (I1, #011 R1) > só o componente `gateway` apresenta escopos; o vínculo precisa apontar para o PRÓPRIO escopo
+✓ server/gateway/contracts.test.ts > adaptadores simulados e detecção de segredos > adaptadores são simulados, sem rede; o conteúdo do pedido não escolhe o cenário
+✓ server/gateway/contracts.test.ts > adaptadores simulados e detecção de segredos > segredos comuns são detectados (valores montados em tempo de execução)
+✓ server/security.test.ts > superfície de escrita do servidor > a única chamada de rede do servidor é a do cliente GraphQL
+✓ server/security.test.ts > superfície de escrita do servidor > o único endpoint da API do GitHub é o GraphQL fixo
+✓ server/security.test.ts > superfície de escrita do servidor > só o provedor gh-cli cria subprocessos, e sempre com os argumentos congelados
+✓ server/security.test.ts > superfície de escrita do servidor > POST só em login/logout (Issue #003), projetos (Issue #004), tarefas (Issue #005) e decisões de aprovação (Issue #011); o resto é GET/HEAD
+✓ server/security.test.ts > superfície de escrita do servidor > políticas: sem rota de escrita, e o motor não grava nada nem usa I/O (Issue #020)
+✓ server/security.test.ts > superfície de escrita do servidor > sandbox (Issue #021): sem execução real, sem I/O e sem rota HTTP
+✓ server/security.test.ts > superfície de escrita do servidor > limites (Issue #022): sem I/O, sem rede, sem execução, sem conectores de IA e sem rota HTTP
+✓ server/security.test.ts > superfície de escrita do servidor > aprovações (Issue #011): núcleo sem rede, sem execução e sem verificador simulado; ligado só pelos pontos revisados
+✓ server/security.test.ts > superfície de escrita do servidor > auditoria é somente leitura pela API: nenhuma rota de escrita sob /api/audit (Issue #006)
+✓ server/security.test.ts > superfície de escrita do servidor > projetos e tarefas gravam só no armazenamento local: sem GitHub, rede ou subprocesso (Issues #004/#005)
+✓ server/security.test.ts > superfície de escrita do servidor > armazenamento compartilhado (Issue #012, D7): sem ambiente, rede, execução nem dependência de núcleos
+✓ server/security.test.ts > superfície de escrita do servidor > fila (Issue #012, PR 1/PR 2): DORMENTE — sem rota, temporizador, execução real nem acesso às aprovações
+✓ server/security.test.ts > superfície de escrita do servidor > Agent Gateway (Issue #028): DORMENTE e SIMULADO — sem rede, credencial, ambiente, subprocesso, rota nem ligação em produção
+✓ server/security.test.ts > superfície de escrita do servidor > Agent Gateway (Issue #028): conteúdo só cifrado pela primitiva de armazenamento; nada de conteúdo em logs
+✓ server/security.test.ts > GraphQL somente leitura > todo documento exportado é uma query sem mutation/subscription
+✓ server/security.test.ts > GraphQL somente leitura > a allowlist tem exatamente os documentos de queries.ts
+✓ server/security.test.ts > GraphQL somente leitura > nenhum arquivo do servidor declara uma operação mutation/subscription
+✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (0)
+✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (1)
+✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (2)
+✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (3)
+✓ server/security.test.ts > GraphQL somente leitura > recusa documento fora da allowlist sem obter credencial nem usar a rede (4)
+✓ server/security.test.ts > frontend > nunca fala diretamente com a API do GitHub
+✓ server/security.test.ts > frontend > um único ponto de rede; POST só para as rotas de escrita do próprio ACC
+✓ server/security.test.ts > frontend > não guarda sessão nem senha no navegador
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > pedido registra o escopo e a aprovação com a apresentação de TODOS os limites; nada é usável antes de ativar
+✓ server/gateway/storage.test.ts > conteúdos cifrados (P3) > cifra em repouso com AES-GCM; arquivo adulterado, trocado de id ou de contexto → content_corrupted
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > aprovação pendente: ativar é recusado sem consumir nada; aprovada: consome UMA vez e ativa
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > fluxo completo: escopo → fila → admissão (#022) → adaptador simulado → resultado com prova aceito; proveniência e conteúdo cifrado
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > preparar → liberar (step-up) → esperar → trazer → ingerir pela fila → validado, com proveniência human_relayed
+✓ server/gateway/storage.test.ts > conteúdos cifrados (P3) > retenção conservadora: vencido não é lido e a varredura exclui; órfãos são removidos; exclusão exige confirmação
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > canal assistido exige DUAS aprovações (agent.invoke + data.send_external) e vale no máximo o TTL de publicação (15 min)
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > I8: resultado sem prova, com prova trocada ou forjado é recusado pela fila
+✓ server/gateway/storage.test.ts > conteúdos cifrados (P3) > exclusão controlada pelo dono, com confirmação; outro projeto não exclui
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > aprovação rejeitada: nada é consumido e ativar só abre um pedido NOVO; ativações concorrentes consomem no máximo uma vez
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > idempotência: mesma chave → mesma invocação; corpo diferente → conflito; o escopo não é cobrado duas vezes
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > aprovação forjada ou de outro componente nunca ativa: o verificador só aceita recibos do componente gateway
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > I4: uma espera humana de HORAS não ocupa a única vaga — outra tarefa independente roda até o fim
+✓ server/gateway/storage.test.ts > conteúdos cifrados (P3) > nada de conteúdo, instrução ou segredo no ledger e no histórico (só ids, tokens e resumos)
+✓ server/gateway/storage.test.ts > conteúdos cifrados (P3) > chave de conteúdo errada não decifra; diretórios precisam ser separados
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > limites do escopo: operação, dado, agente, tamanho e número de invocações fora do aprovado → scope_exceeded/exhausted
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > liberar exige escopo válido: depois da validade (15 min de publicação) não sai nada
+✓ server/gateway/storage.test.ts > ledger assinado do gateway (D7) > adulteração do ledger → indisponível na reabertura (nada é reescrito)
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > sem verificador ou sem núcleo de aprovações: negado (fail-closed)
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > aprovação expirada (TTL da #011) não ativa nem vira autorização
+✓ server/gateway/storage.test.ts > ledger assinado do gateway (D7) > regras entre versões: vínculo imutável, transição inválida e contador que diminui são recusados
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > isolamento entre projetos: escopo, invocação e conteúdo de outro projeto são inacessíveis
+✓ server/gateway/storage.test.ts > ledger assinado do gateway (D7) > falha de gravação durante a invocação: nada fica pela metade e o pacote não vira órfão referenciado
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > o escopo expira com o tempo; validade monotônica e versão da política conferidas a cada uso
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > revogação exige confirmação de identidade do dono e encerra o escopo
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > janela de retorno vencida, revogação e barreira: resultado recusado
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > indisponibilidade, rate limit e quota: nada é enviado (not_started); só o limite temporário é reintentável
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > kill switch/barreira: recusa pedidos e revoga os escopos do projeto
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > resultado trazido com segredo ou grande demais é recusado sem gravar; outro dono/projeto não alcança o handoff
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > reinício DURANTE a ativação: a intenção vira `failed` e a aprovação consumida nunca vira escopo
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > isolamento: outro dono/projeto é indistinguível de inexistente; agente não atribuído é negado
+✓ server/gateway/scope.test.ts > escopo por tarefa (I1) > formato fechado; API cobrada bloqueada com orçamento R$ 0
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > canal simulado não serve para handoff e vice-versa; nenhuma sessão, cookie ou token de assinatura é pedido
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > reinício: o handoff à espera sobrevive; a ingestão pode ser resubmetida sem duplicar o item
+✓ server/gateway/assisted.test.ts > fluxo assistido (D5/I4) > pacote pode ser relido só com nova confirmação e dentro do escopo
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > falha do provedor, timeout (incerto, sem reintento), saída grande demais e segredo na saída
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > custo desconhecido com orçamento R$ 0: resultado bloqueado e escopo revogado
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > segredo e prompt injection: entrada com segredo é recusada sem envio; texto de "instrução" no dado não muda nada
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > cancelamento confirmado pelo executor; revogação do escopo cancela o que ainda não começou
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > quatro provedores simulados; Nemotron indisponível não bloqueia os demais
+✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > reinício durante a execução: invocação interrompida, sem reenvio; resultado tardio sem prova da nova instância é recusado
+
+Revisão complementar (R1–R2) — 2026-11-19
+Comando: npx vitest run server/gateway/review.test.ts --reporter=verbose → 5 aprovados
+Antes da correção, 2 falhavam: o escopo voltava 'active' depois do reinício (R1) e as referências não eram descartadas (R2).
+✓ server/gateway/review.test.ts > R1 — falha de persistência na ativação do escopo > ledger grava `active`, o anchor falha e a gravação de recuperação também falha: nunca fica usável, nem depois do reinício
+✓ server/gateway/review.test.ts > R1 — falha de persistência na ativação do escopo > a ativação falha e a gravação de `failed` também falha: fica `activating` (inutilizável) e o reinício conclui como `failed`
+✓ server/gateway/review.test.ts > R1 — falha de persistência na ativação do escopo > reinício encerra escopos ativos (como as aprovações concedidas da #011): nenhuma autorização atravessa o reinício
+✓ server/gateway/review.test.ts > R2 — referências retidas pelo executor composto e pelo executor do gateway > ciclo completo: referências ficam só enquanto úteis e são descartadas depois da retenção; verificação continua protegendo
+✓ server/gateway/review.test.ts > R2 — referências retidas pelo executor composto e pelo executor do gateway > despacho não iniciado e cancelamento confirmado liberam as referências do item na hora

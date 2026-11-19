@@ -33,6 +33,7 @@ const ACTION_LABELS: Record<PolicyAction, string> = {
   'task.status_change': 'Mudar status de tarefa',
   'task.complete': 'Concluir tarefa',
   'tool.use': 'Usar ferramentas',
+  'agent.invoke': 'Invocar um agente pelo gateway',
   'change.prepare': 'Preparar alterações',
   'sandbox.execute': 'Executar em ambiente isolado',
   'approval.request': 'Solicitar aprovação',

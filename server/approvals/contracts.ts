@@ -182,7 +182,8 @@ export interface LedgerAttempt {
 }
 
 /** Componentes que podem receber recibos. Um recibo só vale para o componente indicado. */
-export const RECEIPT_COMPONENTS = ['limits', 'sandbox', 'policy', 'approvals'] as const;
+/** Issue #028: `gateway` recebe o recibo da aprovação que cria um escopo de tarefa (I1). */
+export const RECEIPT_COMPONENTS = ['limits', 'sandbox', 'policy', 'approvals', 'gateway'] as const;
 export type ReceiptComponent = (typeof RECEIPT_COMPONENTS)[number];
 
 export const APPROVAL_EVENTS = [

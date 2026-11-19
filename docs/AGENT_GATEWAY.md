@@ -1,10 +1,11 @@
 # Agent Gateway — Especificação (Issue #028, PR 1)
 
-> **Status: ESPECIFICAÇÃO. Não autoriza integração, credenciais, gastos, deploy nem execução.**
+> **Status: ESPECIFICAÇÃO + NÚCLEO DORMENTE E SIMULADO (PR 2, §16). Não autoriza integração, credenciais, gastos, deploy nem execução.**
 > - `REAL_EXECUTION_ENABLED = false as const` (inalterado).
 > - Todos os perfis de `server/limits/providers.ts` continuam `unverified` (motivo `not_verified_issue_028`). Marcar qualquer perfil como `available` exige PR revisado e aprovação específica do Product Owner (PO).
 > - Orçamento adicional autorizado: **R$ 0** (`DEFAULT_LIMITS.budget.globalMinor = 0`).
 > - Documentar uma integração **não** é autorização para integrar.
+> - PR 2: `server/gateway/` implementado, sem ligação no `server/index.ts`, sem rota HTTP e só com adaptadores simulados (§16).
 >
 > Base: `main` `f25aa492434c60f56424f23ac5d3e1efe3ddfde2`. Fontes consultadas em **2026-11-18** (registro completo em `docs/evidence/issue028-pr1-sources.txt`).
 
@@ -26,6 +27,7 @@
 13. Plano de testes (PR 2 em diante)
 14. Divisão em PRs, decisões D1–D9 e pendências
 15. Registro de fontes
+16. Implementação (PR 2)
 
 ---
 
@@ -166,7 +168,7 @@
 
 ## 4. Contrato comum
 
-> Descrição de contrato. **Não implementado** neste PR. Os nomes abaixo serão os tipos do PR 2 (`server/gateway/contracts.ts`).
+> Contrato implementado no PR 2 em `server/gateway/contracts.ts` (§16). `AgentTaskRequest` final não tem `mode` (vem do escopo) e o canal assistido não tem `timeoutSeconds`.
 
 ### 4.1 Identificadores
 
@@ -304,18 +306,18 @@ Núcleo na #028; experiência completa no frontend.
 
 ## 12. Incompatibilidades com o código atual (I1–I9)
 
-> Registradas para decisão. **Nenhuma** foi resolvida neste PR; o código atual não foi alterado.
+> Registradas no PR 1. **Situação no PR 2** na última coluna (detalhes em §16).
 
 | # | Incompatibilidade (evidência no código) | Proposta | Situação |
 |---|---|---|---|
-| **I1** | **D3 × #011.** Aprovações são de uso único (`approved → consumed`, `server/approvals/contracts.ts`) com TTL curto: `execution` 60 min; `data.send_external` é classe `publication` com 15 min. Não existe aprovação por tarefa com várias invocações e validade longa. | Consumir **uma vez** uma aprovação da #011 para criar um registro de escopo durável no ledger do gateway (digest do escopo, validade, saldo de invocações e orçamento); cada invocação é conferida contra ele. A validade do escopo além do TTL da classe exige decisão (nova classe/TTL na #011 ou escopo curto). | **PENDENTE — decisão antes do PR 2** |
-| I2 | `agent.invoke` não existe em `POLICY_ACTIONS` (`shared/contracts.ts`). | Incluir no PR 2 (`tool`, `medium`, `available: false`); versão da política sobe. | Pendente (PR 2) |
-| I3 | Ação aprovável precisa de contrato de apresentação verificável (`shared/approvalPresentation.ts`); hoje só `sandbox`, `admission`, `approvals.retention_change`, `approvals.history_purge`. | Novo tipo `gateway.scope` com todos os parâmetros do escopo. | Pendente (PR 2) |
-| **I4** | **D6 × fila.** A vaga fica `held` de `admitted` até a liquidação (`QUEUE_HOLDING_STATES`); `maxDurationSeconds` = 10 min (teto 30); janela de admissão 60 s (`ADMITTED_WINDOW_MS`); a fila não tem estado de espera humana (`QUEUE_ITEM_STATES`). Um handoff de horas travaria a única vaga (`maxConcurrent = 1`). | (a) handoff fora da admissão: preparar sem vaga; ingestão do resultado como item próprio admitido; ou (b) novo estado de espera na fila que libera a vaga. | **PENDENTE — decisão antes do PR 2** |
-| I5 | `ExecutorPort.kind` só aceita `'simulated'`; o agendador recebe um único executor. | Executor composto que implementa `ExecutorPort` e roteia por tipo; `scheduler.ts` inalterado. | Pendente (PR 4) |
-| I6 | `RECEIPT_COMPONENTS` não inclui `gateway`; `security.test.ts` restringe importações de `approvals/*` a 4 arquivos e proíbe usar o controlador fora de `server/limits/`. | Portas injetadas; novos testes estruturais explícitos no PR 2. | Pendente (PR 2) |
-| I7 | `AUDIT_ACTIONS` é lista fechada. | Incluir `gateway.*` (seção 11). | Pendente (PR 2) |
-| I8 | `onResult` da fila não autentica a origem do resultado (resíduo da #012). | Obrigatório antes do PR de integração com a fila; no fluxo assistido, autenticação humana com confirmação de identidade. | Pendente (PR 4) |
+| **I1** | **D3 × #011.** Aprovações são de uso único (`approved → consumed`, `server/approvals/contracts.ts`) com TTL curto: `execution` 60 min; `data.send_external` é classe `publication` com 15 min. Não existe aprovação por tarefa com várias invocações e validade longa. | Consumir **uma vez** uma aprovação da #011 para criar um registro de escopo durável no ledger do gateway (digest do escopo, validade, saldo de invocações e orçamento); cada invocação é conferida contra ele. A validade do escopo além do TTL da classe exige decisão (nova classe/TTL na #011 ou escopo curto). | **Resolvido no PR 2** (§16.2), sem alterar TTLs da #011 |
+| I2 | `agent.invoke` não existe em `POLICY_ACTIONS` (`shared/contracts.ts`). | Incluir no PR 2 (`tool`, `medium`, `available: false`); versão da política sobe. | Resolvido no PR 2 |
+| I3 | Ação aprovável precisa de contrato de apresentação verificável (`shared/approvalPresentation.ts`); hoje só `sandbox`, `admission`, `approvals.retention_change`, `approvals.history_purge`. | Novo tipo `gateway.scope` com todos os parâmetros do escopo. | Resolvido no PR 2 |
+| **I4** | **D6 × fila.** A vaga fica `held` de `admitted` até a liquidação (`QUEUE_HOLDING_STATES`); `maxDurationSeconds` = 10 min (teto 30); janela de admissão 60 s (`ADMITTED_WINDOW_MS`); a fila não tem estado de espera humana (`QUEUE_ITEM_STATES`). Um handoff de horas travaria a única vaga (`maxConcurrent = 1`). | (a) handoff fora da admissão: preparar sem vaga; ingestão do resultado como item próprio admitido; ou (b) novo estado de espera na fila que libera a vaga. | **Resolvido no PR 2** (§16.3), opção (a) |
+| I5 | `ExecutorPort.kind` só aceita `'simulated'`; o agendador recebe um único executor. | Executor composto que implementa `ExecutorPort` e roteia por tipo; `scheduler.ts` inalterado. | Resolvido no PR 2 (`routingExecutor.ts`) |
+| I6 | `RECEIPT_COMPONENTS` não inclui `gateway`; `security.test.ts` restringe importações de `approvals/*` a 4 arquivos e proíbe usar o controlador fora de `server/limits/`. | Portas injetadas; novos testes estruturais explícitos no PR 2. | Resolvido no PR 2 |
+| I7 | `AUDIT_ACTIONS` é lista fechada. | Incluir `gateway.*` (seção 11). | Resolvido no PR 2 (eventos `gateway.*` no histórico assinado; espelho na #006 adiado) |
+| I8 | `onResult` da fila não autentica a origem do resultado (resíduo da #012). | Obrigatório antes do PR de integração com a fila; no fluxo assistido, autenticação humana com confirmação de identidade. | Resolvido no PR 2 para o gateway (§16.5); sandbox residual |
 | I9 | Orçamento R$ 0: o orçamento do escopo (D3) não pode exceder o do controlador. | Na prática, só modos com custo `none`. | Registrado |
 
 ## 13. Plano de testes (PR 2 em diante)
@@ -435,3 +437,74 @@ Consultadas em **2026-11-18**. (D) = leitura direta da página oficial; (B) = co
 | N6 | https://docs.api.nvidia.com/nim/reference/llm-apis | D |
 
 Fontes **não** usadas como prova: fóruns de desenvolvedores (OpenAI Community, NVIDIA Developer Forums, Google AI Developers Forum), mesmo quando apareceram nas buscas.
+
+## 16. Implementação (Issue #028, PR 2 — núcleo dormente e simulado)
+
+> Implementado em `server/gateway/` e `server/storage/sealedBlobs.ts`. **Dormente**: nada é ligado no
+> `server/index.ts`, não há rota HTTP, provedores reais, credenciais nem rede. `agent.invoke` e
+> `data.send_external` continuam `available: false` no catálogo real, então em produção toda operação
+> do gateway é recusada (`capability_unavailable`). Os testes usam um catálogo próprio.
+
+### 16.1 Componentes
+
+| Arquivo | Papel |
+|---|---|
+| `server/gateway/contracts.ts` | Tipos: `AgentTaskRequest`, `AgentTaskResult`, `ProviderAdapter`, `AgentCapability`, `GatewayScope`, `GatewayInvocation`, `GatewayHandoff`, `GatewayProvenance`, `GatewayContentRef`; estados, transições e limites. |
+| `server/gateway/documents.ts` | Validação estrita do ledger e das entradas do histórico; transições e campos imutáveis entre versões. |
+| `server/gateway/store.ts` | Ledger assinado próprio (`acc-gateway:v1`, subchave HKDF `acc:gateway:mac:v1`); ajustes conservadores no reinício. |
+| `server/gateway/content.ts` | Conteúdos (P3): referência no ledger, isolamento, retenção, exclusão e varredura de órfãos. |
+| `server/storage/sealedBlobs.ts` | Primitiva genérica de conteúdo cifrado (AES-256-GCM, subchave `acc:gateway:content:v1`, AAD com id, dono, projeto e tipo). |
+| `server/gateway/secretScan.ts` | Detecção de segredos (entrada, pacote, saída e resultado trazido). |
+| `server/gateway/adapters.ts` | Adaptadores **simulados** de ChatGPT, Claude, Gemini e Nemotron (Nemotron `required: false`). |
+| `server/gateway/service.ts` | Serviço: escopos (I1), invocações (D6), fluxo assistido (D5/I4), resultados, varredura e o executor da fila (I8). |
+| `server/gateway/routingExecutor.ts` | Executor composto: um `ExecutorPort` que encaminha por tipo (`execution.executor === 'gateway'` → gateway; senão sandbox). |
+
+Alterações mínimas fora do módulo (todas cobertas por testes):
+
+- `shared/contracts.ts`: ação `agent.invoke` (`tool`, `medium`, não crítica, `available: false`); política `2026-11-19.1`.
+- `shared/approvalPresentation.ts`: apresentação `gateway.scope` (formato fechado; só o componente `gateway` a apresenta; vínculo aponta para o próprio escopo, `resource.type = 'gateway_scope'`).
+- `server/approvals/contracts.ts`: componente de recibo `gateway`. Nenhum TTL, classe ou regra de consumo mudou.
+- `server/queue/ports.ts` e `server/queue/scheduler.ts`: prova de origem opcional (`proof`) e `verifyResult` (I8). Executor sem `verifyResult` mantém o comportamento da #012.
+- `src/features/approvals/ApprovalsPage.tsx`: exibição somente leitura dos parâmetros de `gateway.scope`. `src/features/policy/PolicyPage.tsx`: rótulo de `agent.invoke`.
+
+### 16.2 I1 — escopo por tarefa (resolvido sem alterar a #011)
+
+1. `requestScope`: valida o pedido (formato fechado), projeto, tarefa ativa, agente atribuído, adaptador e operações; pré-avalia a política (DENY/UNAVAILABLE recusam); registra no núcleo **um pedido por ação** (`agent.invoke`; e `data.send_external` no canal assistido) com a apresentação completa; grava o escopo `awaiting_approval`.
+2. `activateScope` (protocolo durável): pedidos ainda pendentes → `approval_pending` (nada consumido); intenção `activating` gravada; **reserva** de cada aprovação (consumo de uso único, componente `gateway`); política avaliada **com** o grant; origem verificada pelo recibo (`verifierFor('gateway')`), aprovador humano autenticado; escopo `active` gravado; tentativas `succeeded`. Qualquer falha → `failed` e tentativas `failed` (aprovação continua consumida). Reinício no meio → `activating` vira `failed` (`activation_interrupted`).
+3. **Validade efetiva = mínimo entre a pedida e a das aprovações originais.** Canal simulado: até 60 min (classe `execution`). Canal assistido: até **15 min** (classe `publication` de `data.send_external`). Nenhum TTL global foi aumentado.
+4. Cada uso confere o escopo: estado, validade (relógio do sistema + prazo monotônico no processo + detecção de relógio voltando), versão da política, canal, agente, operação, dados, tamanho, número de invocações, barreira/kill switch, tarefa ativa e atribuída, e a política (DENY/UNAVAILABLE recusam).
+5. Revogação (`revokeScope`, com confirmação de identidade), kill switch (`engageKillSwitch`) e custo inesperado revogam o escopo e encerram o que depende dele.
+
+### 16.3 I4 — espera humana fora da vaga (resolvido)
+
+`prepareHandoff` → `releaseHandoff` (confirmação de identidade; envio externo dentro da validade do escopo) → `awaiting_relay` (**nenhum item na fila**) → `relayResult` (confirmação de identidade; janela de 24 h; escopo não revogado; sem barreira; tamanho e segredos) → item de **ingestão** na fila (admissão própria da #022, 60 s) → `validated`. Teste: com `maxConcurrent = 1`, uma espera de 5 h não impede outra tarefa de rodar até o fim.
+
+### 16.4 P3 — armazenamento dos resultados (resolvido)
+
+Conteúdo cifrado (AES-256-GCM), id opaco, AAD presa a id, dono, projeto, tipo e origem; resumo SHA-256 e tamanho no ledger; leitura só pelo mesmo dono e projeto; vencido, excluído, ausente ou adulterado → recusado por token; retenção padrão de 30 dias (1–90, configurável na criação); varredura de vencidos e órfãos; exclusão controlada com confirmação de identidade; nada com aparência de segredo é armazenado; ledger e histórico guardam só ids, tokens e resumos.
+
+### 16.5 D6/I8 — fila central
+
+Invocações simuladas e ingestões são itens da fila da #012 (mesmo agendador, mesma admissão da #022, mesma idempotência e liquidação). O executor do gateway: `not_started` comprovado só antes de qualquer envio (indisponível, rate limit, quota, escopo inválido); depois do envio, tudo é definitivo ou **incerto** (timeout → `uncertain`, sem reintento); cancelamento só `cancelled` quando o adaptador confirma; resultados com prova HMAC (chave só em memória) entregues por `drain()` depois do ciclo que registrou o início. A fila recusa resultado sem prova válida (`result_unauthenticated`).
+
+### 16.6 Limitações residuais
+
+1. **Aprovação de admissão por item continua existindo (mantida de propósito, R3).** O escopo substitui a aprovação de execução, mas cada invocação/ingestão ainda passa pela aprovação própria do controlador (#022, Q3 da #012). O controlador, sua política e suas permissões **não** foram alterados. Uma integração futura com aprovações de PLANOS poderá eliminar a necessidade de uma nova aprovação HUMANA a cada invocação — mas **nunca** a validação de admissão do controlador (limites, concorrência, orçamento, kill switch e quotas continuam conferidos item a item).
+2. Escopos curtos por construção (60 min simulado, 15 min assistido) — ampliar exige decisão sobre os TTLs da #011.
+3. A janela de retorno (24 h) é fixa; trazer o resultado não renova nenhuma autorização de envio.
+4. Dormente: sem ligação no `index.ts`, sem rotas e sem UI do fluxo assistido (só a exibição da aprovação). O hospedeiro precisa chamar `drain()` depois de `tick()`.
+5. O sandbox simulado (#021) ainda não emite prova de origem (resíduo da #012): o executor composto mantém, para ele, o vínculo por token/tentativa/época.
+6. Um escopo ativo **não** atravessa um reinício (R1): na época nova ele vence (`restart_closed`), como as aprovações concedidas da #011. Pacotes ainda não liberados vencem junto; o resultado de um pacote já liberado ainda pode voltar dentro da janela própria.
+7. O contador de invocações do escopo não é devolvido para invocações nunca despachadas (conservador).
+8. A detecção de segredos é por padrões (não exaustiva).
+9. Rotação da chave de conteúdo não implementada (subchave derivada da chave principal existente).
+10. A auditoria do gateway fica no histórico assinado próprio (`gateway.*`); o espelho em `/api/audit` (#006) fica para quando houver ligação.
+11. A versão da política mudou (`2026-11-19.1`): pedidos de aprovação pendentes da versão anterior precisam ser refeitos.
+12. Um agente por escopo (o motor da #020 exige uma única atribuição por tarefa).
+13. `metered_api` recusado (`paid_usage_unavailable`) e Nemotron sempre bloqueado pelo controlador (custo `unknown`).
+
+### 16.7 Revisão complementar do PR #48 (R1–R3)
+
+- **R1 — falha de persistência na ativação.** Confirmado por teste de injeção de falha: se a gravação do escopo `active` chegava ao ledger mas falhava no anchor, a recuperação (`failed`) também falhava (armazenamento degradado) e, na reabertura, o ledger uma geração à frente do anchor é aceito — o escopo voltava **ativo** embora a ativação tivesse sido informada como falha. Correção: na abertura de cada época, escopos `active`/`exhausted` vencem (`restart_closed`); invocações ainda na fila desses escopos são recusadas e pacotes não liberados vencem. Durante o processo, o estado nunca fica usável (`activating` ou armazenamento degradado). Aprovações continuam consumidas (sem reutilização); nenhum TTL ou contrato da #011 mudou.
+- **R2 — referências retidas.** Confirmado: o executor composto só esquecia o item no descarte e nunca esquecia tokens; o executor do gateway acumulava memória de despacho, provas e resultados. Correção: ciclo de vida definido — o item é esquecido na hora no despacho não iniciado, no cancelamento confirmado e no descarte; tokens ficam só pela retenção de 24 h (para reconhecer a repetição de um resultado legítimo) e depois são descartados; teto de 10 000 entradas no executor composto. A verificação de origem continua recusando resultados forjados; um resultado depois da retenção é recusado como não autenticado.
+- **R3 — dependência da #022.** Mantida exatamente como está (item 1 de §16.6).

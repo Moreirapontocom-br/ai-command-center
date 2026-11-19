@@ -164,6 +164,47 @@ const listOrNone = (items: string[], none: string) => (items.length === 0 ? none
  */
 function PresentationView({ presentation }: { presentation: ApprovalPresentation }) {
   switch (presentation.kind) {
+    case 'gateway.scope': {
+      // Issue #028 (I1): todos os limites do escopo de tarefa do Agent Gateway, somente leitura.
+      const p = presentation.params;
+      return (
+        <dl className="space-y-2" aria-label="Parâmetros exatos">
+          <Field label="Escopo do gateway">
+            <code>{p.scopeId}</code>
+          </Field>
+          <Field label="Projeto">
+            <code>{p.projectId}</code>
+          </Field>
+          <Field label="Tarefa">
+            <code>{p.taskId}</code>
+          </Field>
+          <Field label="Agentes permitidos">{p.agentIds.map((a) => AGENT_LABELS[a as keyof typeof AGENT_LABELS] ?? a).join(', ')}</Field>
+          <Field label="Operações permitidas">{p.capabilities.join(', ')}</Field>
+          <Field label="Canal">{p.channel === 'assisted' ? 'Assistido (a pessoa usa a ferramenta manualmente)' : 'Simulado (nada sai do ACC)'}</Field>
+          <Field label="Envio de dados para uso fora do ACC">{p.externalSharing ? 'Sim, só as referências abaixo' : 'Não'}</Field>
+          <Field label="Modo de uso">
+            <code>{p.mode}</code>
+          </Field>
+          <Field label="Dados autorizados (não confiáveis)">
+            {p.dataRefs.length === 0 ? (
+              'Nenhum'
+            ) : (
+              <ul>
+                {p.dataRefs.map((d) => (
+                  <li key={`${d.kind}:${d.ref}`}>
+                    {d.kind}: <code>{d.ref}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Field>
+          <Field label="Invocações no máximo">{p.maxInvocations}</Field>
+          <Field label="Orçamento">{p.budgetMinor === 0 ? 'Sem custo adicional' : `${p.budgetMinor} (unidade monetária menor)`}</Field>
+          <Field label="Validade pedida">{p.validitySeconds} s (limitada pela validade da aprovação)</Field>
+          <Field label="Tamanho máximo do resultado">{p.maxOutputBytes} bytes</Field>
+        </dl>
+      );
+    }
     case 'sandbox': {
       const p = presentation.params;
       return (

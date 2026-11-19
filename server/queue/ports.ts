@@ -93,6 +93,11 @@ export interface ExecutionResult {
   outcome: 'succeeded' | 'failed';
   reason: string | null;
   usage: ExecutionUsage;
+  /**
+   * Prova de ORIGEM (Issue #028, I8): emitida pelo executor que despachou, nunca gravada no ledger
+   * da fila. Obrigatória quando o executor declara `verifyResult`.
+   */
+  proof?: string;
 }
 
 /** Executor (sandbox SIMULADO nesta fase; `REAL_EXECUTION_ENABLED = false`). */
@@ -107,4 +112,10 @@ export interface ExecutorPort {
   cancel(subject: QueueSubject): Promise<'cancelled' | 'not_supported' | 'failed'>;
   /** Descarta uma preparação nunca despachada (melhor esforço). */
   discard(subject: QueueSubject): Promise<void>;
+  /**
+   * Autenticação da ORIGEM de um resultado (Issue #028, I8). Quando presente, a fila só aceita o
+   * resultado se o executor confirmar que foi ele quem o produziu (prova de uso único). Ausente =
+   * comportamento da #012 (vínculo por token, tentativa e época).
+   */
+  verifyResult?(result: ExecutionResult): boolean;
 }

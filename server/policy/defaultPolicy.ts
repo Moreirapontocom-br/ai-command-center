@@ -14,7 +14,7 @@ import { validatePolicy, type Policy } from './engine.ts';
  * Regras fixas do motor: push na main sempre negado; agente nunca altera permissões.
  */
 export const DEFAULT_POLICY: Policy = validatePolicy({
-  version: '2026-11-14.1',
+  version: '2026-11-19.1',
   rules: [
     { id: 'H1-observar-e-gerenciar', subject: 'human:owner', categories: ['observe', 'project', 'task'], effect: 'allow', maxRisk: 'medium' },
     { id: 'H2-planejar-preparar', subject: 'human:owner', categories: ['plan', 'tool', 'change', 'approval'], effect: 'allow', maxRisk: 'medium' },

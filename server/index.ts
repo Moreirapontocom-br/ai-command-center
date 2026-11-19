@@ -9,7 +9,14 @@ import { ADMIN_USER_ID, createAuthService, DEFAULT_AUTH_LIMITS } from './auth/ad
 import { ConfigError, loadConfig } from './config.ts';
 import { CredentialError } from './auth/credentials.ts';
 import { GH_CLI_ERROR_MESSAGE } from './auth/ghCli.ts';
-import { createGraphQLClient } from './github/client.ts';
+import { createGraphQLClient, createRestCompareClient } from './github/client.ts';
+import { createPullRequestReader } from './github/prReader.ts';
+import { createContentManager } from './gateway/content.ts';
+import { createClaudeOrders, type ClaudeOrders } from './gateway/orders.ts';
+import { createGateway } from './gateway/service.ts';
+import { GATEWAY_CONTENT_KEY_DOMAIN, GATEWAY_KEY_DOMAIN, openGatewayStore, type GatewayStore } from './gateway/store.ts';
+import { assistedProfileAvailable } from './limits/providers.ts';
+import { openSealedBlobStore } from './storage/sealedBlobs.ts';
 import { createRequestHandler } from './http/app.ts';
 import { createConsoleLogger } from './logger.ts';
 import { openProjectStore } from './projects/projectStore.ts';
@@ -178,7 +185,115 @@ if (config.queue.state === 'invalid') {
   }
 }
 
-const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, approvals, logger });
+// Agent Gateway (Issue #008, PR 2): SÓ o canal ASSISTIDO do Claude Code. Nenhum adaptador é
+// registrado (o canal assistido não chama provedor), não há fila, executor nem temporizador de
+// invocação, e `REAL_EXECUTION_ENABLED` continua `false`. O ACC prepara a ordem, a pessoa usa o
+// Claude Code FORA do ACC e o ACC só LÊ o PR no GitHub (somente leitura, credencial da #002).
+let claudeOrders: { orders: ClaudeOrders; status: () => { state: string; reason: string | null } } | null = null;
+let gatewayStore: GatewayStore | null = null;
+if (config.gateway.state === 'invalid') {
+  logger.log('warn', 'Agent Gateway indisponível: configuração inválida.', { event: 'gateway_config_invalid', reason: config.gateway.reason });
+} else if (config.gateway.state === 'configured' && config.approvals.state === 'configured' && approvals && projects && tasks) {
+  const settings = config.approvals;
+  const gatewaySettings = config.gateway;
+  const environment = { env: process.env };
+  const keyProvider = settings.key.kind === 'env' ? createEnvKeyProvider(process.env) : createFileKeyProvider(settings.key.path, environment);
+  const subkey = (domain: string) => async () => {
+    const master = await keyProvider.load();
+    try {
+      return deriveSubkey(master.key, domain);
+    } finally {
+      master.key.fill(0); // Cópia local da chave principal: descartada após a derivação.
+    }
+  };
+  const runtime = approvals;
+  const projectStore = projects;
+  const taskStore = tasks;
+  try {
+    const queueDir = config.queue.state === 'configured' ? [config.queue.queueDir] : [];
+    const store = await openGatewayStore({
+      gatewayDir: gatewaySettings.gatewayDir,
+      anchorDir: settings.anchorDir,
+      separateFrom: [gatewaySettings.contentDir, settings.approvalsDir, ...queueDir],
+      environment,
+      loadKey: subkey(GATEWAY_KEY_DOMAIN),
+      initialize: gatewaySettings.initialize,
+    });
+    gatewayStore = store;
+    const blobs = await openSealedBlobStore({ dir: gatewaySettings.contentDir, environment, loadKey: subkey(GATEWAY_CONTENT_KEY_DOMAIN), separateFrom: [gatewaySettings.gatewayDir, settings.anchorDir, settings.approvalsDir, ...queueDir] });
+    const service = runtime.service;
+    const verifier = service.verifierFor('gateway');
+    const gateway = createGateway({
+      store,
+      content: createContentManager({ store, blobs }),
+      adapters: {},
+      projects: projectStore,
+      tasks: taskStore,
+      // Só referências a TAREFAS do mesmo projeto, resolvidas aqui (dado não confiável no pacote).
+      resolveData: ({ ownerId, projectId, kind, ref }) => {
+        if (kind !== 'task') return null;
+        const task = taskStore.get(ownerId, projectId, ref);
+        return task ? `Tarefa: ${task.title}\n\n${task.description}` : null;
+      },
+      approvals: { request: (i) => service.request(i), reserve: (i) => service.reserve(i), recordOutcome: (i) => service.recordOutcome(i), confirmOwner: (i) => service.confirmOwner(i) },
+      approvalVerifier: { id: verifier.id, kind: verifier.kind, verifyGrant: (grant) => verifier.verifyGrant(grant), verify: (approval) => verifier.verify(approval) },
+      identity: { consume: (proofId, ctx) => runtime.identity.consume(proofId, ctx) },
+      // Barreira/kill switch da #011 (o mesmo ledger que as aprovações). Qualquer dúvida = bloqueado.
+      barriers: {
+        blocked: (projectId) => {
+          const status = service.status();
+          if (status.state !== 'available') return `authority_${status.state}`;
+          const b = service.barriers();
+          if (b.durable.global !== null) return 'global_barrier';
+          if (b.volatile.includes('global')) return 'volatile_barrier';
+          if (Object.hasOwn(b.durable.projects, projectId) && b.durable.projects[projectId] != null) return 'project_barrier';
+          if (b.volatile.includes(`project:${projectId}`)) return 'volatile_barrier';
+          return null;
+        },
+      },
+      // Catálogo da #022: só `claude-code/subscription_assisted` disponível (D-08.3).
+      assistedProfileAvailable: () => assistedProfileAvailable(),
+    });
+    // Leitura do GitHub com a MESMA credencial somente leitura da #002 (sem credencial → verificação indisponível).
+    const reader = config.credentials
+      ? createPullRequestReader({
+          graphql: createGraphQLClient({ credentials: config.credentials, timeoutMs: config.requestTimeoutMs }),
+          rest: createRestCompareClient({ credentials: config.credentials, timeoutMs: config.requestTimeoutMs }),
+        })
+      : null;
+    const orders = createClaudeOrders({
+      gateway,
+      reader,
+      approvalsFor: (ownerId, scopeId) =>
+        service.status().state === 'unavailable'
+          ? []
+          : service
+              .list(ownerId)
+              .filter((a) => a.binding.resource.type === 'gateway_scope' && a.binding.resource.id === scopeId)
+              .map((a) => ({ id: a.id, action: a.binding.action, state: a.state })),
+    });
+    claudeOrders = { orders, status: () => store.status() };
+    createMaintenanceScheduler({
+      run: async () => {
+        if (store.status().state === 'available') await gateway.sweep();
+      },
+      onError: (reason) => logger.log('warn', 'Falha na manutenção do gateway', { event: 'gateway_maintenance_failed', reason }),
+    });
+    logger.log(store.status().state === 'available' ? 'info' : 'warn', 'Agent Gateway (somente canal assistido do Claude Code)', {
+      event: 'gateway_opened',
+      state: store.status().state,
+      reason: store.status().reason ?? 'none',
+      githubReader: reader ? 'configured' : 'none',
+    });
+  } catch {
+    claudeOrders = null;
+    logger.log('error', 'Agent Gateway indisponível: falha ao abrir o armazenamento.', { event: 'gateway_open_failed' });
+  }
+} else if (config.gateway.state === 'configured') {
+  logger.log('warn', 'Agent Gateway indisponível: exige aprovações configuradas.', { event: 'gateway_requires_approvals' });
+}
+
+const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, approvals, claudeOrders, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
 });
@@ -204,7 +319,7 @@ if (config.credentials?.kind === 'gh-cli') {
 // Encerramento: libera os bloqueios de escritor único (aprovações e fila).
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    void Promise.allSettled([queueStore?.close(), approvalStore?.close()]).finally(() => process.exit(0));
+    void Promise.allSettled([gatewayStore?.close(), queueStore?.close(), approvalStore?.close()]).finally(() => process.exit(0));
   });
 }
 

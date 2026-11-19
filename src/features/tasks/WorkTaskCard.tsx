@@ -4,6 +4,7 @@ import { Badge } from '../../components/ui/Badge';
 import type { ApiClientError } from '../../services/apiClient';
 import { ERROR_COPY, formatDateTime } from '../github/githubLabels';
 import type { AssigneeChoices } from './AssigneeOptions';
+import { ClaudeOrderPanel } from './ClaudeOrderPanel';
 import {
   assigneeName,
   ORIGIN_LABELS,
@@ -75,6 +76,10 @@ export function WorkTaskCard({ task, byId, choices, onUpdate, onEdit }: WorkTask
       </dl>
       {task.assignee?.kind === 'agent' && task.status !== 'done' && (
         <p className="text-xs text-slate-500">Atribuída a agente: nenhuma execução foi iniciada pelo ACC.</p>
+      )}
+      {/* Issue #008: fluxo ASSISTIDO — a pessoa usa o Claude Code fora do ACC; o ACC só prepara e lê o PR. */}
+      {task.assignee?.kind === 'agent' && task.assignee.agentId === 'claude-code' && task.status !== 'done' && task.status !== 'cancelled' && (
+        <ClaudeOrderPanel projectId={task.projectId} taskId={task.id} />
       )}
       {task.status === 'blocked' && (
         <p className="rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-900">

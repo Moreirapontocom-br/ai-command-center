@@ -36,6 +36,8 @@ import type { TaskStore } from '../tasks/taskStore.ts';
 import { parseTaskCreate, parseTaskUpdate, TASK_ID_PATTERN, type TaskInputContext } from '../tasks/validation.ts';
 import type { SnapshotService } from '../snapshotService.ts';
 import { APPROVAL_POST_ROUTES, approvalMethods, approvalRouteName, createApprovalRoutes, isApprovalPath, type ApprovalsRuntime } from './approvalRoutes.ts';
+import { CLAUDE_ORDER_POST_ROUTES, claudeOrderMethods, claudeOrderRouteName, createClaudeOrderRoutes, isClaudeOrderPath } from './claudeOrderRoutes.ts';
+import type { ClaudeOrders } from '../gateway/orders.ts';
 import { createRateLimiter } from './rateLimiter.ts';
 
 export interface AppDeps {
@@ -63,6 +65,11 @@ export interface AppDeps {
    * de aprovação respondem indisponível e o restante do ACC funciona normalmente.
    */
   approvals?: ApprovalsRuntime | null;
+  /**
+   * Ordens do Claude Code (Issue #008, PR 2): só o canal ASSISTIDO do gateway. Ausente ou `null`:
+   * gateway não configurado — as rotas respondem indisponível e o restante do ACC funciona.
+   */
+  claudeOrders?: { orders: ClaudeOrders; status: () => { state: string; reason: string | null } } | null;
   logger: Logger;
   now?: () => number;
 }
@@ -111,6 +118,8 @@ export const POST_ROUTES: readonly string[] = Object.freeze([
   '/api/projects/:id/tasks/:taskId',
   // Issue #011 (PR 2): decisões humanas sobre aprovações (nenhuma executa nada).
   ...APPROVAL_POST_ROUTES,
+  // Issue #008 (PR 2): ordens do Claude Code no fluxo assistido (nenhuma executa, chama provedor ou escreve no GitHub).
+  ...CLAUDE_ORDER_POST_ROUTES,
 ]);
 /** Rotas acessíveis sem sessão. Nenhuma devolve dados do GitHub, de projetos nem da configuração. */
 export const PUBLIC_ROUTES: readonly string[] = Object.freeze(['/api/auth/session', ...AUTH_POST_ROUTES]);
@@ -121,6 +130,8 @@ const MAX_PROJECT_BODY_BYTES = 16 * 1024;
 export function allowedMethods(pathname: string): readonly string[] {
   const approvals = approvalMethods(pathname);
   if (approvals) return approvals;
+  const claudeOrders = claudeOrderMethods(pathname);
+  if (claudeOrders) return claudeOrders;
   if (AUTH_POST_ROUTES.includes(pathname) || pathname === ACTIVE_PROJECT_ROUTE) return [WRITE_METHOD];
   // Listar/criar e ler/editar projetos. Um id malformado recebe a mesma resposta de método que um
   // válido; o formato só é verificado depois da autenticação.
@@ -265,6 +276,7 @@ export function createRequestHandler(deps: AppDeps) {
 
   /** Nome estável da rota para o contexto da auditoria (nunca o caminho cru, que vem de fora). */
   function routeName(pathname: string): string {
+    if (isClaudeOrderPath(pathname)) return claudeOrderRouteName(pathname);
     if (pathname === PROJECTS_ROUTE) return 'projects';
     if (pathname === ACTIVE_PROJECT_ROUTE) return 'projects.active';
     if (PROJECT_ITEM_ROUTE.test(pathname)) return 'projects.item';
@@ -359,6 +371,8 @@ export function createRequestHandler(deps: AppDeps) {
     if (isWrite && ['forbidden_origin', 'unsupported_media_type', 'unauthenticated'].includes(code)) return denied(owner);
     // Escritas de aprovações registram o próprio evento (`approval.*`), sem duplicar aqui.
     if (isWrite && route.startsWith('approvals')) return null;
+    // Escritas das ordens do Claude Code (Issue #008) também espelham o próprio evento (`claude_order.*`).
+    if (isWrite && route.startsWith('claude_orders')) return null;
     if (session && code === 'not_found' && route !== 'other') return denied(owner);
     if (session && isWrite && WRITE_ACTIONS[route]) {
       const taskId = route === 'tasks.item' ? (ids[1] ?? null) : null;
@@ -602,6 +616,16 @@ export function createRequestHandler(deps: AppDeps) {
 
   const approvalRoutes = createApprovalRoutes({ approvals: deps.approvals ?? null, audit: deps.audit, projects: deps.projects, logger: deps.logger, now: deps.now });
   const approvalIo = { readJsonBody, sendJson, assertOnlyParams };
+  const claudeOrderRoutes = createClaudeOrderRoutes({
+    orders: deps.claudeOrders?.orders ?? null,
+    gatewayStatus: deps.claudeOrders?.status,
+    projects: deps.projects,
+    tasks: deps.tasks,
+    audit: deps.audit,
+    allowedRepositories: deps.config.allowedRepositories,
+    logger: deps.logger,
+  });
+  const claudeOrderIo = { readJsonBody, sendJson, assertOnlyParams, enforce };
 
   const limiter = createRateLimiter({ limit: deps.config.rateLimitPerMinute, windowMs: 60_000, now: deps.now });
   const { auth } = deps;
@@ -766,6 +790,11 @@ export function createRequestHandler(deps: AppDeps) {
           repositories: deps.config.allowedRepositories.filter((name) => session.scope.includes(name)),
         };
         sendJson(res, 200, body);
+        return;
+      }
+
+      if (isClaudeOrderPath(pathname)) {
+        await claudeOrderRoutes.handle(req, res, url, session, current.token, claudeOrderIo);
         return;
       }
 

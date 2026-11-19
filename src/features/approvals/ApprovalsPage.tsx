@@ -202,6 +202,41 @@ function PresentationView({ presentation }: { presentation: ApprovalPresentation
           <Field label="Orçamento">{p.budgetMinor === 0 ? 'Sem custo adicional' : `${p.budgetMinor} (unidade monetária menor)`}</Field>
           <Field label="Validade pedida">{p.validitySeconds} s (limitada pela validade da aprovação)</Field>
           <Field label="Tamanho máximo do resultado">{p.maxOutputBytes} bytes</Field>
+          {p.code && (
+            <>
+              {/* Issue #008: ordem de trabalho do Claude Code (fluxo assistido; executado FORA do ACC). */}
+              <Field label="Ordem">
+                <code>{p.code.orderId}</code>
+              </Field>
+              <Field label="Repositório">
+                <code>{p.code.repository}</code> (id estável <code>{p.code.repositoryId}</code>)
+              </Field>
+              <Field label="SHA base (lido pelo servidor)">
+                <code>{p.code.baseSha}</code>
+              </Field>
+              <Field label="Branch de trabalho (gerada pelo servidor)">
+                <code>{p.code.workBranch}</code>
+              </Field>
+              <Field label="Resumo do objetivo e dos critérios">
+                <code>{p.code.inputDigest}</code>
+              </Field>
+              <Field label="Aviso">Executado fora do ACC; o ACC não comprovou isolamento nem autoria dos commits. Checks verdes não autorizam merge.</Field>
+            </>
+          )}
+        </dl>
+      );
+    }
+    case 'gateway.claude_project_enable': {
+      const p = presentation.params;
+      return (
+        <dl className="space-y-2" aria-label="Parâmetros exatos">
+          <Field label="Operação">Habilitar o fluxo assistido do Claude Code SÓ neste projeto</Field>
+          <Field label="Projeto">
+            <code>{p.projectId}</code>
+          </Field>
+          <Field label="Repositório">
+            <code>{p.repository}</code>
+          </Field>
         </dl>
       );
     }

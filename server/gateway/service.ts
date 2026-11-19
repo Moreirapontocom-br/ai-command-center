@@ -119,6 +119,8 @@ const ASSISTED_ADAPTER = { id: 'assisted-manual', version: '1', kind: 'assisted'
 const MODEL = /^[A-Za-z0-9._:/-]{1,64}$/;
 const PENDING_APPROVAL_MS = 24 * 60 * 60 * 1000;
 const INGEST_DURATION_SECONDS = 60;
+/** Retenção das referências em memória do executor (muito acima do prazo máximo de uma execução). */
+const REFERENCE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 function exact(v: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -385,6 +387,35 @@ export function createGateway(options: GatewayServiceOptions) {
   const routes = new Map<string, { op: 'invoke' | 'ingest'; ref: string }>(); // itemId → rota
   const proofs = new Map<string, string>(); // token → prova emitida
   const completions = new Map<string, Promise<ExecutionResult | null>>(); // token → resultado
+  /**
+   * Ciclo de vida das referências (R2 da revisão do PR #48): o item (rota) é esquecido NA HORA no
+   * despacho não iniciado, no cancelamento confirmado e no descarte; o token (memória do despacho,
+   * prova e resultado) fica só pela retenção — para reconhecer a repetição de um resultado legítimo
+   * — e depois é descartado (o resultado passa a ser recusado como não autenticado, nunca aceito).
+   */
+  const tokenInfo = new Map<string, { itemId: string; at: number }>();
+  const routeAt = new Map<string, number>();
+  function forgetToken(token: string) {
+    dispatches.delete(token);
+    proofs.delete(token);
+    completions.delete(token);
+    tokenInfo.delete(token);
+  }
+  function forgetItem(itemId: string) {
+    routes.delete(itemId);
+    routeAt.delete(itemId);
+    for (const [token, info] of tokenInfo) if (info.itemId === itemId) forgetToken(token);
+  }
+  function pruneReferences() {
+    const limit = now() - REFERENCE_RETENTION_MS;
+    for (const [token, info] of tokenInfo) if (info.at < limit && !runs.has(info.itemId)) forgetToken(token);
+    for (const [itemId, at] of routeAt) {
+      if (at < limit && !runs.has(itemId)) {
+        routes.delete(itemId);
+        routeAt.delete(itemId);
+      }
+    }
+  }
   /** Resultados prontos ainda não retirados pelo hospedeiro (`drain`). */
   const ready: ExecutionResult[] = [];
 
@@ -563,6 +594,7 @@ export function createGateway(options: GatewayServiceOptions) {
     result(token: string): Promise<ExecutionResult | null> | undefined;
     drain(): ExecutionResult[];
     idle(): Promise<void>;
+    references(): { routes: number; dispatches: number; proofs: number; completions: number; runs: number };
   } = {
     kind: 'simulated',
     gateway: true,
@@ -584,8 +616,10 @@ export function createGateway(options: GatewayServiceOptions) {
     async prepare(subject, params) {
       const check = executor.validate(subject, params);
       if (!check.ok) return { status: 'refused', code: check.code };
+      pruneReferences();
       const route = parseExecution(params)!;
       routes.set(subject.itemId, route);
+      routeAt.set(subject.itemId, now());
       if (route.op === 'invoke') {
         const inv = store.body().invocations.find((i) => i.id === route.ref)!;
         const scope = store.body().scopes.find((s) => s.id === inv.scopeId) as GatewayScope | undefined;
@@ -612,6 +646,11 @@ export function createGateway(options: GatewayServiceOptions) {
         return route.op === 'invoke' ? dispatchInvoke(input, route.ref) : dispatchIngest(input, route.ref);
       })();
       dispatches.set(input.token, result);
+      tokenInfo.set(input.token, { itemId: input.itemId, at: now() });
+      // Nada começou: nenhum resultado virá deste token (um reintento é OUTRO item da fila).
+      void result.then((r) => {
+        if (r.kind === 'not_started') forgetItem(input.itemId);
+      });
       return result;
     },
 
@@ -634,12 +673,13 @@ export function createGateway(options: GatewayServiceOptions) {
       } catch {
         return 'failed';
       }
+      forgetItem(subject.itemId);
       return 'cancelled';
     },
 
     async discard(subject) {
       const route = routes.get(subject.itemId);
-      routes.delete(subject.itemId);
+      forgetItem(subject.itemId);
       if (!route || route.op !== 'invoke') return;
       await serial(() =>
         store.commit((tx) => {
@@ -672,6 +712,11 @@ export function createGateway(options: GatewayServiceOptions) {
     /** Espera as execuções em andamento terminarem (testes/hospedeiro). */
     async idle() {
       await Promise.all([...completions.values()]);
+    },
+
+    references() {
+      pruneReferences();
+      return { routes: routes.size, dispatches: dispatches.size, proofs: proofs.size, completions: completions.size, runs: runs.size };
     },
   };
 

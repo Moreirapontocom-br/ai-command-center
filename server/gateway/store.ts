@@ -64,16 +64,33 @@ export async function openGatewayStore(options: OpenGatewayStoreOptions): Promis
       onEpoch(tx, info) {
         const at = new Date(now()).toISOString();
         let interrupted = 0;
+        const closed = new Set<string>();
         for (const scope of tx.body.scopes) {
           if (scope.state === 'activating') {
             Object.assign(scope, { state: 'failed', reason: 'activation_interrupted', updatedAt: at });
             tx.append({ ...entry('gateway.scope_activation_failed', 'activation_interrupted'), projectId: scope.projectId, ref: scope.id });
+          } else if (scope.state === 'active' || scope.state === 'exhausted') {
+            // R1 (revisão do PR #48): nenhuma autorização atravessa um reinício — como as aprovações
+            // concedidas da #011, que vencem na troca de época. Também cobre a gravação do escopo
+            // ativo que chegou ao ledger, mas não ao anchor, numa ativação informada como falha.
+            Object.assign(scope, { state: 'expired', reason: 'restart_closed', updatedAt: at });
+            tx.append({ ...entry('gateway.scope_closed', 'restart_closed', 'to expired'), projectId: scope.projectId, ref: scope.id });
+            closed.add(scope.id);
           }
         }
         for (const invocation of tx.body.invocations) {
           if (invocation.state === 'requested' || invocation.state === 'dispatched') {
             Object.assign(invocation, { state: 'interrupted', reason: 'restart_interrupted', updatedAt: at });
             interrupted += 1;
+          } else if (invocation.state === 'queued' && closed.has(invocation.scopeId)) {
+            Object.assign(invocation, { state: 'refused', reason: 'scope_expired', updatedAt: at });
+          }
+        }
+        // Pacote ainda não liberado não pode mais sair; o já liberado ainda pode voltar (janela própria).
+        for (const handoff of tx.body.handoffs) {
+          if (handoff.state === 'prepared' && closed.has(handoff.scopeId)) {
+            Object.assign(handoff, { state: 'expired', reason: 'scope_expired', updatedAt: at });
+            tx.append({ ...entry('gateway.handoff_closed', 'scope_expired'), projectId: handoff.projectId, ref: handoff.id });
           }
         }
         tx.append(entry('gateway.store_opened', info.lockRecovered ? 'lock_recovered' : 'restart', interrupted > 0 ? `interrupted ${interrupted}` : null));

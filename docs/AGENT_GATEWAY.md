@@ -489,12 +489,12 @@ Invocações simuladas e ingestões são itens da fila da #012 (mesmo agendador,
 
 ### 16.6 Limitações residuais
 
-1. **Aprovação de admissão por item continua existindo.** O escopo substitui a aprovação de execução, mas cada invocação/ingestão ainda passa pela aprovação própria do controlador (#022, Q3 da #012). Eliminá-la exigiria o controlador aceitar o escopo como autorização da admissão — mudança na #022 **não feita** (decisão do PO).
+1. **Aprovação de admissão por item continua existindo (mantida de propósito, R3).** O escopo substitui a aprovação de execução, mas cada invocação/ingestão ainda passa pela aprovação própria do controlador (#022, Q3 da #012). O controlador, sua política e suas permissões **não** foram alterados. Uma integração futura com aprovações de PLANOS poderá eliminar a necessidade de uma nova aprovação HUMANA a cada invocação — mas **nunca** a validação de admissão do controlador (limites, concorrência, orçamento, kill switch e quotas continuam conferidos item a item).
 2. Escopos curtos por construção (60 min simulado, 15 min assistido) — ampliar exige decisão sobre os TTLs da #011.
 3. A janela de retorno (24 h) é fixa; trazer o resultado não renova nenhuma autorização de envio.
 4. Dormente: sem ligação no `index.ts`, sem rotas e sem UI do fluxo assistido (só a exibição da aprovação). O hospedeiro precisa chamar `drain()` depois de `tick()`.
 5. O sandbox simulado (#021) ainda não emite prova de origem (resíduo da #012): o executor composto mantém, para ele, o vínculo por token/tentativa/época.
-6. Um escopo ativo sobrevive ao reinício limitado pelo relógio do sistema (o prazo monotônico vale só no processo).
+6. Um escopo ativo **não** atravessa um reinício (R1): na época nova ele vence (`restart_closed`), como as aprovações concedidas da #011. Pacotes ainda não liberados vencem junto; o resultado de um pacote já liberado ainda pode voltar dentro da janela própria.
 7. O contador de invocações do escopo não é devolvido para invocações nunca despachadas (conservador).
 8. A detecção de segredos é por padrões (não exaustiva).
 9. Rotação da chave de conteúdo não implementada (subchave derivada da chave principal existente).
@@ -502,3 +502,9 @@ Invocações simuladas e ingestões são itens da fila da #012 (mesmo agendador,
 11. A versão da política mudou (`2026-11-19.1`): pedidos de aprovação pendentes da versão anterior precisam ser refeitos.
 12. Um agente por escopo (o motor da #020 exige uma única atribuição por tarefa).
 13. `metered_api` recusado (`paid_usage_unavailable`) e Nemotron sempre bloqueado pelo controlador (custo `unknown`).
+
+### 16.7 Revisão complementar do PR #48 (R1–R3)
+
+- **R1 — falha de persistência na ativação.** Confirmado por teste de injeção de falha: se a gravação do escopo `active` chegava ao ledger mas falhava no anchor, a recuperação (`failed`) também falhava (armazenamento degradado) e, na reabertura, o ledger uma geração à frente do anchor é aceito — o escopo voltava **ativo** embora a ativação tivesse sido informada como falha. Correção: na abertura de cada época, escopos `active`/`exhausted` vencem (`restart_closed`); invocações ainda na fila desses escopos são recusadas e pacotes não liberados vencem. Durante o processo, o estado nunca fica usável (`activating` ou armazenamento degradado). Aprovações continuam consumidas (sem reutilização); nenhum TTL ou contrato da #011 mudou.
+- **R2 — referências retidas.** Confirmado: o executor composto só esquecia o item no descarte e nunca esquecia tokens; o executor do gateway acumulava memória de despacho, provas e resultados. Correção: ciclo de vida definido — o item é esquecido na hora no despacho não iniciado, no cancelamento confirmado e no descarte; tokens ficam só pela retenção de 24 h (para reconhecer a repetição de um resultado legítimo) e depois são descartados; teto de 10 000 entradas no executor composto. A verificação de origem continua recusando resultados forjados; um resultado depois da retenção é recusado como não autenticado.
+- **R3 — dependência da #022.** Mantida exatamente como está (item 1 de §16.6).

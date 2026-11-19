@@ -78,3 +78,12 @@ Observação: o caractere 'x' entre palavras em um título (canal × envio exter
 ✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > cancelamento confirmado pelo executor; revogação do escopo cancela o que ainda não começou
 ✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > quatro provedores simulados; Nemotron indisponível não bloqueia os demais
 ✓ server/gateway/invoke.test.ts > invocação simulada pela fila central (D6) > reinício durante a execução: invocação interrompida, sem reenvio; resultado tardio sem prova da nova instância é recusado
+
+Revisão complementar (R1–R2) — 2026-11-19
+Comando: npx vitest run server/gateway/review.test.ts --reporter=verbose → 5 aprovados
+Antes da correção, 2 falhavam: o escopo voltava 'active' depois do reinício (R1) e as referências não eram descartadas (R2).
+✓ server/gateway/review.test.ts > R1 — falha de persistência na ativação do escopo > ledger grava `active`, o anchor falha e a gravação de recuperação também falha: nunca fica usável, nem depois do reinício
+✓ server/gateway/review.test.ts > R1 — falha de persistência na ativação do escopo > a ativação falha e a gravação de `failed` também falha: fica `activating` (inutilizável) e o reinício conclui como `failed`
+✓ server/gateway/review.test.ts > R1 — falha de persistência na ativação do escopo > reinício encerra escopos ativos (como as aprovações concedidas da #011): nenhuma autorização atravessa o reinício
+✓ server/gateway/review.test.ts > R2 — referências retidas pelo executor composto e pelo executor do gateway > ciclo completo: referências ficam só enquanto úteis e são descartadas depois da retenção; verificação continua protegendo
+✓ server/gateway/review.test.ts > R2 — referências retidas pelo executor composto e pelo executor do gateway > despacho não iniciado e cancelamento confirmado liberam as referências do item na hora

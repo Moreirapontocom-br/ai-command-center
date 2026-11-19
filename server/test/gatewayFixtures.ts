@@ -11,6 +11,7 @@ import { createRoutingExecutor } from '../gateway/routingExecutor.ts';
 import { createGateway, type Gateway, type GatewayServiceOptions } from '../gateway/service.ts';
 import { GATEWAY_CONTENT_KEY_DOMAIN, GATEWAY_KEY_DOMAIN, openGatewayStore, type GatewayStore } from '../gateway/store.ts';
 import type { ExecutionResult } from '../queue/ports.ts';
+import { writeFileAtomic } from '../storage/jsonFile.ts';
 import { openSealedBlobStore } from '../storage/sealedBlobs.ts';
 import { deriveSubkey } from '../storage/subkeys.ts';
 import { TEST_ADMIN_PASSWORD, testPasswordHash } from './authFixtures.ts';
@@ -46,6 +47,10 @@ export interface GatewayStack {
   identity: StepUpRegistry;
   dirs: { root: string; gateway: string; anchor: string; content: string };
   keys: { mac: { keyId: string; key: Buffer }; content: { keyId: string; key: Buffer } };
+  /** Injeção de falha nas gravações do ledger do gateway: devolve `true` para falhar aquele arquivo. */
+  faults: { failWrite: ((path: string) => boolean) | null };
+  /** Executor composto atual (para inspecionar as referências retidas). */
+  routing: ReturnType<typeof createRoutingExecutor>;
   data: Map<string, string>;
   /** Prova de confirmação de identidade (uso único) para a sessão de teste. */
   confirm(): Promise<{ proofId: string; identity: IdentityContext }>;
@@ -75,11 +80,20 @@ export async function createGatewayStack(options: { stack?: StackOptions; gatewa
     [`${PROJECT}|issue|#12`, 'Corpo da issue 12.'],
     [`${PROJECT_B}|task|${TASK}`, 'Dado PRIVADO do projeto B.'],
   ]);
-  const g = {} as GatewayStack;
+  const g = { faults: { failWrite: null } } as unknown as GatewayStack;
   let seq = 0;
 
   async function openGateway() {
-    g.store = await openGatewayStore({ gatewayDir: dirs.gateway, anchorDir: dirs.anchor, separateFrom: [dirs.content], environment: { env: {} }, loadKey: () => macKey, initialize: 'if_absent', now: () => g.s.h.clock.now });
+    g.store = await openGatewayStore({
+      gatewayDir: dirs.gateway,
+      anchorDir: dirs.anchor,
+      separateFrom: [dirs.content],
+      environment: { env: {} },
+      loadKey: () => macKey,
+      initialize: 'if_absent',
+      now: () => g.s.h.clock.now,
+      writeFile: (path, content) => (g.faults.failWrite?.(path) ? Promise.reject(new Error('falha de gravação injetada')) : writeFileAtomic(path, content)),
+    });
     const blobs = await openSealedBlobStore({ dir: dirs.content, environment: { env: {} }, loadKey: () => contentKey, separateFrom: [dirs.gateway, dirs.anchor] });
     g.content = createContentManager({ store: g.store, blobs, now: () => g.s.h.clock.now });
     const s = () => g.s;
@@ -107,7 +121,8 @@ export async function createGatewayStack(options: { stack?: StackOptions; gatewa
 
   // O executor composto busca SEMPRE o gateway atual (sobrevive aos reinícios do gateway).
   const routing = (base: Parameters<NonNullable<StackOptions['executor']>>[0]) =>
-    createRoutingExecutor({
+    (g.routing = createRoutingExecutor({
+      now: () => g.s?.h.clock.now ?? Date.now(),
       sandbox: base,
       gateway: {
         kind: 'simulated',
@@ -118,7 +133,7 @@ export async function createGatewayStack(options: { stack?: StackOptions; gatewa
         discard: (a) => g.gateway.executor.discard(a),
         verifyResult: (r) => g.gateway.executor.verifyResult!(r),
       },
-    });
+    }));
 
   g.s = await createSchedulerStack({
     catalog: gatewayCatalog,

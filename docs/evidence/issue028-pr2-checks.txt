@@ -70,3 +70,22 @@ Regressão: todas as suítes existentes (#003–#006, #011, #012, #020, #021, #0
 7. CI
 -----
 Resultado da CI no PR (o SHA final não pode constar do próprio commit).
+
+8. Revisão complementar (R1–R3) — 2026-11-19
+---------------------------------------------
+Base do ajuste: 41a634533512e42d32a79c1f5772b441e265326e (PR #48).
+R1 — evidência antes da correção (npx vitest run server/gateway/review.test.ts -t R1):
+  × ledger grava `active`, o anchor falha e a gravação de recuperação também falha …
+    AssertionError: expected [ 'expired', 'failed' ] to include 'active'   (o escopo voltava ATIVO após o reinício)
+  × reinício encerra escopos ativos …   (escopo ativo atravessava o reinício)
+  ✓ a ativação falha e a gravação de `failed` também falha … (já era fail-closed)
+  Causa: storage/signedLedger.ts aceita, na abertura, ledger uma geração à frente do anchor (queda entre as
+  gravações) — correto para o motor, mas o gateway não tratava o escopo `active` assim gravado.
+  Correção: server/gateway/store.ts (onEpoch) — active/exhausted → expired (`restart_closed`).
+R2 — evidência: routingExecutor.byItem só era removido em discard; byToken nunca; o executor do gateway
+  acumulava dispatches/proofs/completions/routes. Correção: ciclo de vida (liberação imediata em not_started,
+  cancelamento confirmado e descarte; retenção de 24 h para tokens; teto de 10 000 entradas).
+R3 — só documentação; controlador (#022), política e permissões inalterados.
+$ npm run lint → exit 0 · npx tsc -p tsconfig.server.json --noEmit → exit 0 · npm run build → exit 0 · check:csp → ok
+$ npx vitest run → 1210 de 1211 (única falha: scripts/main-audit.test.mjs, CRLF local conhecido)
+$ git diff --stat 41a6345..HEAD -- .github scripts server/index.ts server/config.ts server/limits server/sandbox server/http server/approvals server/policy shared src → (vazio)

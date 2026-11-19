@@ -108,7 +108,7 @@ Suíte completa: **1205 de 1206**. A única falha é `scripts/main-audit.test.mj
 
 Ver `docs/AGENT_GATEWAY.md` §16.6. As principais:
 
-1. **Cada invocação ou ingestão ainda exige a aprovação de admissão do controlador (#022).** O escopo substitui só a aprovação de execução. Removê-la exige mudança na #022 (decisão do PO).
+1. **Cada invocação ou ingestão ainda exige a aprovação de admissão do controlador (#022)** — mantida de propósito (R3). O escopo substitui só a aprovação de execução. Uma integração futura com aprovações de planos poderá eliminar a nova aprovação humana por invocação, mas nunca a validação de admissão.
 2. Escopos curtos por construção: 60 min no canal simulado e 15 min no assistido, porque os TTLs da #011 não foram alterados.
 3. O gateway é dormente: sem rotas, UI do fluxo assistido nem ligação no `index.ts`. Ativar tudo isso exige PR e aprovação próprios.
 4. O sandbox simulado ainda não tem prova de origem (resíduo da #012).
@@ -124,3 +124,13 @@ Ver `docs/AGENT_GATEWAY.md` §16.6. As principais:
 - Nenhum executor real foi ativado.
 - #008, #009 e #010 não foram iniciadas. #020 e #022 continuam abertas.
 - A #028 **não** está concluída antes do merge autorizado e da verificação pós-merge.
+
+## 9. Revisão complementar (R1–R3)
+
+| Ponto | Diagnóstico | Correção | Testes |
+|---|---|---|---|
+| R1 | **Confirmado.** O anchor falha depois de o ledger gravar `active`, e a gravação de `failed` também falha (armazenamento degradado). Na reabertura, o ledger uma geração à frente do anchor é aceito, e o escopo voltava **ativo** com a ativação informada como falha. | `store.ts`/`onEpoch`: escopos `active`/`exhausted` vencem a cada época nova (`restart_closed`), como as aprovações concedidas da #011; invocações na fila desses escopos são recusadas; pacotes não liberados vencem. | `review.test.ts`: falha simultânea (ledger gravado, anchor e recuperação falham) + reinício; recuperação que não grava → `activating` inutilizável → `failed` no reinício; nenhum escopo atravessa o reinício |
+| R2 | **Confirmado.** `byItem` só era removido no descarte, e `byToken` nunca. O executor do gateway acumulava `dispatches`, `proofs`, `completions` e `routes`. | Ciclo de vida: o item é esquecido na hora no despacho não iniciado, no cancelamento confirmado e no descarte; tokens ficam por 24 h e depois são descartados; teto de 10 000 entradas. `verifyResult` também confere o item do token. | `review.test.ts`: retenção e descarte, forjado recusado, repetição tardia reconhecida dentro da retenção, recusada depois; not_started e cancelamento liberam na hora |
+| R3 | Mantido | Só documentação (AGENT_GATEWAY.md §16.6 item 1 e §16.7) | — |
+
+Nenhuma alteração em TTLs, contratos ou regras da #011, no controlador da #022, nas rotas ou no `server/index.ts`.

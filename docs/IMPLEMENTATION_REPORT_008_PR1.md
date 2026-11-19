@@ -46,6 +46,14 @@ A ordem de trabalho **é** um handoff do canal `assisted` do gateway (#028): mes
 
 Ver `docs/evidence/issue008-pr1-checks.txt`: lint e build ok; varreduras de segredos limpas; testes 1210/1211 localmente, com a única falha sendo a conhecida `scripts/main-audit.test.mjs` (CRLF no Windows, workflow inalterado). Resultado da CI registrado no PR.
 
-## 7. Fora deste PR
+## 7. Revisão complementar (R1–R3), sobre `f9b9d1f`
+
+| Item | Correção | Onde |
+|---|---|---|
+| R1 — verificado e novos pushes | A proposta de alterar `HANDOFF_TRANSITIONS` foi retirada. O handoff só chega a `validated`, que passa a significar "referência aceita", e é terminal como antes. A conformidade fica num **histórico de verificações somente de acréscimo**, versionado por `headSha` (`seq`, `supersedes`, digests das evidências). Um novo push invalida a conformidade anterior e exige nova verificação. Verificar é leitura do ACC: não reativa escopo, não consome nem reutiliza aprovação. Falha eliminatória ou revogação grava uma entrada final (`order_closed`). Nada é apagado. | `CLAUDE_CODE_ASSISTED.md` §5 (5.1–5.3), D-08.7, §10.1, §10.4, §10.5 |
+| R2 — ancestralidade do SHA | V6 reescrita com critério de prova completo: REST compare `baseSha...headSha` com `status=ahead`, `behind_by=0`, `ahead_by≥1`, `base_commit` = `merge_base_commit` = `baseSha` e `headSha` confirmado antes e depois (V12). `Ref.compare` (GraphQL) foi descartado como prova, porque a base é um ref. A seção documenta limites (250 commits, 300 arquivos, `per_page`), paginação, concorrência, respostas incompletas, 404/422/401/403/5xx e a permissão não documentada. Regra geral: sem prova → `needs_review`, nunca `conforming`. Confirmado por 7 leituras públicas, sem custo. | §6.1–6.4, D-08.10, evidências GH2–GH4 |
+| R3 — disponibilidade e política | D-08.3 reescrita. As flags globais de `agent.invoke` e `data.send_external` continuam `false`. Uma exceção fechada no código revisado cobre só ação × `agent:claude-code` × `assisted` × `subscription_assisted` × `code.change` × `gateway` × projeto habilitado, com fatos vindos do servidor. A política continua `require_approval`. Um único perfil do catálogo fica `available`. A habilitação é por projeto (D-08.11). O canal `simulated` não é ligado em produção. `REAL_EXECUTION_ENABLED` continua `false` e não há execução automática. Mudanças futuras exigem autorização e testes próprios. | §10.7, D-08.3, D-08.11, §8, §9 |
+
+## 8. Fora deste PR
 
 Implementação (PR 2), rotas, ativação do gateway, mudança de catálogo/política, workflow, credenciais, merge e outras issues.

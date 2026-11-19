@@ -50,3 +50,19 @@ $ npm test                         -> 1210 passed, 1 failed (1211)
 -----------------------------
 Nenhuma conta criada, nenhuma credencial usada, nenhuma API de provedor chamada. Leituras: só
 páginas públicas de documentação oficial (docs/evidence/issue008-pr1-sources.txt).
+
+6. Revisão complementar R1–R3 (sobre f9b9d1f), 2026-11-19
+---------------------------------------------------------
+Arquivos alterados: docs/CLAUDE_CODE_ASSISTED.md, docs/IMPLEMENTATION_REPORT_008_PR1.md,
+docs/evidence/issue008-pr1-sources.txt, docs/evidence/issue008-pr1-checks.txt (só documentação).
+$ git diff --stat origin/main -- .github scripts server shared src package.json package-lock.json
+(vazio)
+$ npm run lint                     -> exit 0
+$ npm run build                    -> exit 0
+$ npm test                         -> 1210 passed, 1 failed (1211); a mesma falha local conhecida
+                                      (scripts/main-audit.test.mjs, CRLF no Windows)
+$ npm run check:secrets:repo       -> Nenhuma credencial encontrada (280 arquivo(s) versionado(s)).
+$ npm run check:secrets:history    -> Nenhuma credencial encontrada (82 commit(s) do histórico de HEAD).
+$ npm run check:secrets            -> Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+Leituras ao GitHub para R2: 7 consultas GET/GraphQL somente leitura ao repositório público
+(registradas em issue008-pr1-sources.txt), sem escrita e sem custo.

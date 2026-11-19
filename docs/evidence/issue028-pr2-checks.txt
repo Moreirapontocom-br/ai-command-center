@@ -1,0 +1,72 @@
+Issue #028 — PR 2 (implementação integral, dormente e simulada) — Verificações
+==============================================================================
+
+Data: 2026-11-19. Ambiente local: Windows 11, Node v24.18.1, vitest 5.1.0.
+Base: origin/main 97f309f5f0acddab59c148bc513bfb748f76f3e1. Branch: feature/028-agent-gateway-implementation.
+
+1. Estado inicial
+-----------------
+$ git fetch origin && git rev-parse origin/main         -> 97f309f5f0acddab59c148bc513bfb748f76f3e1 (esperado)
+$ git merge-base --is-ancestor a93881b origin/main       -> ok (merge do PR #47 presente)
+$ git ls-remote --heads origin feature/028-agent-gateway-implementation -> (vazio: branch inexistente)
+$ git status --porcelain --untracked-files=no            -> nada (arquivos versionados intactos)
+Não versionados preexistentes, NÃO incluídos: docs/evidence/issue002-review-validation.txt,
+documenta_o_t_cnica_initial_issue_001.md
+$ git switch -c feature/028-agent-gateway-implementation origin/main && git branch --unset-upstream
+
+2. Escopo do diff
+-----------------
+$ git diff --stat origin/main..HEAD -- .github scripts server/index.ts server/config.ts server/limits server/sandbox server/http
+(vazio)  -> workflows, scripts, inicialização, configuração, controlador (#022), sandbox (#021) e rotas inalterados
+Fora de server/gateway/ e dos testes, só: shared/contracts.ts, shared/approvalPresentation.ts,
+server/policy/defaultPolicy.ts, server/approvals/contracts.ts, server/queue/ports.ts, server/queue/scheduler.ts,
+server/storage/sealedBlobs.ts (novo), src/features/approvals/ApprovalsPage.tsx, src/features/policy/PolicyPage.tsx
+(justificativas: IMPLEMENTATION_REPORT_028_PR2.md §2.1).
+$ grep -n "status: 'unverified'" server/limits/providers.ts   -> 35: status: 'unverified' as const  (catálogo inalterado)
+$ grep -n "REAL_EXECUTION_ENABLED = " server/sandbox/contracts.ts -> 13: ... = false as const      (inalterado)
+POLICY_ACTIONS['agent.invoke'].available === false e POLICY_ACTIONS['data.send_external'].available === false
+(teste server/gateway/contracts.test.ts).
+
+3. Varredura de segredos
+------------------------
+Hook pre-commit (staged) em cada commit         -> Nenhuma credencial encontrada (6, 6, 1, 4 e 8 arquivos)
+$ node scripts/check-secrets.mjs tracked         -> Nenhuma credencial encontrada (272 arquivo(s) versionado(s)).
+$ node scripts/check-secrets.mjs history         -> Nenhuma credencial encontrada (78 commit(s) do histórico de HEAD).
+$ node scripts/check-secrets.mjs commits origin/main..HEAD -> Nenhuma credencial encontrada (5 commit(s)).
+$ npm run check:secrets                          -> Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+Testes montam valores com aparência de credencial em tempo de execução (nenhum literal no repositório).
+
+4. Lint, tipos, build e CSP
+---------------------------
+$ npm run lint                                   -> exit 0 (0 problemas)
+$ npx tsc -p tsconfig.server.json --noEmit       -> exit 0
+$ npm run build                                  -> exit 0 (tsc -b && vite build)
+$ npm run check:csp                              -> Build compatível com a CSP de produção.
+
+5. Testes
+---------
+$ npx vitest run
+ Test Files  1 failed | 56 passed (57)
+      Tests  1 failed | 1205 passed (1206)
+Novos: 49 (47 em server/gateway/*.test.ts + 2 em server/security.test.ts) — lista em issue028-pr2-tests.txt.
+Única falha: scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente,
+só com permissões de leitura. Causa preexistente e só local: core.autocrlf=true faz o checkout dos workflows
+com CRLF (`file .github/workflows/*.yml` → "with CRLF line terminators"). Nenhum workflow alterado; na CI
+Linux passa (mesma situação dos relatórios 012 PR1/PR2 e 028 PR1).
+Regressão: todas as suítes existentes (#003–#006, #011, #012, #020, #021, #022) aprovadas sem enfraquecer asserts.
+
+6. Regras estruturais (server/security.test.ts)
+-----------------------------------------------
+- Listas atualizadas no mínimo: importadores do núcleo de aprovações (+ gateway/service.ts, só o TIPO
+  ApprovalCoordinator, exigido por regex); importadores de queue/ports.ts (+ gateway/service.ts e
+  routingExecutor.ts, só por tipo); arquivos de server/storage (+ sealedBlobs.ts).
+- Novos: gateway com lista exata de arquivos; sem rede/fs/subprocesso/código dinâmico/process.env/cookie;
+  sem controlador, sandbox, núcleo de aprovações ou fila em si; adaptadores só simulados; executor composto
+  recusa executor não simulado; nada fora do módulo cria o gateway; index.ts não o menciona; nenhuma rota do
+  gateway; sem log/console; sealedBlobs usa AES-256-GCM e não conhece outros núcleos.
+- Endurecimento (#003): o módulo de detecção de segredos se chama secretScan.ts porque a regra proíbe o trecho
+  "/secrets" em caminhos — a regra não foi alterada.
+
+7. CI
+-----
+Resultado da CI no PR (o SHA final não pode constar do próprio commit).

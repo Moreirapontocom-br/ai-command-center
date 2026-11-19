@@ -59,7 +59,7 @@
 3. **O ACC é o hub.** Um agente nunca fala diretamente com outro. Toda troca passa pelo gateway (política, limites, aprovação, auditoria). "Comunicação híbrida" = integração oficial automática quando houver uma aprovada; fluxo assistido (humano no meio) nos demais casos.
 4. **Saída de agente é dado não confiável.** Nunca é instrução para o ACC, nunca altera política, limites, escopo ou permissões.
 5. **Só integrações oficiais.** Nada de automação de navegador, cookies, raspagem de interface ou uso de credenciais de assinatura por terceiros (seção 3 mostra que os termos proíbem).
-6. **Mínimo de dados.** Só o contexto do projeto do dono, dentro do escopo aprovado; dados privados não vão a serviços gratuitos (D4).
+6. **Mínimo de dados.** Só o contexto do projeto do dono, dentro do escopo aprovado; dados privados não vão a serviços gratuitos (D4). Desativar o treinamento não basta para enviar dados privados (§3.8).
 7. **Custo zero por padrão.** `metered_api` só com orçamento aprovado; hoje é R$ 0, logo bloqueado.
 
 ## 3. Matriz dos provedores
@@ -92,7 +92,7 @@
 | Termos / automação | Automação da interface **proibida** [O6 (B)] → só uso manual pela pessoa. | não comprovado | Uso programático é o propósito da API (termos de API não lidos diretamente: confirmar antes de ativar). |
 | Retenção / treinamento | Conteúdo de planos individuais pode ser usado para treinar, salvo desativação de "Improve the model for everyone"; feedback pode incluir a conversa inteira [O7 (B)]. | não comprovado | Não usado para treinar por padrão desde 2023-03-01; logs de abuso por até 30 dias; ZDR sob aprovação prévia [O4 (D)]. |
 | Privacidade / localização | não comprovado | não comprovado | Há um guia de residência de dados (regiões não verificadas: não comprovado) [O4 (D)]. LGPD: não comprovado. |
-| Uso assistido possível? | **Sim**, desde que a pessoa use a interface manualmente e o PO desative o treinamento (D4). | — | — |
+| Uso assistido possível? | **Sim**, só com a pessoa usando a interface manualmente. Desativar o treinamento é recomendado, mas não basta para enviar dados privados (§3.8). | — | — |
 | Restrições para produto comercial | Nenhum uso de credencial ou sessão da pessoa pelo ACC. | não comprovado | Chaves só no servidor (fora do código e do repositório) [O2 (D)]; custo exige orçamento (hoje R$ 0). |
 | **Conclusão para o ACC** | Viável só como fluxo assistido manual. | Bloqueado (não comprovado). | Bloqueado: orçamento R$ 0; tier Free não presumido (D4). |
 
@@ -155,6 +155,14 @@
 
 - **Nenhum perfil muda de status neste PR.** Todos continuam `unverified`. A proposta de passar `subscription_assisted` de ChatGPT/Claude/Gemini a `available` (só para o fluxo assistido manual) fica para um PR futuro com aprovação do PO.
 - Nada na matriz autoriza enviar dados privados a qualquer provedor. O envio sempre passa por `data.send_external` (seção 6).
+
+### 3.8 Limites das garantias (leitura obrigatória da matriz)
+
+1. **Desativar o treinamento não garante confidencialidade nem ausência de retenção.** Mesmo com o treinamento desligado, as fontes registram retenção para segurança e abuso (ex.: até 30 dias na API da OpenAI [O4]; 30 dias, ou até 2 anos se sinalizado, na Anthropic [A5]; 72 h com atividade desligada e até 3 anos para conversas revisadas no app Gemini [G6]), revisão humana em alguns serviços [G1, G6] e uso de feedback [O7]. "Sem treinamento" é só uma das condições, nunca a garantia inteira.
+2. **Enviar dados privados exige avaliação e autorização.** Antes de qualquer envio, é preciso avaliar termos, retenção, revisão humana, privacidade e localização do serviço específico (muitas dessas células estão "não comprovado"), e ter **autorização explícita** de `data.send_external` dentro do escopo aprovado (§6). Sem avaliação favorável registrada, o envio é negado.
+3. **O fluxo assistido depende sempre da intervenção humana.** A pessoa abre a ferramenta, cola o pacote, lê a resposta e a cola de volta. O ACC não automatiza nenhum desses passos.
+4. **Nenhuma assinatura pessoal é usada pelo ACC para automatizar requisições.** Sem integração oficialmente permitida pelo provedor, o ACC não usa login, sessão, cookie, token OAuth nem credencial de assinatura de ninguém (inclusive do PO) para enviar requisições [O6, A4]. Uma integração oficial só vale depois de comprovada na matriz, aprovada pelo PO e implementada em PR próprio.
+5. **Limitações ficam explícitas.** Toda célula "não comprovado" é tratada como **ausência de garantia**, nunca como permissão. Limites anunciados pelos provedores são tetos, não mínimos garantidos [A1, G2]. Nenhuma garantia de disponibilidade, privacidade, retenção ou custo é presumida além do que a fonte oficial registra na data de consulta.
 
 ## 4. Contrato comum
 
@@ -272,7 +280,8 @@ Núcleo na #028; experiência completa no frontend.
 | `validated` / `rejected` | Tamanho, formato e varredura de segredos do resultado. |
 | `expired` | Prazo do escopo esgotado. |
 
-- Sem automação de navegador, sem cookies, sem extensão: a pessoa faz a ponte manualmente (exigência dos termos [O6, A4]).
+- Sem automação de navegador, sem cookies, sem extensão: a pessoa faz a ponte manualmente (exigência dos termos [O6, A4]). O fluxo **sempre** depende da intervenção humana; nenhum estado avança sozinho de `delivered_to_human` para `relayed` (§3.8).
+- Liberar o pacote (`delivered_to_human`) é um envio externo: exige a avaliação e a autorização de §3.8, item 2.
 - Proveniência `relayedBy` = humano autenticado; `modelReported` é o que a pessoa declarou (não verificado).
 - Espera humana **não ocupa vaga automática** da fila — ver **I4** (pendente).
 

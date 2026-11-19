@@ -40,6 +40,12 @@ GitHub real, somente leitura
 ----------------------------
 Ver docs/evidence/issue008-pr2-github-read.txt.
 
-CI
---
-(preenchido depois da abertura do PR)
+CI (PR #50, head f5ebfc766f69f7672a86e0f6661192c983b9e47c)
+--------------------------------------------------------------
+Run 44529228601 (workflow CI, evento pull_request):
+  Secret scan (tracked files & commits)   pass   6s
+  Test, lint & build (Node 22.x)          pass   1m50s
+  Test, lint & build (Node 24.x)          pass   1m50s
+PR: mergeable = MERGEABLE, mergeStateStatus = CLEAN (sem revisão; merge NÃO realizado).
+Na CI (Linux, LF) a suíte inteira passa, inclusive scripts/main-audit.test.mjs.
+Este registro é acrescentado num commit só de documentação; a CI roda de novo sobre ele.

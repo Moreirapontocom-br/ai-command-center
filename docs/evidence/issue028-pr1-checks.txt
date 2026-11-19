@@ -1,0 +1,77 @@
+Issue #028 — PR 1 — Verificações
+================================
+
+Data: 2026-11-18. Ambiente local: Windows 11, Node v24.18.1, vitest 5.1.0.
+Base: origin/main f25aa492434c60f56424f23ac5d3e1efe3ddfde2. Branch: feature/028-gateway-spec.
+
+1. Estado inicial
+-----------------
+$ git fetch origin && git rev-parse origin/main
+f25aa492434c60f56424f23ac5d3e1efe3ddfde2            (igual ao SHA esperado)
+$ git status --porcelain --untracked-files=no | wc -l
+0                                                    (nenhum arquivo versionado modificado)
+Não versionados preexistentes, NÃO incluídos: docs/evidence/issue002-review-validation.txt,
+documenta_o_t_cnica_initial_issue_001.md
+$ git switch -c feature/028-gateway-spec origin/main && git branch --unset-upstream
+
+2. Escopo do diff
+-----------------
+$ git diff --name-only origin/main...HEAD        (após o commit; ver também a seção 7)
+docs/AGENT_GATEWAY.md
+docs/IMPLEMENTATION_REPORT_028_PR1.md
+docs/evidence/issue028-pr1-checks.txt
+docs/evidence/issue028-pr1-sources.txt
+$ git diff --stat origin/main -- .github scripts server shared src
+(vazio)                                              código, políticas, contratos, catálogo e workflows inalterados
+$ grep -n "status: 'unverified'" server/limits/providers.ts
+35:      status: 'unverified' as const,                 (catálogo inalterado)
+REAL_EXECUTION_ENABLED = false as const em server/sandbox/contracts.ts (inalterado)
+
+3. Varredura de segredos
+------------------------
+$ npm run check:secrets:repo       -> Nenhuma credencial encontrada (253 arquivo(s) versionado(s)).
+$ npm run check:secrets:history    -> Nenhuma credencial encontrada (70 commit(s) do histórico de HEAD).
+$ node scripts/check-secrets.mjs staged              (com os 4 arquivos preparados)
+  -> ver resultado na seção 7
+$ npm run check:secrets            -> Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+
+4. Lint, tipos e build
+----------------------
+$ npm run lint                     -> exit 0 (0 problemas)
+$ npx tsc -p tsconfig.server.json --noEmit -> exit 0
+$ npm run build                    -> exit 0 (tsc -b && vite build)
+$ npm run check:csp                -> Build compatível com a CSP de produção.
+
+5. Testes
+---------
+$ npx vitest run
+ Test Files  1 failed | 51 passed (52)
+      Tests  1 failed | 1156 passed (1157)
+Única falha: scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e
+manualmente, só com permissões de leitura.
+Causa (preexistente, só local): core.autocrlf=true; `file .github/workflows/*.yml` mostra
+"with CRLF line terminators". Nenhum workflow foi alterado neste PR. A CI (Linux, LF) passa; é a
+mesma falha local registrada em IMPLEMENTATION_REPORT_012_PR1/PR2. Não corrigida (fora do escopo).
+
+6. Conferência documental
+-------------------------
+- Cada ID de fonte citado na matriz (O1–O7, A1–A6, G1–G6, N1–N4, N6) tem entrada em
+  issue028-pr1-sources.txt e linha na tabela da seção 15 de AGENT_GATEWAY.md: OK (24/24).
+- Domínios citados (todos oficiais): developers.openai.com, help.openai.com, openai.com,
+  platform.claude.com, code.claude.com, privacy.claude.com, www.anthropic.com, aistudio.google.com,
+  support.google.com, assets.ngc.nvidia.com, build.nvidia.com, docs.api.nvidia.com, docs.nvidia.com,
+  www.nvidia.com (integrate.api.nvidia.com aparece só como endpoint documentado, não como fonte).
+- Data de consulta registrada: 2026-11-18 para todas as fontes.
+- D1–D9 e I1–I9 presentes em AGENT_GATEWAY.md; I1 e I4 marcadas PENDENTES antes do PR 2.
+- Critérios da #028: matriz (§3), contrato (§4–§5), fluxo assistido (§8), plano de testes (§13),
+  Nemotron opcional (§3.6): presentes.
+- Auditoria D8 de #020 e #022 registrada (§14.3); ambas mantidas abertas.
+
+7. Commit e CI
+--------------
+$ git add docs/AGENT_GATEWAY.md docs/IMPLEMENTATION_REPORT_028_PR1.md \
+          docs/evidence/issue028-pr1-sources.txt docs/evidence/issue028-pr1-checks.txt   (adição explícita)
+$ git diff --cached --name-only    -> exatamente os 4 arquivos acima
+$ node scripts/check-secrets.mjs staged -> Nenhuma credencial encontrada (4 arquivo(s) preparado(s)).
+Varredura dos commits do PR (origin/main..HEAD) e resultado da CI: registrados no PR (o SHA do
+commit não pode constar do próprio commit).

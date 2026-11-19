@@ -1,0 +1,205 @@
+Issue #028 — PR 1 — Registro de fontes oficiais
+================================================
+
+Data de consulta: 2026-11-18 (todas as fontes).
+Método:
+  (D) leitura direta da página oficial (ferramenta de leitura web, sem login, sem credencial).
+  (B) leitura direta falhou (HTTP 403) ou não foi feita; conteúdo obtido do resultado de busca
+      restrita ao domínio oficial do provedor. Confiança média: reler diretamente antes de ativar.
+Nenhuma conta criada, nenhuma credencial usada, nenhuma chamada de API feita.
+Fóruns, blogs e notícias NÃO foram usados como prova (ver "Rejeitadas" no fim).
+Citações curtas, em inglês, como aparecem na fonte.
+
+-------------------------------------------------------------------------------
+OPENAI
+-------------------------------------------------------------------------------
+[O1] (D) https://developers.openai.com/api/docs/guides/rate-limits
+     (redirecionado de platform.openai.com/docs/guides/rate-limits, HTTP 301)
+     - Limites: RPM, RPD, TPM, TPD, IPM; por organização e por projeto; variam por modelo.
+     - "Your organization's usage tier upgrades automatically as its total credit purchases reach each threshold."
+     - Tiers: Free (US$ 100/mês, "only available to users in an allowed geography"); Build (US$ 5 em
+       créditos, teto US$ 500/mês); Launch (US$ 100, teto US$ 5.000); Grow (US$ 500, teto US$ 200.000).
+     Conclusão: existe tier Free condicionado a geografia; elegibilidade do Brasil não comprovada.
+
+[O2] (D) https://developers.openai.com/api/docs/guides/production-best-practices
+     - Chave de API enviada como "Authorization: Bearer $OPENAI_API_KEY".
+     - "a project service account for an application's identity instead of depending on an individual developer's key"
+     - "avoid exposing the API keys in your code or in public repositories"
+     Conclusão: autenticação por chave no servidor; nunca no código/repositório.
+
+[O3] (D) https://developers.openai.com/api/docs/pricing
+     - "Prices per 1M tokens."
+     - Ex.: gpt-5.4-mini US$ 0,75 entrada / US$ 4,50 saída; gpt-5-nano US$ 0,05 / US$ 0,40.
+     - A página não trata de assinaturas ChatGPT.
+     Conclusão: API cobrada por consumo.
+
+[O4] (D) https://developers.openai.com/api/docs/guides/your-data
+     - "As of March 1, 2023, data sent to the OpenAI API is not used to train or improve OpenAI models"
+     - Logs de abuso: "up to 30 days" por padrão.
+     - ZDR: "subject to prior approval by OpenAI and acceptance of additional requirements."
+     - Residência de dados: remete a guia separado (regiões não verificadas).
+     Conclusão: API sem treino por padrão; retenção de até 30 dias para abuso.
+
+[O5] (B) https://help.openai.com/en/articles/6950777-what-is-chatgpt-plus
+         https://help.openai.com/en/articles/9039756-managing-billing-for-chatgpt-and-the-api-platform
+     Leitura direta: HTTP 403 (help.openai.com).
+     - Resultado de busca no domínio oficial: uso da API é separado e cobrado à parte; aparece como
+       "Not included" no Plus; sistemas de cobrança separados para ChatGPT e plataforma de API.
+     Conclusão: assinatura ChatGPT não inclui API.
+
+[O6] (B) https://openai.com/policies/row-terms-of-use/
+     Leitura direta: HTTP 403 (openai.com/policies/terms-of-use/).
+     - Cláusula, em "Using our Services": "Automatically or programmatically extract data or Output".
+     Conclusão: automação da interface do ChatGPT proibida; só uso manual pela pessoa.
+
+[O7] (B) https://help.openai.com/en/articles/7730893-data-controls-in-chatgpt
+         https://help.openai.com/en/articles/5722486-how-your-data-is-used-to-improve-model-performance
+     - Desativação via "Improve the model for everyone"; feedback em planos individuais (Free, Plus,
+       Pro) pode levar ao uso da conversa inteira; Business, Enterprise, Edu e API não são usados por padrão.
+     Conclusão: no modo assistido, o PO deve desativar o treinamento; dados privados só com autorização (D4).
+
+-------------------------------------------------------------------------------
+ANTHROPIC
+-------------------------------------------------------------------------------
+[A1] (D) https://platform.claude.com/docs/en/api/rate-limits
+     (redirecionado de docs.claude.com/en/api/rate-limits, HTTP 301)
+     - Spend caps mensais: Start US$ 500; Build US$ 1.000; Scale US$ 200.000; Custom sem teto.
+     - Tier Evaluation inicial "with limits below the standard limits".
+     - Rate limits RPM/ITPM/OTPM por modelo; ramp limits; token bucket.
+     - Erros: 429 rate_limit_error; error_code "enforced_spend_limit_reached" (sem retry-after) e
+       "ramp_limit_exceeded".
+     - "All limits described here represent maximum allowed usage, not guaranteed minimums."
+     - A página não descreve camada gratuita de API.
+     Conclusão: API paga; nenhuma camada gratuita comprovada.
+
+[A2] (D) https://platform.claude.com/docs/en/about-claude/pricing
+     - Preços em USD por MTok. Ex.: Claude Opus 5.5 US$ 4 / US$ 20; Claude Sonnet 5.5 US$ 2 / US$ 10;
+       Claude Haiku 5.5 US$ 0,10 / US$ 0,50 (prompts até 100.000 tokens).
+     - inference_geo "US-only" com multiplicador 1.1x.
+     Conclusão: API por consumo; opção de inferência só nos EUA.
+
+[A3] (D) https://code.claude.com/docs/en/iam
+     (redirecionado de docs.claude.com/en/docs/claude-code/iam, HTTP 301)
+     - Contas: "Claude Pro, Max, or Ultra subscription", Teams/Enterprise, Claude Console, provedores de nuvem.
+     - ANTHROPIC_API_KEY "Sent as the X-Api-Key header".
+     - "claude setup-token": token OAuth de um ano; "This token authenticates with your Claude subscription".
+     Conclusão: Claude Code aceita assinatura ou chave de API.
+
+[A4] (D) https://code.claude.com/docs/en/legal-and-compliance
+     (redirecionado de docs.claude.com/en/docs/claude-code/legal-and-compliance, HTTP 301)
+     - Commercial Terms para Team, Enterprise e API; Consumer Terms para Free, Pro, Max e Ultra.
+     - Rodar Claude Code "in your products or services (e.g. in hosted sandboxes or other agent
+       infrastructure) requires agreeing to our Commercial Terms"; binário não modificado; "Customers may
+       not pay for, resell, or intermediate Claude usage on their end users' behalf."
+     - "OAuth authentication is intended exclusively for purchasers of Claude Free, Pro, Max, Ultra, Team,
+       and Enterprise subscription plans".
+     - "Anthropic does not permit third-party developers to offer Claude.ai login into their own
+       applications, or to route requests through Free, Pro, Max, or Ultra plan credentials on behalf of
+       their users."
+     - "developers may not collect, store, or intermediate Claude.ai credentials or session tokens"
+     - "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage".
+     Conclusão: o ACC não usa nem guarda credencial de assinatura; Claude Code hospedado exige Commercial
+     Terms; caso do PO usando a própria credencial fica para decisão da #008/#031 (P4).
+
+[A5] (B) https://platform.claude.com/docs/en/manage-claude/api-and-data-retention
+         https://privacy.claude.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data
+     - API: entradas e saídas apagadas "within 30 days of receipt or generation" (salvo exceções).
+     - Conteúdo sinalizado: até 2 anos; pontuações de classificação: até 7 anos.
+     - ZDR por acordo; "Covered Models" com retenção de 30 dias "on every platform", vigente desde 2026-06-09.
+     Conclusão: retenção comercial padrão de 30 dias.
+
+[A6] (B) https://www.anthropic.com/news/updates-to-our-consumer-terms
+         https://privacy.claude.com/en/articles/10023548-how-long-do-you-store-my-data
+     - Consumidor (Free/Pro/Max): opt-in de treinamento com retenção de 5 anos; sem opt-in, 30 dias.
+     - Não se aplica a serviços sob os Commercial Terms (Team, Enterprise, API).
+     Conclusão: no modo assistido, o PO deve manter o treinamento desligado (D4).
+
+-------------------------------------------------------------------------------
+GOOGLE
+-------------------------------------------------------------------------------
+[G1] (D) https://aistudio.google.com/docs/terms
+     (redirecionado de ai.google.dev/gemini-api/terms, HTTP 301). "Effective March 23, 2026".
+     - Serviços não pagos: "Google uses the content you submit to the Services and any generated responses
+       to provide, improve, and develop"; revisores humanos podem ler.
+     - Serviços pagos: "Google doesn't use your prompts" ... "or responses to improve our products";
+       registro por tempo limitado para abuso.
+     - "Do not submit sensitive, confidential, or personal information to the Unpaid Services."
+     - EEE, Suíça e Reino Unido: só serviços pagos. Idade mínima: 18 anos.
+     Conclusão: tier gratuito proibido para dados de projetos (D4).
+
+[G2] (D) https://aistudio.google.com/docs/rate-limits
+     (redirecionado de ai.google.dev/gemini-api/docs/rate-limits, HTTP 301)
+     - RPM, TPM, RPD (reinicia à meia-noite do Pacífico); "Rate limits are applied per project, not per API key."
+     - Tiers: Free; Tier 1 (faturamento ativo); Tier 2 (US$ 100 + 3 dias); Tier 3 (US$ 1.000 + 30 dias).
+     - "Specified rate limits are not guaranteed and actual capacity may vary."
+
+[G3] (D) https://aistudio.google.com/docs/api-key
+     (redirecionado de ai.google.dev/gemini-api/docs/api-key, HTTP 301)
+     - Cabeçalho x-goog-api-key; "Every Gemini API key is associated with a Google Cloud project."
+     - Chaves de autorização ligadas a conta de serviço; padrão no AI Studio desde 2026-05-28.
+     - "Never check API keys into source control systems like Git."; proxy no backend; Secret Manager.
+
+[G4] (D) https://aistudio.google.com/docs/pricing
+     - Free: "Content used to improve our products." Pago: "Content not used to improve our products."
+     - Ex.: Gemini 3.5 Flash-Lite US$ 0,30 / US$ 2,50 por 1M tokens; Gemini 3.1 Pro Preview US$ 2,00 / US$ 12,00
+       (≤200k tokens).
+
+[G5] (D) https://aistudio.google.com/docs/google-ai-plans
+     (redirecionado de ai.google.dev/gemini-api/docs/google-ai-plans, HTTP 301)
+     - "Google AI plan benefits for developer usage apply only within the Google AI Studio web interface."
+     - "Google bills and manages Gemini API usage (such as using API keys or external applications) separately."
+     Conclusão: assinatura não inclui API.
+
+[G6] (B) https://support.google.com/gemini/answer/13594961 (Gemini Apps Privacy Hub)
+     - Revisores humanos podem ler conversas mesmo com a atividade desligada.
+     - Atividade desligada: retenção de 72 h; conversas revisadas: até 3 anos; padrão 18 meses com atividade ligada.
+     Conclusão: modo assistido com dados privados só com autorização (D4).
+
+-------------------------------------------------------------------------------
+NVIDIA
+-------------------------------------------------------------------------------
+[N1] (D) https://assets.ngc.nvidia.com/products/api-catalog/legal/NVIDIA%20API%20Trial%20Terms%20of%20Service.pdf
+     PDF baixado pela ferramenta de leitura web; texto extraído localmente (script no diretório temporário
+     da sessão, fora do repositório). Metadado do PDF: criado/modificado em 2025-10-07.
+     - 1.2: "for limited trial purposes only and without use of the API Service or Generated Content in production."
+     - "You must have a separate service subscription ... to use the API Service in production"; sem ela,
+       "only ... for internal testing and evaluation purposes, not in production."
+     - 2.6: não incluir "any confidential information, controlled or sensitive data, ... personal data".
+     - 3.3: NVIDIA coleta "User Content and Generated Content to improve NVIDIA products and services,
+       including AI models"; uso registrado para segurança, fraude e abuso.
+     - 4.12: proíbe usar para desenvolver produtos que concorram com o serviço.
+     Conclusão: trial proibido para dados de projetos; Nemotron opcional.
+
+[N2] (B) https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b/apireference
+         https://docs.nvidia.com/nemo/retriever/26.8.1/extraction/api-keys/
+     - Chave como Bearer, base https://integrate.api.nvidia.com/v1; chaves com prefixo "nvapi-".
+
+[N3] (D) https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-super-120b-a12b
+     - "The trial service is governed by the NVIDIA API Trial Terms of Service."
+     - "Use of this model is governed by the NVIDIA Nemotron Open Model License."
+
+[N4] (B) https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-nemotron-open-model-license/
+     - Licença permite uso comercial e obras derivadas; alguns cartões de modelo mais novos (ex.: Nemotron 3
+       Ultra) citam a licença OpenMDW-1.1.
+     Conclusão: a licença varia por modelo; auto-hospedagem tem custo de infraestrutura (fora de R$ 0).
+
+[N6] (D) https://docs.api.nvidia.com/nim/reference/llm-apis
+     - URL "https://integrate.api.nvidia.com"; endpoint "POST /v1/chat/completions".
+     - A página não trata de autenticação, limites nem créditos.
+
+-------------------------------------------------------------------------------
+REJEITADAS COMO PROVA (apareceram nas buscas; não oficiais)
+-------------------------------------------------------------------------------
+- community.openai.com (vários tópicos sobre Plus × API e automação).
+- forums.developer.nvidia.com (créditos/rate limits do trial, NIM FAQ). O identificador N5 foi
+  reservado a esta fonte e descartado, por isso não aparece na matriz.
+- discuss.ai.google.dev (Google One × API).
+Itens que dependiam só dessas fontes ficaram como "não comprovado" na matriz.
+
+-------------------------------------------------------------------------------
+NÃO PESQUISADO NESTA RODADA (matriz = "não comprovado")
+-------------------------------------------------------------------------------
+- Integrações oficiais da OpenAI além da API; preços dos planos ChatGPT (openai.com retornou 403).
+- Vertex AI (Google) e termos do app Gemini.
+- Assinatura NVIDIA AI Enterprise / parceiros; rate limits do trial.
+- Localização de dados e LGPD para os quatro provedores.

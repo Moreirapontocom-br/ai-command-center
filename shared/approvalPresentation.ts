@@ -22,7 +22,7 @@ import { AGENT_IDS, POLICY_ACTIONS, type ApprovalBindingView } from './contracts
  * Arquivo sem dependências do servidor: roda no navegador e no servidor (mesmo cálculo).
  */
 
-export const PRESENTATION_KINDS = ['sandbox', 'admission', 'approvals.retention_change', 'approvals.history_purge'] as const;
+export const PRESENTATION_KINDS = ['sandbox', 'admission', 'approvals.retention_change', 'approvals.history_purge', 'gateway.scope'] as const;
 export type ApprovalPresentationKind = (typeof PRESENTATION_KINDS)[number];
 
 /** Espelhos das listas do servidor (um teste garante que são iguais às de `server/`). */
@@ -30,6 +30,10 @@ export const PRESENTATION_CREDENTIAL_SCOPES = ['repo.read', 'repo.write_work_bra
 export const PRESENTATION_USAGE_MODES = ['subscription_assisted', 'official_integration', 'metered_api'] as const;
 export const PRESENTATION_INPUT_KINDS = ['issue', 'pull_request', 'task'] as const;
 export const PRESENTATION_SANDBOX_MAX = { timeoutSeconds: 30 * 60, cpu: 2, memoryMb: 4096, diskMb: 10_240, networkHosts: 10, inputs: 20 } as const;
+/** Espelhos das listas do Agent Gateway (Issue #028); um teste garante que são iguais às de `server/gateway`. */
+export const PRESENTATION_GATEWAY_CAPABILITIES = ['text.review', 'text.draft', 'text.summarize', 'code.plan'] as const;
+export const PRESENTATION_GATEWAY_CHANNELS = ['simulated', 'assisted'] as const;
+export const PRESENTATION_GATEWAY_MAX = { dataRefs: 20, invocations: 50, validitySeconds: 60 * 60, outputBytes: 64 * 1024, budgetMinor: 100_000_00 } as const;
 /** Tamanho máximo da apresentação canônica (bytes UTF-8). */
 export const PRESENTATION_MAX_BYTES = 8192;
 
@@ -67,7 +71,30 @@ export interface AdmissionPresentationParams {
   maxTokens: number | null;
 }
 
+/**
+ * Escopo de tarefa do Agent Gateway (Issue #028, I1): TUDO o que a aprovação autoriza. Uma aprovação
+ * de uso único (`agent.invoke` e, no canal assistido, também `data.send_external`) cria um escopo
+ * com exatamente estes limites; ampliar qualquer um exige um escopo novo (nova aprovação).
+ */
+export interface GatewayScopePresentationParams {
+  scopeId: string;
+  projectId: string;
+  taskId: string;
+  agentIds: string[];
+  capabilities: Array<(typeof PRESENTATION_GATEWAY_CAPABILITIES)[number]>;
+  dataRefs: Array<{ kind: (typeof PRESENTATION_INPUT_KINDS)[number]; ref: string }>;
+  channel: (typeof PRESENTATION_GATEWAY_CHANNELS)[number];
+  mode: (typeof PRESENTATION_USAGE_MODES)[number];
+  /** O canal assistido entrega conteúdo à pessoa para uso fora do ACC (envio externo). */
+  externalSharing: boolean;
+  maxInvocations: number;
+  budgetMinor: number;
+  validitySeconds: number;
+  maxOutputBytes: number;
+}
+
 export type ApprovalPresentation =
+  | { kind: 'gateway.scope'; params: GatewayScopePresentationParams }
   | { kind: 'sandbox'; params: SandboxPresentationParams }
   | { kind: 'admission'; params: AdmissionPresentationParams }
   | { kind: 'approvals.retention_change'; params: { days: number } }
@@ -209,6 +236,43 @@ function parseAdmission(raw: unknown): AdmissionPresentationParams {
   };
 }
 
+function parseGatewayScope(raw: unknown): GatewayScopePresentationParams {
+  const p = exact(raw, ['scopeId', 'projectId', 'taskId', 'agentIds', 'capabilities', 'dataRefs', 'channel', 'mode', 'externalSharing', 'maxInvocations', 'budgetMinor', 'validitySeconds', 'maxOutputBytes']);
+  const max = PRESENTATION_GATEWAY_MAX;
+  const channel = oneOf(p.channel, PRESENTATION_GATEWAY_CHANNELS);
+  const mode = oneOf(p.mode, PRESENTATION_USAGE_MODES);
+  if (typeof p.externalSharing !== 'boolean') fail();
+  // O canal assistido SEMPRE entrega conteúdo à pessoa para uso externo; o simulado nunca.
+  if (p.externalSharing !== (channel === 'assisted')) fail();
+  const agentIds = uniqueList(p.agentIds, 1, (a) => oneOf(a, AGENT_IDS));
+  if (agentIds.length !== 1) fail();
+  const capabilities = uniqueList(p.capabilities, PRESENTATION_GATEWAY_CAPABILITIES.length, (c) => oneOf(c, PRESENTATION_GATEWAY_CAPABILITIES));
+  if (capabilities.length === 0) fail();
+  const budgetMinor = int(p.budgetMinor, 0, max.budgetMinor);
+  // Orçamento só existe em API cobrada (as demais modalidades não têm custo adicional conhecido).
+  if (mode !== 'metered_api' && budgetMinor !== 0) fail();
+  return {
+    scopeId: str(p.scopeId, UUID),
+    projectId: str(p.projectId, UUID),
+    taskId: str(p.taskId, UUID),
+    agentIds,
+    capabilities,
+    dataRefs: uniqueList(p.dataRefs, max.dataRefs, (raw) => {
+      const d = exact(raw, ['kind', 'ref']);
+      const ref = str(d.ref, INPUT_REF);
+      if (ref.includes('..')) fail();
+      return { kind: oneOf(d.kind, PRESENTATION_INPUT_KINDS), ref };
+    }),
+    channel,
+    mode,
+    externalSharing: p.externalSharing as boolean,
+    maxInvocations: int(p.maxInvocations, 1, max.invocations),
+    budgetMinor,
+    validitySeconds: int(p.validitySeconds, 60, max.validitySeconds),
+    maxOutputBytes: int(p.maxOutputBytes, 1, max.outputBytes),
+  };
+}
+
 /**
  * Valida a apresentação no formato FECHADO do tipo e devolve uma cópia nova (só os campos
  * conhecidos). Qualquer campo extra/ausente, tipo errado ou valor fora da lista → erro.
@@ -224,6 +288,9 @@ export function parsePresentation(raw: unknown): ApprovalPresentation {
       break;
     case 'admission':
       presentation = { kind, params: parseAdmission(p.params) };
+      break;
+    case 'gateway.scope':
+      presentation = { kind, params: parseGatewayScope(p.params) };
       break;
     case 'approvals.retention_change': {
       const params = exact(p.params, ['days']);
@@ -256,6 +323,7 @@ export function parsePresentation(raw: unknown): ApprovalPresentation {
 export function expectedPresentationKind(binding: Pick<ApprovalBindingView, 'action'>, requestedBy: { kind: 'system' | 'human'; id: string }): ApprovalPresentationKind | null {
   if (requestedBy.kind === 'system' && requestedBy.id === 'sandbox') return binding.action === 'sandbox.execute' ? 'sandbox' : null;
   if (requestedBy.kind === 'system' && requestedBy.id === 'limits') return Object.hasOwn(POLICY_ACTIONS, binding.action) ? 'admission' : null;
+  if (requestedBy.kind === 'system' && requestedBy.id === 'gateway') return binding.action === 'agent.invoke' || binding.action === 'data.send_external' ? 'gateway.scope' : null;
   if (requestedBy.kind === 'human' && (binding.action === 'approvals.retention_change' || binding.action === 'approvals.history_purge')) return binding.action;
   return null;
 }
@@ -294,6 +362,21 @@ function consistent(binding: ApprovalBindingView, p: ApprovalPresentation): bool
         binding.subject.kind === 'agent' &&
         binding.subject.id === a.agentId &&
         // A admissão não tem SHA nem ref: um vínculo com alvo não é representado pelos parâmetros.
+        binding.target.sha === null &&
+        binding.target.ref === null
+      );
+    }
+    case 'gateway.scope': {
+      // O vínculo aponta para o PRÓPRIO escopo (não para a tarefa), para nunca colidir com o pedido
+      // de admissão (#022) da mesma tarefa; `data.send_external` só existe com envio externo.
+      const g = p.params;
+      return (
+        (binding.action === 'agent.invoke' || (binding.action === 'data.send_external' && g.externalSharing)) &&
+        binding.projectId === g.projectId &&
+        binding.resource.type === 'gateway_scope' &&
+        binding.resource.id === g.scopeId &&
+        binding.subject.kind === 'agent' &&
+        binding.subject.id === g.agentIds[0] &&
         binding.target.sha === null &&
         binding.target.ref === null
       );

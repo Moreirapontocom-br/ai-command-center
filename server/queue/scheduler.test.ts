@@ -618,8 +618,9 @@ describe('recusas recuperáveis x definitivas (Q5) e aprovações', () => {
   });
 
   it('provedor não verificado (catálogo real) → recuperável, nunca falha; expira pelo TTL', async () => {
+    // Issue #008: no catálogo real só `claude-code/subscription_assisted` está disponível; outro modo segue não verificado.
     const s = await stack({ providers: (await import('../limits/providers.ts')).defaultProviderCatalog() });
-    const item = await s.scheduler.submit('admin', s.body());
+    const item = await s.scheduler.submit('admin', s.body({ admission: { action: 'tool.use', mode: 'official_integration', durationSeconds: 600, estimatedCostMinor: null, maxTokens: null } }));
     await s.scheduler.tick();
     await s.approveAll();
     const report = await s.scheduler.tick();

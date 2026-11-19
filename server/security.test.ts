@@ -9,7 +9,13 @@ import { join, relative } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { GH_AUTH_TOKEN_ARGS } from './auth/ghCli.ts';
 import { allowedMethods, POST_ROUTES } from './http/app.ts';
-import { APPROVED_DOCUMENTS, createGraphQLClient, GITHUB_GRAPHQL_ENDPOINT, isReadOnlyDocument } from './github/client.ts';
+import { APPROVED_DOCUMENTS, assertAllowedRestRequest, compareRequestUrl, createGraphQLClient, createRestCompareClient, GITHUB_GRAPHQL_ENDPOINT, GITHUB_REST_ORIGIN, isReadOnlyDocument } from './github/client.ts';
+import { POLICY_ACTIONS } from '../shared/contracts.ts';
+import { APPROVAL_TTL_MS } from './approvals/contracts.ts';
+import { HANDOFF_TRANSITIONS } from './gateway/contracts.ts';
+import { ASSISTED_AVAILABILITY } from './policy/engine.ts';
+import { defaultProviderCatalog } from './limits/providers.ts';
+import { REAL_EXECUTION_ENABLED } from './sandbox/contracts.ts';
 import * as queries from './github/queries.ts';
 
 function sources(dir: string): Array<{ path: string; code: string }> {
@@ -24,17 +30,78 @@ function sources(dir: string): Array<{ path: string; code: string }> {
 const server = sources('server');
 const frontend = sources('src');
 const filesMatching = (files: typeof server, pattern: RegExp) => files.filter((f) => pattern.test(f.code)).map((f) => f.path);
+/** Código sem comentários (documentação pode citar caminhos; só o código conta). */
+const stripComments = (files: typeof server) => files.map((f) => ({ ...f, code: f.code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '') }));
 
 describe('superfície de escrita do servidor', () => {
   it('a única chamada de rede do servidor é a do cliente GraphQL', () => {
     expect(filesMatching(server, /\bfetch\(/)).toEqual(['server/github/client.ts']);
   });
 
-  it('o único endpoint da API do GitHub é o GraphQL fixo', () => {
+  it('os únicos endpoints da API do GitHub são o GraphQL fixo e a comparação REST fechada (Issue #008)', () => {
     expect(GITHUB_GRAPHQL_ENDPOINT).toBe('https://api.github.com/graphql');
+    expect(GITHUB_REST_ORIGIN).toBe('https://api.github.com');
     const apiUrls = server.flatMap((f) => f.code.match(/https?:\/\/api\.github\.com[^'"`\s]*/g) ?? []);
-    expect(apiUrls).toEqual([GITHUB_GRAPHQL_ENDPOINT]);
-    expect(filesMatching(server, /uploads\.github\.com|\/repos\/|\/user\//)).toEqual([]);
+    expect(apiUrls.sort()).toEqual([GITHUB_REST_ORIGIN, GITHUB_GRAPHQL_ENDPOINT].sort());
+    expect(filesMatching(server, /https?:\/\/api\.github\.com/)).toEqual(['server/github/client.ts']);
+    expect(filesMatching(server, /uploads\.github\.com|\/user\//)).toEqual([]);
+    // `/repos/` só no ÚNICO caminho REST montado, o da comparação (§6.4), dentro de client.ts.
+    const code = stripComments(server);
+    expect(filesMatching(code, /\/repos\//)).toEqual(['server/github/client.ts']);
+    expect(code.find((f) => f.path === 'server/github/client.ts')!.code.match(/\/repos\//g)).toHaveLength(1);
+    expect(code.find((f) => f.path === 'server/github/client.ts')!.code).toMatch(/\$\{GITHUB_REST_ORIGIN\}\/repos\/\$\{owner\}\/\$\{repo\}\/compare\/\$\{baseSha\}\.\.\.\$\{headSha\}\$\{REST_COMPARE_QUERY\}/);
+    // Nenhum outro recurso REST (escrita, workflows, merges, refs, conteúdos) é citado no código.
+    expect(filesMatching(code, /\/(?:pulls|merges|dispatches|git\/refs|contents|actions|hooks|statuses|check-runs|issues\/\d)/)).toEqual([]);
+  });
+
+  it('REST (Issue #008): só GET, caminho fechado com SHAs completos e só per_page=1 — recusa antes da rede', async () => {
+    const sha = 'a'.repeat(40);
+    const sha2 = 'b'.repeat(40);
+    expect(compareRequestUrl('o', 'r', sha, sha2)).toBe(`https://api.github.com/repos/o/r/compare/${sha}...${sha2}?per_page=1`);
+    for (const [owner, repo, base, head] of [
+      ['o', 'r', 'abc', sha2],
+      ['o', 'r', sha, 'HEAD'],
+      ['o', 'r', sha.toUpperCase(), sha2],
+      ['o/x', 'r', sha, sha2],
+      ['o', '..', sha, sha2],
+      ['o', 'r?x=1', sha, sha2],
+      ['-o', 'r', sha, sha2],
+    ]) {
+      expect(() => compareRequestUrl(owner, repo, base, head)).toThrow();
+    }
+    const good = compareRequestUrl('o', 'r', sha, sha2);
+    for (const [method, url] of [
+      ['POST', good],
+      ['PUT', good],
+      ['PATCH', good],
+      ['DELETE', good],
+      ['GET', good.replace('per_page=1', 'per_page=100')],
+      ['GET', `${good}&page=2`],
+      ['GET', good.replace('?per_page=1', '')],
+      ['GET', `${good}#x`],
+      ['GET', good.replace('/compare/', '/merges/')],
+      ['GET', good.replace('https://api.github.com', 'https://evil.example')],
+      ['GET', good.replace('https://', 'https://user:pass@')],
+      ['GET', `https://api.github.com/repos/o/r/pulls/1`],
+    ]) {
+      expect(() => assertAllowedRestRequest(method, url)).toThrow();
+    }
+    // Em execução: um único GET na URL exata, sem corpo e sem cookies.
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createRestCompareClient({ credentials: { kind: 'fine-grained-token' as const, getAuthorizationHeader: async () => 'Bearer x' }, fetchImpl, timeoutMs: 1000 });
+    await client.compare('o', 'r', sha, sha2);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(good);
+    expect(init.method).toBe('GET');
+    expect(init.body).toBeUndefined();
+    expect(JSON.stringify(init.headers)).not.toMatch(/cookie/i);
+    // Entrada inválida: recusa sem credencial nem rede.
+    const credentials = { kind: 'gh-cli' as const, getAuthorizationHeader: vi.fn(async () => 'Bearer x') };
+    const fetch2 = vi.fn();
+    await expect(createRestCompareClient({ credentials, fetchImpl: fetch2, timeoutMs: 1000 }).compare('o', 'r', 'main', sha2)).rejects.toMatchObject({ code: 'internal', reason: 'rest_request_not_allowed' });
+    expect(credentials.getAuthorizationHeader).not.toHaveBeenCalled();
+    expect(fetch2).not.toHaveBeenCalled();
   });
 
   it('só o provedor gh-cli cria subprocessos, e sempre com os argumentos congelados', () => {
@@ -66,6 +133,14 @@ describe('superfície de escrita do servidor', () => {
       '/api/approvals/history/holds',
       '/api/approvals/history/holds/:id/remove',
       '/api/approvals/history/purge',
+      // Issue #008 (PR 2): ordens do Claude Code no fluxo assistido.
+      '/api/projects/:id/tasks/:taskId/claude-orders',
+      '/api/projects/:id/claude-enablement',
+      '/api/claude-orders/:orderId/package',
+      '/api/claude-orders/:orderId/forwarded',
+      '/api/claude-orders/:orderId/pr',
+      '/api/claude-orders/:orderId/verify',
+      '/api/claude-orders/:orderId/cancel',
     ]);
     // Nenhuma rota executa, admite, inicia sandbox, faz merge/deploy, mexe em limites ou no kill switch (N9).
     expect(POST_ROUTES.some((route) => /exec|run|sandbox|admission|admit|kill|barrier|release|limit|budget|quota|spend|merge|deploy|publish|secret|permission/.test(route))).toBe(false);
@@ -86,6 +161,12 @@ describe('superfície de escrita do servidor', () => {
     for (const path of ['/api/projects', `/api/projects/${id}`, `/api/projects/${id}/tasks`, `/api/projects/${id}/tasks/${id}`]) {
       expect([...allowedMethods(path)]).toEqual(['GET', 'HEAD', 'POST']);
     }
+    // Issue #008: listagem só leitura; criação, habilitação e ações da ordem só POST.
+    expect([...allowedMethods(`/api/projects/${id}/claude-orders`)]).toEqual(['GET', 'HEAD']);
+    for (const path of [`/api/projects/${id}/tasks/${id}/claude-orders`, `/api/projects/${id}/claude-enablement`, ...['package', 'forwarded', 'pr', 'verify', 'cancel'].map((v) => `/api/claude-orders/${id}/${v}`)]) {
+      expect([...allowedMethods(path)]).toEqual(['POST']);
+    }
+    expect([...allowedMethods(`/api/claude-orders/${id}/release`)]).toEqual(['GET', 'HEAD']);
     // Nenhum PUT/PATCH/DELETE em nenhuma rota; POST aparece uma única vez (constante WRITE_METHOD).
     const app = server.find((f) => f.path === 'server/http/app.ts')!.code;
     expect(app).not.toMatch(/['"](?:PUT|PATCH|DELETE)['"]/);
@@ -141,7 +222,11 @@ describe('superfície de escrita do servidor', () => {
       expect(file.code).not.toMatch(/sandbox\/(service|simulatedProvider|provider)|cookie|process\.env/i);
     }
     // Nenhum código fora de server/limits usa o controlador (não há API nem integração real ainda).
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/limits/')), /limits\/(controller|providers|simulatedApprovalVerifier)/)).toEqual([]);
+    // Issue #008: o servidor lê do catálogo SÓ se o perfil assistido está disponível (nunca o controlador).
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/limits/')), /limits\/(controller|providers|simulatedApprovalVerifier)/)).toEqual(['server/index.ts']);
+    const index = server.find((f) => f.path === 'server/index.ts')!.code;
+    expect(index).toMatch(/^import \{ assistedProfileAvailable \} from '\.\/limits\/providers\.ts';$/m);
+    expect(index).not.toMatch(/limits\/(controller|simulatedApprovalVerifier|queueAdmission)|createLimitsController/);
     expect(POST_ROUTES.some((route) => /limit|budget|quota|kill|spend|admission/.test(route))).toBe(false);
   });
 
@@ -296,18 +381,28 @@ describe('superfície de escrita do servidor', () => {
     // Execução real continua desligada.
     expect(server.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);
   });
-  it('Agent Gateway (Issue #028): DORMENTE e SIMULADO — sem rede, credencial, ambiente, subprocesso, rota nem ligação em produção', () => {
+  it('Agent Gateway (Issues #028/#008): só o canal ASSISTIDO ligado — sem rede, credencial, ambiente, subprocesso, adaptador nem fila em produção', () => {
     const files = server.filter((f) => f.path.startsWith('server/gateway/'));
     expect(files.map((f) => f.path).sort()).toEqual([
       'server/gateway/adapters.ts',
       'server/gateway/content.ts',
       'server/gateway/contracts.ts',
       'server/gateway/documents.ts',
+      // Issue #008: coordenador das ordens (porta de leitura injetada) e regras puras V1–V13.
+      'server/gateway/orders.ts',
+      'server/gateway/prVerification.ts',
       'server/gateway/routingExecutor.ts',
       'server/gateway/secretScan.ts',
       'server/gateway/service.ts',
       'server/gateway/store.ts',
     ]);
+    // Issue #008: o gateway conhece o GitHub só pelos TIPOS das leituras (nunca o cliente, a consulta ou a credencial).
+    expect(filesMatching(files, /from '\.\.\/github\//).sort()).toEqual(['server/gateway/orders.ts', 'server/gateway/prVerification.ts']);
+    for (const path of ['server/gateway/orders.ts', 'server/gateway/prVerification.ts']) {
+      const code = files.find((f) => f.path === path)!.code;
+      expect(code).toMatch(/^import type \{[^}]+\} from '\.\.\/github\/prTypes\.ts';$/m);
+      expect(code).not.toMatch(/from '[^']*(?:github\/(?:client|prReader|queries|normalize|errors)|auth\/|config)[^']*'/);
+    }
     for (const file of files) {
       // Nenhuma rede, I/O direto, subprocesso, código dinâmico, ambiente, cookie ou sessão de conta de IA.
       expect(file.code).not.toMatch(/node:fs|node:child_process|node:net|node:http|node:https|node:dns|node:tls|node:vm|node:worker_threads|\bfetch\(|XMLHttpRequest|WebSocket|\beval\(|new Function\(|process\.env|document\.cookie|setCookie|set-cookie/i);
@@ -321,9 +416,21 @@ describe('superfície de escrita do servidor', () => {
     expect(files.find((f) => f.path === 'server/gateway/contracts.ts')!.code).toMatch(/readonly kind: 'simulated';/);
     // O executor composto recusa executores que não sejam simulados.
     expect(files.find((f) => f.path === 'server/gateway/routingExecutor.ts')!.code).toMatch(/gateway\.kind !== 'simulated' \|\| sandbox\.kind !== 'simulated'/);
-    // Dormente: nada fora do módulo (exceto testes) cria ou importa o gateway; nenhuma ligação no index.
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/gateway/')), /gateway\/|createGateway|createRoutingExecutor|openGatewayStore/)).toEqual([]);
-    expect(server.find((f) => f.path === 'server/index.ts')!.code).not.toMatch(/gateway|sealedBlobs/i);
+    // Issue #008: só a inicialização do servidor e as rotas das ordens usam o gateway (nenhum outro módulo).
+    expect(filesMatching(stripComments(server.filter((f) => !f.path.startsWith('server/gateway/'))), /gateway\/|createGateway|createRoutingExecutor|openGatewayStore/).sort()).toEqual([
+      'server/http/app.ts',
+      'server/http/claudeOrderRoutes.ts',
+      'server/index.ts',
+    ]);
+    expect(server.find((f) => f.path === 'server/http/app.ts')!.code).toMatch(/^import type \{ ClaudeOrders \} from '\.\.\/gateway\/orders\.ts';$/m);
+    // Em produção: NENHUM adaptador, nenhuma fila/executor/temporizador de invocação e nenhum simulado.
+    const index = server.find((f) => f.path === 'server/index.ts')!.code;
+    expect(index).toMatch(/createGateway\(\{[\s\S]*?adapters: \{\},/);
+    expect(index).not.toMatch(/createSimulatedAdapters|createRoutingExecutor|gateway\/adapters|gateway\/routingExecutor|queue:\s|\.invoke\(|\.executor\b|engageKillSwitch|prepareHandoff|relayResult/);
+    // As rotas só chamam o coordenador (nunca invocação, handoff genérico, ingestão ou kill switch).
+    const routes = server.find((f) => f.path === 'server/http/claudeOrderRoutes.ts')!.code;
+    expect(routes).not.toMatch(/\.invoke\(|prepareHandoff|relayResult|retryIngest|engageKillSwitch|readContent|deleteContent|createGateway|openGatewayStore|github\/(client|prReader)/);
+    expect(routes).toMatch(/^import type \{ ClaudeOrders \} from '\.\.\/gateway\/orders\.ts';$/m);
     // Nenhuma rota HTTP do gateway, de invocação, handoff ou resultado.
     expect(POST_ROUTES.some((route) => /gateway|agent|invoke|handoff|relay|scope|content/.test(route))).toBe(false);
     // `.onResult(` continua só dentro da fila (o gateway entrega por `drain`).
@@ -340,6 +447,61 @@ describe('superfície de escrita do servidor', () => {
     const blobs = server.find((f) => f.path === 'server/storage/sealedBlobs.ts')!.code;
     expect(blobs).toMatch(/aes-256-gcm/);
     expect(blobs).not.toMatch(/gateway\/|approvals\/|queue\/|sandbox\/|limits\//);
+  });
+});
+
+describe('Issue #008 — garantias estruturais do fluxo assistido', () => {
+  it('flags globais continuam falsas; a exceção tem exatamente as duas combinações aprovadas (§10.7)', () => {
+    expect(POLICY_ACTIONS['agent.invoke'].available).toBe(false);
+    expect(POLICY_ACTIONS['data.send_external'].available).toBe(false);
+    expect(ASSISTED_AVAILABILITY.map((e) => ({ ...e }))).toEqual([
+      { action: 'agent.invoke', subject: 'agent:claude-code', channel: 'assisted', mode: 'subscription_assisted', capability: 'code.change', component: 'gateway' },
+      { action: 'data.send_external', subject: 'agent:claude-code', channel: 'assisted', mode: 'subscription_assisted', capability: 'code.change', component: 'gateway' },
+    ]);
+    expect(Object.isFrozen(ASSISTED_AVAILABILITY)).toBe(true);
+    // A exceção só é consultada pelo motor e alimentada só pelo gateway (fatos do servidor).
+    expect(filesMatching(server, /assisted:\s*assisted|assistedFactsOf/).sort()).toEqual(['server/gateway/service.ts']);
+    expect(filesMatching(server.filter((f) => f.path.startsWith('server/http/')), /assisted\b|ASSISTED_AVAILABILITY/)).toEqual([]);
+  });
+
+  it('REAL_EXECUTION_ENABLED, TTLs da #011, HANDOFF_TRANSITIONS e orçamento R$ 0 inalterados', () => {
+    expect(REAL_EXECUTION_ENABLED).toBe(false);
+    expect(server.find((f) => f.path === 'server/sandbox/contracts.ts')!.code).toMatch(/REAL_EXECUTION_ENABLED = false as const/);
+    const MIN = 60 * 1000;
+    expect({ ...APPROVAL_TTL_MS }).toEqual({ execution: 60 * MIN, configuration: 15 * MIN, merge: 15 * MIN, publication: 15 * MIN, cost: 15 * MIN });
+    expect(structuredClone(HANDOFF_TRANSITIONS)).toEqual({
+      prepared: ['awaiting_relay', 'expired', 'revoked'],
+      awaiting_relay: ['relayed', 'rejected', 'expired', 'revoked'],
+      relayed: ['validated', 'rejected', 'revoked'],
+      validated: [],
+      rejected: [],
+      expired: [],
+      revoked: [],
+    });
+    // Catálogo: exatamente um perfil disponível; API cobrada continua `metered` e indisponível.
+    const catalog = defaultProviderCatalog();
+    expect(catalog.filter((p) => p.status === 'available').map((p) => `${p.provider}/${p.mode}`)).toEqual(['claude-code/subscription_assisted']);
+    expect(catalog.filter((p) => p.mode === 'metered_api').every((p) => p.status === 'unverified' && p.billing === 'metered')).toBe(true);
+    expect(POLICY_ACTIONS['spend.create'].available).toBe(false);
+  });
+
+  it('nenhuma execução de agente, provedor de IA, SDK, credencial nova ou workflow do Claude Code', () => {
+    const code = stripComments(server);
+    // Nenhum subprocesso fora do gh-cli (já coberto) e nenhum no caminho da #008.
+    for (const path of ['server/gateway/orders.ts', 'server/gateway/prVerification.ts', 'server/http/claudeOrderRoutes.ts', 'server/github/prReader.ts', 'server/github/prTypes.ts']) {
+      expect(server.find((f) => f.path === path)!.code).not.toMatch(/child_process|(?<!\.)\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|fork)\(|new Worker\(|node:vm/);
+    }
+    // Nenhum SDK/API de provedor, nenhuma variável de ambiente de provedor, nenhum host de IA.
+    expect(filesMatching(code, /@anthropic-ai|anthropic\.com|api\.openai\.com|generativelanguage|integrate\.api\.nvidia|claude_agent_sdk|claude-agent-sdk/i)).toEqual([]);
+    expect(filesMatching(code, /ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|GEMINI_API_KEY|GOOGLE_API_KEY|NVIDIA_API_KEY/)).toEqual([]);
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
+    expect(deps.filter((d) => /anthropic|claude|openai|gemini|google-genai|langchain|nvidia/i.test(d))).toEqual([]);
+    // Nenhum workflow executa o Claude Code nem foi criado para agentes.
+    const workflows = readdirSync('.github/workflows').filter((f) => /\.ya?ml$/.test(f));
+    for (const file of workflows) expect(readFileSync(join('.github/workflows', file), 'utf8')).not.toMatch(/claude-code-action|anthropics\/|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/);
+    // Nenhum documento GraphQL novo além dos dois de leitura da #008.
+    expect(APPROVED_DOCUMENTS.size).toBe(3);
   });
 });
 
@@ -391,7 +553,7 @@ describe('frontend', () => {
     expect(filesMatching(frontend, /method:\s*['"](?:PUT|PATCH|DELETE)/i)).toEqual([]);
     expect(filesMatching(frontend, /method:\s*['"]POST/)).toEqual(['src/services/apiClient.ts']);
     // Quem envia corpo (`post:`) são só os clientes de autenticação, projetos, tarefas e aprovações.
-    const writers = ['src/services/approvalsApi.ts', 'src/services/authApi.ts', 'src/services/projectsApi.ts', 'src/services/tasksApi.ts'];
+    const writers = ['src/services/approvalsApi.ts', 'src/services/authApi.ts', 'src/services/claudeOrdersApi.ts', 'src/services/projectsApi.ts', 'src/services/tasksApi.ts'];
     expect(filesMatching(frontend, /\bpost:\s/)).toEqual(writers);
     const posted = writers.flatMap((path) => {
       const code = frontend.find((f) => f.path === path)!.code;
@@ -401,7 +563,8 @@ describe('frontend', () => {
           .replace('${encodeURIComponent(taskId)}', ':taskId')
           .replace('${encodeURIComponent(approvalId)}', ':id')
           .replace('${encodeURIComponent(attemptId)}', ':id')
-          .replace('${encodeURIComponent(holdId)}', ':id'),
+          .replace('${encodeURIComponent(holdId)}', ':id')
+          .replace('${encodeURIComponent(orderId)}', ':orderId'),
       );
     });
     expect(posted.sort()).toEqual([...POST_ROUTES].sort());

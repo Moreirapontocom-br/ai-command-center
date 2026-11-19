@@ -27,16 +27,33 @@ function defaultBilling(provider: AgentRef, mode: UsageMode): BillingClass {
   return 'unknown';
 }
 
+/**
+ * Issue #008 (D-08.3, §10.7.3): o ÚNICO perfil disponível é `claude-code/subscription_assisted` —
+ * o PO usa o Claude Code com a própria assinatura, FORA do ACC (o ACC não executa nem chama a
+ * Anthropic). Todos os demais continuam `unverified`; `metered_api` continua recusado sem orçamento.
+ * Voltar este perfil a `unverified` desliga o fluxo assistido sem deploy de outra parte (rollback).
+ */
+export const ASSISTED_PROFILE = Object.freeze({ provider: 'claude-code', mode: 'subscription_assisted' } as const);
+
 export function defaultProviderCatalog(): ProviderProfile[] {
   return AGENT_IDS.flatMap((provider) =>
-    USAGE_MODES.map((mode) => ({
-      provider,
-      mode,
-      status: 'unverified' as const,
-      billing: defaultBilling(provider, mode),
-      statusReason: 'not_verified_issue_028',
-      statusUntil: null,
-      officialRequestLimit: null,
-    })),
+    USAGE_MODES.map((mode) => {
+      const assisted = provider === ASSISTED_PROFILE.provider && mode === ASSISTED_PROFILE.mode;
+      return {
+        provider,
+        mode,
+        status: assisted ? ('available' as const) : ('unverified' as const),
+        billing: defaultBilling(provider, mode),
+        statusReason: assisted ? 'assisted_issue_008' : 'not_verified_issue_028',
+        statusUntil: null,
+        officialRequestLimit: null,
+      };
+    }),
   );
+}
+
+/** O perfil assistido está disponível no catálogo do servidor? (falha fechada em qualquer dúvida) */
+export function assistedProfileAvailable(catalog: readonly ProviderProfile[] = defaultProviderCatalog()): boolean {
+  const matches = catalog.filter((p) => p.provider === ASSISTED_PROFILE.provider && p.mode === ASSISTED_PROFILE.mode);
+  return matches.length === 1 && matches[0].status === 'available' && matches[0].billing === 'included';
 }

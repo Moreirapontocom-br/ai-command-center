@@ -4,7 +4,7 @@ import { createFineGrainedTokenProvider } from '../auth/credentials.ts';
 import { CANARY_TOKEN, jsonResponse, rawSnapshot } from '../test/fixtures.ts';
 import { APPROVED_DOCUMENTS, createGraphQLClient, GITHUB_GRAPHQL_ENDPOINT, isReadOnlyDocument, type FetchLike } from './client.ts';
 import type { IntegrationError } from './errors.ts';
-import { REPO_SNAPSHOT_QUERY } from './queries.ts';
+import { MAIN_HEAD_QUERY, PR_VERIFICATION_QUERY, REPO_SNAPSHOT_QUERY } from './queries.ts';
 
 function clientWith(fetchImpl: FetchLike, timeoutMs = 1000) {
   return createGraphQLClient({ credentials: createFineGrainedTokenProvider(CANARY_TOKEN), fetchImpl, timeoutMs });
@@ -142,9 +142,9 @@ describe('cliente GraphQL do GitHub', () => {
 });
 
 describe('allowlist de documentos GraphQL', () => {
-  it('aprova somente a consulta do snapshot, que é somente leitura', () => {
-    expect([...APPROVED_DOCUMENTS]).toEqual([REPO_SNAPSHOT_QUERY]);
-    expect(isReadOnlyDocument(REPO_SNAPSHOT_QUERY)).toBe(true);
+  it('aprova somente a consulta do snapshot e as duas consultas da Issue #008, todas somente leitura', () => {
+    expect([...APPROVED_DOCUMENTS]).toEqual([REPO_SNAPSHOT_QUERY, MAIN_HEAD_QUERY, PR_VERIFICATION_QUERY]);
+    for (const document of APPROVED_DOCUMENTS) expect(isReadOnlyDocument(document)).toBe(true);
     expect(isReadOnlyDocument('mutation { addStar(input: {}) { clientMutationId } }')).toBe(false);
     expect(isReadOnlyDocument('query { x } mutation { y }')).toBe(false);
     expect(isReadOnlyDocument('subscription { x }')).toBe(false);

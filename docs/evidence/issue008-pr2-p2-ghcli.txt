@@ -1,0 +1,80 @@
+# Issue #008, PR 2: P2 (credencial do GitHub via GitHub CLI) e correções R1/R2 (2026-11-19)
+# Ambiente: Windows 11, Windows PowerShell 5.1.26100, Node v24.18.1. Base: 5152549 (PR #50).
+# Nenhum token foi impresso ou gravado. Todas as saídas foram filtradas pelo padrão
+# /gh[opsu]_…|github_pat_/ antes de serem registradas (0 ocorrências).
+
+## 1. Sessão do GitHub CLI (`gh auth status`, linha do token omitida)
+github.com
+  ✓ Logged in to github.com account Moreirapontocom-br (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token scopes: 'gist', 'read:org', 'repo', 'workflow'
+→ Escopos amplos (escrita). A garantia de somente leitura vem só do servidor (client.ts).
+→ Nenhum `gh auth login`, `gh auth refresh` ou `gh auth token` manual. O token só é lido pelo
+  provedor do ACC (server/auth/ghCli.ts), em memória.
+
+## 2. R1: carregamento de `.env.local` e o PowerShell
+`.env.local` (ignorado pelo Git) contém apenas `GITHUB_TOKEN=<valor antigo, rejeitado pelo GitHub com 401>`.
+O servidor faz `process.loadEnvFile('.env.local')`, que só preenche variáveis AUSENTES.
+
+Prova com arquivo descartável (DUMMY_TOKEN=from-file), fora do repositório:
+  PowerShell `$env:DUMMY_TOKEN=''`                         → variável removida → node lê "from-file"
+  PowerShell `[Environment]::SetEnvironmentVariable(..,'')` → variável removida → node lê "from-file"
+  PowerShell ProcessStartInfo.EnvironmentVariables[..]=''  → node: has=true, valor ""   (arquivo não sobrescreve)
+  Git Bash `DUMMY_TOKEN= node …`                           → node: has=true, valor ""   (arquivo não sobrescreve)
+
+Servidor real (porta 8790/8791 livres; a 8787 não foi usada):
+  Receita ANTIGA (PowerShell, $env:GITHUB_TOKEN=''):
+    {"level":"error","message":"Configuração ambígua: GITHUB_AUTH=gh-cli não pode ser usado junto com GITHUB_TOKEN. Remova um dos dois."}
+  Receita NOVA (PowerShell, ProcessStartInfo, como em docs/GITHUB_INTEGRATION.md + API_PORT=8790):
+    {"level":"warn","message":"Modo gh-cli (somente desenvolvimento local): o token do GitHub CLI costuma ter permissões amplas, …"}
+    {"level":"info","message":"Servidor iniciado (GitHub somente leitura, acesso com login)","url":"http://127.0.0.1:8790","authMode":"gh-cli","repositories":"Moreirapontocom-br/ai-command-center","adminConfigured":false}
+    (GET /api/status → 401: rota privada desde a #003; sem administrador configurado neste teste.)
+  Receita bash (`API_PORT=8791 ACC_DEPLOYMENT=local GITHUB_AUTH=gh-cli GITHUB_TOKEN= npm run server`):
+    {"level":"info","message":"Servidor iniciado …","authMode":"gh-cli","repositories":"Moreirapontocom-br/ai-command-center"}
+→ Carregamento de variáveis NÃO alterado. Credenciais e `.env.local` NÃO alterados.
+
+## 3. Seleção do provedor (loadConfig, ambiente sintético sem .env.local)
+GITHUB_AUTH=gh-cli + ACC_DEPLOYMENT=local        → provider "gh-cli"; allowlist ["Moreirapontocom-br/ai-command-center"]
++ GITHUB_TOKEN preenchido                         → recusado (configuração ambígua)
+sem ACC_DEPLOYMENT / ACC_DEPLOYMENT=production    → recusado
+NODE_ENV=production                               → recusado
+
+## 4. Leituras reais pelo leitor da #008 (gh-cli, R2 aplicado), somente leitura
+mainHead                        → main = 7ec45ee0f679d7dc21af5a0ba9bd5e00ba8d1552
+pullRequest #49                 → MERGED (2026-11-19T02:38:15Z), não draft, base main, head 16134181e6af47ff64f9ecdb47b888fc3ac27d62,
+                                   2 commits, 5 arquivos (docs/), lista completa;
+                                   checks do head: rollup SUCCESS: Node 22.x, Node 24.x, Secret scan = success
+pullRequest #50                 → OPEN, head 5152549d3b49b05431fcbfb572c6bc1217af7462, rollup SUCCESS (3/3)
+compare 5ac983a…1613418         → ahead 2 / behind 0, merge base 5ac983a
+compare 1613418…7ec45ee         → ahead 1 / behind 0 (SHA autorizado do #49 é ancestral da main)
+compare 7ec45ee…5152549         → ahead 5 / behind 0
+Requisições reais: 6 = 3 × POST https://api.github.com/graphql (documentos aprovados, só `query`)
+                     + 3 × GET  https://api.github.com/repos/…/compare/{sha40}...{sha40}?per_page=1
+
+## 5. Recusas antes de credencial e rede (credencial e fetch-armadilha: 0 toques)
+mutation GraphQL (addStar)                     → internal/document_not_approved
+query GraphQL não aprovada (viewer)            → internal/document_not_approved
+POST na comparação                             → internal/rest_request_not_allowed
+PUT /repos/…/pulls/50/merge                    → internal/rest_request_not_allowed
+GET /repos/…/pulls/50                          → internal/rest_request_not_allowed
+per_page=100 / outra origem / SHA abreviado    → internal/rest_request_not_allowed
+R2: Moreirapontocom-br/outro-repositorio       → github_unauthorized em mainHead, pullRequest e compare; 0 requisições
+R2: variação de caixa do repositório autorizado → github_unauthorized; 0 requisições
+Documentos GraphQL aprovados: 3, todos `query`.
+
+## 6. Verificações locais (após R1/R2)
+vitest run            → 1333/1334. A única falha é scripts/main-audit.test.mjs ("a auditoria roda em push na main…"),
+                        que já existia em 5152549: core.autocrlf=true deixa .github/workflows/main-audit.yml
+                        com CRLF no checkout Windows (índice: LF; `git ls-files --eol` → i/lf w/crlf).
+                        A CI (Linux) lê LF.
+server/github/prReader.test.ts → 24/24 (eram 16; +8 da allowlist)
+eslint .              → ok
+npm run build (tsc -b + vite build) → ok
+check:csp             → ok
+check:secrets (dist) / check:secrets:repo / check:secrets:history (89 commits) → ok
+
+## 7. Restrições preservadas
+REAL_EXECUTION_ENABLED = false as const (server/sandbox/contracts.ts, inalterado).
+Barreira global: inalterada (P1 continua aguardando o PO). Nenhum adaptador real, nenhuma API paga, R$ 0.
+Nenhuma mutação no GitHub pelo ACC. Nenhuma credencial criada, copiada, alterada ou elevada.

@@ -51,6 +51,8 @@ export interface SchedulerStack {
   clock: { mono: number };
   advance(ms: number): void;
   service: ReturnType<typeof createApprovalService>;
+  /** Registro de confirmação de identidade do núcleo (o mesmo que o servidor entrega ao gateway). */
+  identity: ReturnType<typeof createStepUpRegistry>;
   approvalStore: ApprovalStore;
   authority: BarrierAuthority;
   store: QueueStore;
@@ -230,6 +232,7 @@ export async function createSchedulerStack(options: StackOptions = {}): Promise<
     clock,
     advance,
     service,
+    identity,
     approvalStore,
     authority,
     tasks,

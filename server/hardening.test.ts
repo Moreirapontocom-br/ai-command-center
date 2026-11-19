@@ -280,9 +280,9 @@ describe('integração GitHub exclusivamente de leitura (Issue #003)', () => {
   const server = sourceFiles('server');
   const frontend = sourceFiles('src');
 
-  it('o único método HTTP declarado no servidor é o POST do GraphQL (leitura via query)', () => {
+  it('os únicos métodos HTTP declarados no servidor são o POST do GraphQL (leitura via query) e o GET da comparação REST (Issue #008)', () => {
     const methods = server.flatMap((f) => [...f.code.matchAll(/method:\s*['"]([A-Z]+)['"]/g)].map((m) => `${f.path}:${m[1]}`));
-    expect(methods).toEqual(['server/github/client.ts:POST']);
+    expect(methods).toEqual(['server/github/client.ts:POST', 'server/github/client.ts:GET']);
   });
 
   it('nenhuma referência a endpoints REST de escrita, permissões ou administração', () => {

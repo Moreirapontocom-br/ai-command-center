@@ -12,11 +12,17 @@ import {
   HANDOFF_TRANSITIONS,
   INVOCATION_STATES,
   INVOCATION_TRANSITIONS,
+  ENTRY_VERDICTS,
+  ORDER_LIMITS,
+  PR_RULE_RESULTS,
+  PR_RULES,
   SCOPE_STATES,
   SCOPE_TRANSITIONS,
   type GatewayBody,
   type GatewayHistoryData,
+  type OrderVerification,
 } from './contracts.ts';
+import { claudeWorkBranchFor, PRESENTATION_CODE_CHANGE } from '../../shared/approvalPresentation.ts';
 
 /**
  * Validação ESTRITA dos documentos do gateway (Issue #028). Tudo que entra no ledger assinado (ou
@@ -40,6 +46,13 @@ const POLICY_VERSION = /^[A-Za-z0-9_:.#\-/]{1,200}$/;
 const ADAPTER_ID = /^[a-z0-9][a-z0-9:._-]{0,63}$/;
 const MODEL = /^[A-Za-z0-9._:/-]{1,64}$/;
 const DETAIL = /^[a-z0-9_ :.-]{1,200}$/;
+const SHA40 = /^[0-9a-f]{40}$/;
+const REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+const NODE_ID = /^[A-Za-z0-9_=-]{1,100}$/;
+const SCOPE_FIELDS = [
+  'id', 'ownerId', 'projectId', 'taskId', 'agentIds', 'capabilities', 'dataRefs', 'channel', 'mode', 'externalSharing', 'maxInvocations', 'budgetMinor', 'validitySeconds', 'maxOutputBytes',
+  'paramsDigest', 'policyVersion', 'state', 'reason', 'createdAt', 'updatedAt', 'approvalDeadline', 'validUntil', 'approvals', 'usedInvocations', 'spentMinor',
+] as const;
 
 const fail = (): never => {
   throw new GatewayDocumentError('documento do gateway inválido');
@@ -112,11 +125,31 @@ function checkProvenance(v: unknown) {
   if ((p.relayedBy !== null) !== (channel === 'assisted')) fail();
 }
 
+/** Issue #008: ordem do Claude Code dentro do escopo (`code.change` só aqui, sempre sozinha). */
+function checkCode(s: Record<string, unknown>) {
+  const caps = s.capabilities as string[];
+  if (!Object.hasOwn(s, 'code')) {
+    if (caps.includes(PRESENTATION_CODE_CHANGE.capability)) fail();
+    return;
+  }
+  const c = PRESENTATION_CODE_CHANGE;
+  if (caps.length !== 1 || caps[0] !== c.capability) fail();
+  if ((s.agentIds as string[])[0] !== c.agentId || s.channel !== c.channel || s.mode !== c.mode || s.maxInvocations !== 1) fail();
+  const k = exact(s.code, ['orderId', 'idempotencyKey', 'requestDigest', 'repository', 'repositoryId', 'baseSha', 'workBranch', 'inputDigest', 'criteriaCount', 'createdBy']);
+  const orderId = uuid(k.orderId);
+  if (typeof k.idempotencyKey !== 'string' || !IDEMPOTENCY_KEY.test(k.idempotencyKey)) fail();
+  hex(k.requestDigest);
+  if (typeof k.repository !== 'string' || !REPOSITORY.test(k.repository)) fail();
+  if (typeof k.repositoryId !== 'string' || !NODE_ID.test(k.repositoryId)) fail();
+  if (typeof k.baseSha !== 'string' || !SHA40.test(k.baseSha)) fail();
+  if (k.workBranch !== claudeWorkBranchFor(s.taskId as string, orderId)) fail();
+  hex(k.inputDigest);
+  int(k.criteriaCount, 0, ORDER_LIMITS.maxCriteria);
+  ownerId(k.createdBy);
+}
+
 function checkScope(raw: unknown) {
-  const s = exact(raw, [
-    'id', 'ownerId', 'projectId', 'taskId', 'agentIds', 'capabilities', 'dataRefs', 'channel', 'mode', 'externalSharing', 'maxInvocations', 'budgetMinor', 'validitySeconds', 'maxOutputBytes',
-    'paramsDigest', 'policyVersion', 'state', 'reason', 'createdAt', 'updatedAt', 'approvalDeadline', 'validUntil', 'approvals', 'usedInvocations', 'spentMinor',
-  ]);
+  const s = exact(raw, isPlain(raw) && Object.hasOwn(raw, 'code') ? [...SCOPE_FIELDS, 'code'] : SCOPE_FIELDS);
   uuid(s.id);
   ownerId(s.ownerId);
   uuid(s.projectId);
@@ -161,6 +194,7 @@ function checkScope(raw: unknown) {
     if (approvals.map((a) => a.action).join(',') !== expected.join(',') || s.validUntil === null) fail();
   } else if (approvals.length !== 0 || (state !== 'expired' && state !== 'revoked' && s.validUntil !== null)) fail();
   if (state === 'exhausted' && used !== max) fail();
+  checkCode(s);
 }
 
 function checkInvocation(raw: unknown) {
@@ -243,8 +277,128 @@ function checkContent(raw: unknown) {
   if ((state === 'deleted') !== (c.deletedAt !== null) || (state === 'deleted') !== (c.deletedReason !== null)) fail();
 }
 
+const BASE_BODY = ['scopes', 'invocations', 'handoffs', 'contents'] as const;
+const ORDER_BODY = ['verifications', 'orderMarks', 'projectSettings'] as const;
+
+function checkVerification(raw: unknown) {
+  const v = exact(raw, ['id', 'ownerId', 'projectId', 'orderId', 'seq', 'headSha', 'baseSha', 'verdict', 'rules', 'evidence', 'supersedes', 'checkedAt', 'checkedBy', 'closes', 'reason']);
+  uuid(v.id);
+  ownerId(v.ownerId);
+  uuid(v.projectId);
+  uuid(v.orderId);
+  int(v.seq, 1, ORDER_LIMITS.maxVerifications + 1);
+  const verdict = oneOf(ENTRY_VERDICTS, v.verdict);
+  if (!(v.headSha === null || (typeof v.headSha === 'string' && SHA40.test(v.headSha)))) fail();
+  if (typeof v.baseSha !== 'string' || !SHA40.test(v.baseSha)) fail();
+  const rules = list(v.rules, PR_RULES.length, (r) => {
+    const x = exact(r, ['rule', 'result', 'reason']);
+    return { rule: oneOf(PR_RULES, x.rule), result: oneOf(PR_RULE_RESULTS, x.result), reason: reasonOrNull(x.reason) };
+  });
+  const e = exact(v.evidence, ['pullRequest', 'compare', 'confirm']);
+  hexOrNull(e.pullRequest);
+  hexOrNull(e.compare);
+  hexOrNull(e.confirm);
+  uuidOrNull(v.supersedes);
+  iso(v.checkedAt);
+  const by = exact(v.checkedBy, ['kind', 'id']);
+  oneOf(['human', 'system'] as const, by.kind);
+  ownerId(by.id);
+  const closes = bool(v.closes);
+  reasonOrNull(v.reason);
+  if (verdict === 'cancelled') {
+    // Encerramento administrativo: final, sem leitura nem regras.
+    if (!closes || rules.length !== 0 || e.pullRequest !== null || e.compare !== null || e.confirm !== null) fail();
+  } else {
+    // Verificação real: as 13 regras, uma vez cada, na ordem; cabeça confirmada; resumo da consulta.
+    if (rules.map((r) => r.rule).join(',') !== PR_RULES.join(',') || e.pullRequest === null || e.confirm === null) fail();
+    // Sem cabeça só quando o PR comprovadamente não existe (V2), o que encerra a ordem.
+    if (v.headSha === null && (verdict !== 'nonconforming' || rules[1].result !== 'fail')) fail();
+    // Só `nonconforming` encerra; `conforming` exige todas as provas (nenhuma regra pendente/falha).
+    if (closes !== (verdict === 'nonconforming')) fail();
+    if (verdict === 'conforming' && (e.compare === null || rules.some((r) => r.result === 'pending' || r.result === 'fail'))) fail();
+    if (verdict === 'needs_review' && (rules.some((r) => r.result === 'fail') || !rules.some((r) => r.result === 'pending'))) fail();
+    if (verdict === 'nonconforming' && !rules.some((r) => r.result === 'fail')) fail();
+  }
+}
+
+function checkMark(raw: unknown) {
+  const m = exact(raw, ['id', 'ownerId', 'projectId', 'orderId', 'kind', 'at', 'by', 'prNumber']);
+  uuid(m.id);
+  ownerId(m.ownerId);
+  uuid(m.projectId);
+  uuid(m.orderId);
+  const kind = oneOf(['forwarded', 'pr_linked'] as const, m.kind);
+  iso(m.at);
+  ownerId(m.by);
+  if (kind === 'pr_linked') int(m.prNumber, 1, ORDER_LIMITS.maxPrNumber);
+  else if (m.prNumber !== null) fail();
+}
+
+function checkSetting(raw: unknown) {
+  const p = exact(raw, ['id', 'ownerId', 'projectId', 'enabled', 'repository', 'at', 'by', 'approvalId', 'reason']);
+  uuid(p.id);
+  ownerId(p.ownerId);
+  uuid(p.projectId);
+  const enabled = bool(p.enabled);
+  iso(p.at);
+  ownerId(p.by);
+  if (typeof p.reason !== 'string' || !REASON.test(p.reason)) fail();
+  // Habilitar exige repositório e a aprovação de configuração consumida; desabilitar não tem nenhum dos dois.
+  if (enabled) {
+    if (typeof p.repository !== 'string' || !REPOSITORY.test(p.repository)) fail();
+    uuid(p.approvalId);
+  } else if (p.repository !== null || p.approvalId !== null) fail();
+}
+
+/** Coerência entre ordens, handoffs, marcas e verificações (Issue #008). */
+function checkOrders(b: GatewayBody) {
+  const orders = new Map<string, { ownerId: string; projectId: string; baseSha: string; scopeId: string }>();
+  const keys = new Set<string>();
+  for (const s of b.scopes) {
+    if (!s.code) continue;
+    if (orders.has(s.code.orderId)) fail();
+    const key = `${s.ownerId}|${s.code.idempotencyKey}`;
+    if (keys.has(key)) fail();
+    keys.add(key);
+    orders.set(s.code.orderId, { ownerId: s.ownerId, projectId: s.projectId, baseSha: s.code.baseSha, scopeId: s.id });
+  }
+  // Handoff de `code.change` = a ordem do próprio escopo (id = `orderId`), um por ordem.
+  for (const h of b.handoffs) {
+    if (h.capability !== PRESENTATION_CODE_CHANGE.capability) continue;
+    const order = orders.get(h.id);
+    if (!order || order.scopeId !== h.scopeId || order.ownerId !== h.ownerId || order.projectId !== h.projectId) fail();
+  }
+  const same = (x: { ownerId: string; projectId: string; orderId: string }) => {
+    const o = orders.get(x.orderId);
+    if (!o || o.ownerId !== x.ownerId || o.projectId !== x.projectId) fail();
+    return o!;
+  };
+  const marks = new Set<string>();
+  for (const m of b.orderMarks ?? []) {
+    same(m);
+    const key = `${m.orderId}|${m.kind}`;
+    if (marks.has(key)) fail();
+    marks.add(key);
+  }
+  // Histórico: `seq` 1, 2, 3… sem lacuna; `supersedes` = a entrada anterior; nada depois de uma final.
+  const last = new Map<string, OrderVerification>();
+  for (const v of b.verifications ?? []) {
+    const o = same(v);
+    if (v.baseSha !== o.baseSha) fail();
+    const previous = last.get(v.orderId);
+    if (previous) {
+      if (previous.closes || v.seq !== previous.seq + 1 || v.supersedes !== previous.id || Date.parse(v.checkedAt) < Date.parse(previous.checkedAt)) fail();
+    } else if (v.seq !== 1 || v.supersedes !== null) fail();
+    if (v.verdict !== 'cancelled' && v.seq > ORDER_LIMITS.maxVerifications) fail();
+    // Só há verificação de PR com a referência vinculada.
+    if (v.verdict !== 'cancelled' && !marks.has(`${v.orderId}|pr_linked`)) fail();
+    last.set(v.orderId, v);
+  }
+}
+
 export function checkGatewayBody(raw: unknown): GatewayBody {
-  const b = exact(raw, ['scopes', 'invocations', 'handoffs', 'contents']);
+  // Ledgers da #028 (sem os conjuntos da #008) continuam válidos: os conjuntos novos são aditivos.
+  const b = exact(raw, isPlain(raw) && Object.hasOwn(raw, 'verifications') ? [...BASE_BODY, ...ORDER_BODY] : BASE_BODY);
   const max = GATEWAY_LIMITS.maxRecords;
   for (const [name, check] of [
     ['scopes', checkScope],
@@ -261,6 +415,18 @@ export function checkGatewayBody(raw: unknown): GatewayBody {
     const keys = (b[name] as Array<{ ownerId: string; idempotencyKey: string }>).map((x) => `${x.ownerId}|${x.idempotencyKey}`);
     if (new Set(keys).size !== keys.length) fail();
   }
+  if (Object.hasOwn(b, 'verifications')) {
+    for (const [name, check] of [
+      ['verifications', checkVerification],
+      ['orderMarks', checkMark],
+      ['projectSettings', checkSetting],
+    ] as const) {
+      const items = list(b[name], max, (x) => x as Record<string, unknown>);
+      items.forEach(check);
+      if (new Set(items.map((x) => x.id)).size !== items.length) fail();
+    }
+  }
+  checkOrders(raw as GatewayBody);
   return raw as GatewayBody;
 }
 
@@ -279,7 +445,7 @@ export function checkGatewayEntry(raw: unknown): GatewayHistoryData {
 
 /** Campos que nunca mudam depois de criados (vínculos, dono, origem). */
 const IMMUTABLE = {
-  scopes: ['ownerId', 'projectId', 'taskId', 'agentIds', 'capabilities', 'dataRefs', 'channel', 'mode', 'externalSharing', 'maxInvocations', 'budgetMinor', 'validitySeconds', 'maxOutputBytes', 'paramsDigest', 'policyVersion', 'createdAt', 'approvalDeadline'],
+  scopes: ['ownerId', 'projectId', 'taskId', 'agentIds', 'capabilities', 'dataRefs', 'channel', 'mode', 'externalSharing', 'maxInvocations', 'budgetMinor', 'validitySeconds', 'maxOutputBytes', 'paramsDigest', 'policyVersion', 'createdAt', 'approvalDeadline', 'code'],
   invocations: ['idempotencyKey', 'requestDigest', 'ownerId', 'projectId', 'taskId', 'agentId', 'scopeId', 'capability', 'inputs', 'timeoutSeconds', 'maxOutputBytes', 'createdAt'],
   handoffs: ['idempotencyKey', 'requestDigest', 'ownerId', 'projectId', 'taskId', 'agentId', 'scopeId', 'capability', 'inputs', 'maxOutputBytes', 'createdAt', 'packageContentId', 'packageDigest'],
   contents: ['ownerId', 'projectId', 'kind', 'sourceId', 'digest', 'bytes', 'createdAt', 'expiresAt'],
@@ -294,6 +460,13 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
  * gravadas na ativação; um conteúdo excluído não volta.
  */
 export function checkGatewayChange(before: Readonly<GatewayBody>, after: Readonly<GatewayBody>): void {
+  // Issue #008: histórico de verificações, marcas e habilitações são SOMENTE DE ACRÉSCIMO — o que
+  // existia continua idêntico e na mesma posição (nada é apagado, reescrito nem reordenado).
+  for (const name of ORDER_BODY) {
+    const old = (before[name] ?? []) as readonly unknown[];
+    const now = (after[name] ?? []) as readonly unknown[];
+    if (now.length < old.length || old.some((entry, i) => !same(entry, now[i]))) throw new GatewayDocumentError('histórico somente de acréscimo alterado');
+  }
   for (const name of ['scopes', 'invocations', 'handoffs', 'contents'] as const) {
     const next = new Map((after[name] as ReadonlyArray<{ id: string }>).map((x) => [x.id, x as Record<string, unknown>]));
     for (const old of before[name] as unknown as ReadonlyArray<Record<string, unknown> & { id: string }>) {

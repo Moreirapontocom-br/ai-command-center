@@ -227,13 +227,14 @@ export function createApprovalService(options: ApprovalServiceOptions) {
   function buildArtifacts(approval: LedgerApproval): { grant: ApprovalGrant | null; humanApproval: HumanApproval | null } {
     const b = approval.binding;
     const approvedBy = { kind: 'human' as const, id: approval.decidedBy!.id };
-    if (b.action === 'limits.change' || b.action === 'killswitch.release') {
+    if (b.action === 'limits.change' || b.action === 'killswitch.release' || b.action === 'gateway.claude_project_enable') {
       return {
         grant: null,
         humanApproval: {
           id: approval.id,
           operation: b.action,
-          target: b.action === 'limits.change' ? b.paramsDigest : b.resource.id,
+          // Issue #008: a habilitação prende o recibo aos parâmetros exatos (projeto + repositório).
+          target: b.action === 'killswitch.release' ? b.resource.id : b.paramsDigest,
           approvedBy,
           approvedAt: approval.decidedAt!,
           expiresAt: approval.validUntil!,
@@ -966,4 +967,4 @@ export function createApprovalService(options: ApprovalServiceOptions) {
 export type ApprovalService = ReturnType<typeof createApprovalService>;
 
 /** O que um componente do servidor (sandbox #021, controlador #022) usa do núcleo. */
-export type ApprovalCoordinator = Pick<ApprovalService, 'request' | 'reserve' | 'recordOutcome'>;
+export type ApprovalCoordinator = Pick<ApprovalService, 'request' | 'reserve' | 'recordOutcome'> & Partial<Pick<ApprovalService, 'confirmOwner'>>;

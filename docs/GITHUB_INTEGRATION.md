@@ -166,8 +166,38 @@ npm run dev
 ```
 
 - **Sem `GITHUB_TOKEN`:** o servidor inicia em modo demonstração e a interface mostra **"Credencial ausente"**.
-- **Com GitHub CLI (só local):** `gh auth status` precisa estar ok. Defina `ACC_DEPLOYMENT=local`, `GITHUB_AUTH=gh-cli` e deixe `GITHUB_TOKEN` vazio no `.env.local`. Para um teste pontual sem editar o arquivo, variáveis do shell têm precedência: em PowerShell, `$env:ACC_DEPLOYMENT='local'; $env:GITHUB_AUTH='gh-cli'; $env:GITHUB_TOKEN=''; npm run server`.
+- **Com GitHub CLI (só local):** `gh auth status` precisa estar ok. Veja [Iniciar com o GitHub CLI](#iniciar-com-o-github-cli-somente-local) abaixo.
 - **Sem o servidor:** a interface mostra **"Erro de rede"**. Em ambos os casos agentes e tarefas continuam em modo demonstração, e nenhum dado do GitHub é simulado.
+
+### Iniciar com o GitHub CLI (somente local)
+
+O servidor carrega `.env.local` sem sobrescrever variáveis **já definidas** no ambiente. Uma variável definida como vazia conta como definida e vence o arquivo. Uma variável **ausente** é preenchida pelo arquivo.
+
+**Configuração permanente (recomendada).** No `.env.local`, defina `ACC_DEPLOYMENT=local` e `GITHUB_AUTH=gh-cli`, e deixe `GITHUB_TOKEN=` vazio (ou sem a linha). Essa edição cabe ao dono do `.env.local`. Sem ela, um `GITHUB_TOKEN` antigo no arquivo faz o servidor recusar a configuração como ambígua.
+
+**Sessão pontual sem editar o `.env.local`:**
+
+- **bash / Git Bash** (atribuição vazia = variável vazia):
+
+  ```bash
+  ACC_DEPLOYMENT=local GITHUB_AUTH=gh-cli GITHUB_TOKEN= npm run server
+  ```
+
+- **Windows PowerShell.** `$env:GITHUB_TOKEN=''` **não funciona**: no PowerShell, atribuir texto vazio a `$env:` **remove** a variável, e o servidor volta a ler o `GITHUB_TOKEN` do `.env.local` (erro "Configuração ambígua"). O `[Environment]::SetEnvironmentVariable` com texto vazio também remove. Para entregar ao servidor uma variável realmente vazia, inicie o processo com o ambiente explícito:
+
+  ```powershell
+  $psi = [System.Diagnostics.ProcessStartInfo]::new((Get-Command node).Source, '--experimental-strip-types --disable-warning=ExperimentalWarning server/index.ts')
+  $psi.UseShellExecute = $false
+  $psi.WorkingDirectory = (Get-Location).Path   # raiz do repositório
+  $psi.EnvironmentVariables['ACC_DEPLOYMENT'] = 'local'
+  $psi.EnvironmentVariables['GITHUB_AUTH'] = 'gh-cli'
+  $psi.EnvironmentVariables['GITHUB_TOKEN'] = ''   # vazia de verdade: o .env.local não a sobrescreve
+  $server = [System.Diagnostics.Process]::Start($psi); $server.WaitForExit()
+  ```
+
+  É o mesmo comando do `npm run server`, executado sem shell, no mesmo console (Ctrl+C encerra). As variáveis valem só para esse processo, e o terminal e o `.env.local` ficam como estavam.
+
+Na inicialização, o servidor registra `authMode: "gh-cli"` e o aviso de permissões amplas. Se o `gh` não entregar credencial, ele encerra. Nenhum valor do token é registrado.
 
 Variáveis (ver [`.env.example`](../.env.example)):
 

@@ -1,11 +1,11 @@
 # Integração supervisionada com Claude Code — Especificação (Issue #008, PR 1)
 
-> **Status: ESPECIFICAÇÃO. Não autoriza implementação, ativação, credenciais, gastos nem execução.**
+> **Status: ESPECIFICAÇÃO (PR 1, aprovada: D-08.1–D-08.11) + IMPLEMENTAÇÃO DO FLUXO ASSISTIDO (PR 2, em revisão; ver §13 e `docs/IMPLEMENTATION_REPORT_008_PR2.md`).**
 > - O ACC **não executa** o Claude Code nem nenhum agente. Nesta integração, quem executa é a pessoa (o PO), com a própria assinatura, em ambiente oficial da Anthropic.
-> - `REAL_EXECUTION_ENABLED = false as const` (inalterado). Gateway (#028) dormente, sem rotas (inalterado).
-> - `agent.invoke` e `data.send_external` continuam `available: false`; o catálogo de `server/limits/providers.ts` continua `unverified` (inalterado).
+> - `REAL_EXECUTION_ENABLED = false as const` (inalterado). No PR 2, o gateway (#028) é ligado no servidor **só no canal assistido**, sem adaptador, sem fila e sem execução.
+> - `agent.invoke` e `data.send_external` continuam `available: false` em `POLICY_ACTIONS`; só a exceção fechada de §10.7 as torna aprováveis, e só o perfil `claude-code/subscription_assisted` ficou `available` no catálogo.
 > - Orçamento adicional: **R$ 0**. Assinatura Claude Pro **não** equivale a acesso à API.
-> - PR 2 (implementação) **não autorizado**.
+> - Merge do PR 2: só com revisão independente e autorização explícita do PO.
 >
 > Base: `main` `5ac983abaeb80418da6113a98f6346c75f118ffc` (merge do PR #48, conclusão da #028). Fontes oficiais consultadas em **2026-11-19** (registro em `docs/evidence/issue008-pr1-sources.txt`).
 
@@ -471,4 +471,19 @@ Consultadas em **2026-11-19**, leitura direta (D) das páginas oficiais. Citaç�
 | GH2 | https://docs.github.com/en/rest/commits/commits#compare-two-commits | D |
 | GH3 | https://docs.github.com/en/graphql/reference/commits (`Comparison`, `ComparisonStatus`, `Commit.history`) | D |
 | GH4 | https://docs.github.com/en/graphql/reference/git (`Ref.compare`, `Ref.target`) | D |
+
+## 13. Implementação (PR 2) — diferenças em relação a esta especificação
+
+Registro das diferenças, cada uma pela alternativa mais segura compatível com a especificação (detalhes no relatório do PR 2):
+
+| Item | Especificação | Implementado | Motivo |
+|---|---|---|---|
+| Rota de liberação | `POST /api/claude-orders/:orderId/release` | `POST /api/claude-orders/:orderId/package` | O teste estrutural do servidor proíbe `release` em rotas POST (N9 da #011). A recusa foi mantida, não contornada. `/release` responde 405. |
+| Estado inicial | `prepared` | `awaiting_approval` antes de `prepared` | Antes das aprovações não existe handoff: o escopo espera as duas aprovações. Projeção, sem persistência paralela. |
+| Documentos GraphQL | um documento novo | dois: `PullRequestVerification` e `MainHead` | O SHA base precisa ser lido pelo servidor na preparação (`refs/heads/main`), antes de existir PR. Ambos são `query`, na allowlist. |
+| Referências de dados | `issue`/`pull_request`/`task` | só `task` do mesmo projeto | Em produção o servidor só sabe resolver tarefas (não lê corpo de issue/PR). Recusa explícita (400) em vez de falha na liberação. |
+| Formato inválido do PR | `handoff.rejected` | 400, sem mudar o estado | Um erro de digitação não encerra a ordem. Repositório diferente do da ordem continua rejeitando o handoff, como especificado. |
+| Rejeição de aprovação | ordem recusada | nada liberado nem consumido; o gateway volta a pedir (pedido novo, pendente) | Comportamento existente da #028 (inalterado). O PO pode cancelar a ordem. |
+| Leitura "atual" (R1) | conformidade vale para a leitura exibida | `verified` só com leitura da mesma cabeça há até 5 min, neste processo | A listagem não consulta o GitHub; sem leitura recente, a conformidade aparece desatualizada. |
+| Barreira global inicial | — | bloqueia a criação de ordens em instalação nova (423) | Controle da #011 (N9) mantido. A habilitação por projeto (configuração) funciona. A liberação da barreira continua sem rota. |
 

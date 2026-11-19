@@ -73,6 +73,51 @@ export interface PolicyFacts {
    * (`self_approval`). Nunca vem do cliente.
    */
   verifiedOwnerConfirmationId?: string | null;
+  /**
+   * Issue #008 (D-08.3, §10.7 da especificação): fatos do fluxo ASSISTIDO, montados SÓ pelo Agent
+   * Gateway a partir do escopo persistido e da habilitação do projeto gravada no ledger dele.
+   * Nunca vêm do cliente nem do agente. Ausentes, incompletos ou divergentes → a exceção não se
+   * aplica (a ação continua `UNAVAILABLE`).
+   */
+  assisted?: AssistedFacts | null;
+}
+
+export interface AssistedFacts {
+  channel: string;
+  mode: string;
+  capability: string;
+  component: string;
+  projectId: string;
+  projectEnabled: boolean;
+}
+
+/**
+ * Exceção FECHADA à indisponibilidade global (Issue #008, D-08.3/D-08.11). As flags globais de
+ * `agent.invoke` e `data.send_external` continuam `available: false` em `POLICY_ACTIONS`; só estas
+ * DUAS combinações exatas deixam de ser `UNAVAILABLE`, e apenas com o projeto habilitado. A exceção
+ * NÃO dispensa nenhuma regra: as duas ações continuam exigindo aprovação humana (A4/A6, crítica).
+ * Mudar esta lista exige autorização do PO, PR próprio, testes próprios e revisão independente.
+ */
+export const ASSISTED_AVAILABILITY = Object.freeze([
+  Object.freeze({ action: 'agent.invoke', subject: 'agent:claude-code', channel: 'assisted', mode: 'subscription_assisted', capability: 'code.change', component: 'gateway' } as const),
+  Object.freeze({ action: 'data.send_external', subject: 'agent:claude-code', channel: 'assisted', mode: 'subscription_assisted', capability: 'code.change', component: 'gateway' } as const),
+]);
+
+const ASSISTED_FACT_KEYS = ['channel', 'mode', 'capability', 'component', 'projectId', 'projectEnabled'];
+
+/** A requisição corresponde EXATAMENTE a uma combinação da exceção, com fatos do servidor? */
+export function assistedAvailable(request: PolicyRequest, facts: PolicyFacts): boolean {
+  const a = facts.assisted;
+  if (typeof a !== 'object' || a === null || Array.isArray(a)) return false;
+  const keys = Object.keys(a);
+  if (keys.length !== ASSISTED_FACT_KEYS.length || !ASSISTED_FACT_KEYS.every((k) => keys.includes(k))) return false;
+  if (a.projectEnabled !== true || typeof a.projectId !== 'string' || request.projectId === null || a.projectId !== request.projectId) return false;
+  // A exceção vale só para o escopo do gateway (nunca para rotas, tarefas ou outro recurso).
+  if (!request.resource || request.resource.type !== 'gateway_scope') return false;
+  const subject = request.subject?.kind === 'agent' ? `agent:${request.subject.id}` : null;
+  return ASSISTED_AVAILABILITY.some(
+    (e) => e.action === request.action && e.subject === subject && e.channel === a.channel && e.mode === a.mode && e.capability === a.capability && e.component === a.component,
+  );
 }
 
 export class PolicyValidationError extends Error {
@@ -246,10 +291,13 @@ export function evaluatePolicy(
     return result('DENY', 'agent_not_assigned', { ruleId: base.id });
   }
   const approvalRule = matching.find((rule) => rule.effect === 'require_approval');
-  const requiresApproval = info.critical || approvalRule !== undefined;
+  // Defesa em profundidade (Issue #008): o que só é disponível pela exceção assistida SEMPRE exige aprovação.
+  const viaAssistedException = !info.available && assistedAvailable(request, facts);
+  const requiresApproval = info.critical || approvalRule !== undefined || viaAssistedException;
   const decidingRule = approvalRule ?? base;
 
-  if (!info.available) {
+  // Issue #008: só a exceção fechada troca `UNAVAILABLE` por "disponível" — e a aprovação continua exigida.
+  if (!info.available && !viaAssistedException) {
     return result('UNAVAILABLE', 'capability_unavailable', { ruleId: decidingRule.id, requiresApproval });
   }
   if (requiresApproval) {

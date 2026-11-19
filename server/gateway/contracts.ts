@@ -97,7 +97,8 @@ export const HANDOFF_TRANSITIONS: Readonly<Record<HandoffState, readonly Handoff
   revoked: [],
 });
 
-export const CONTENT_KINDS = ['package', 'relayed_result', 'agent_output'] as const;
+/** `order_input` (Issue #008): objetivo e critérios da pessoa, cifrados, à espera da aprovação. */
+export const CONTENT_KINDS = ['package', 'relayed_result', 'agent_output', 'order_input'] as const;
 export type ContentKind = (typeof CONTENT_KINDS)[number];
 
 /** Referência de dados autorizada (o conteúdo é resolvido pelo servidor, nunca pelo chamador). */
@@ -141,6 +142,27 @@ export interface GatewayScope {
   approvals: Array<{ action: 'agent.invoke' | 'data.send_external'; approvalId: string; bindingDigest: string; grantDigest: string; approverId: string; expiresAt: string }>;
   usedInvocations: number;
   spentMinor: number;
+  /**
+   * Issue #008: ordem de trabalho do Claude Code (só em escopos `code.change`). Imutável; tudo vem do
+   * servidor e entra na apresentação aprovada (o mesmo `paramsDigest`).
+   */
+  code?: GatewayCodeOrder;
+}
+
+export interface GatewayCodeOrder {
+  /** Id da ordem = id do handoff que será preparado depois da aprovação. */
+  orderId: string;
+  idempotencyKey: string;
+  requestDigest: string;
+  repository: string;
+  /** Identidade estável do repositório no GitHub (id do nó), lida na preparação (V1). */
+  repositoryId: string;
+  baseSha: string;
+  workBranch: string;
+  /** Resumo do objetivo + critérios (conteúdo `order_input`, cifrado). */
+  inputDigest: string;
+  criteriaCount: number;
+  createdBy: string;
 }
 
 /** Proveniência obrigatória de todo resultado (§4.3 da especificação). */
@@ -233,12 +255,95 @@ export interface GatewayContentRef {
   deletedReason: string | null;
 }
 
+/** Issue #008 — regras V1–V13 do verificador de PR (§6.2). */
+export const PR_RULES = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10', 'V11', 'V12', 'V13'] as const;
+export type PrRule = (typeof PR_RULES)[number];
+/** `info`: regra só informativa (V9, V13). `pending`: sem prova completa ou pendência (→ `needs_review`). */
+export const PR_RULE_RESULTS = ['ok', 'pending', 'fail', 'info'] as const;
+export type PrRuleResult = (typeof PR_RULE_RESULTS)[number];
+export const PR_VERDICTS = ['conforming', 'needs_review', 'nonconforming'] as const;
+export type PrVerdict = (typeof PR_VERDICTS)[number];
+/** Veredito gravado: os três da verificação + `cancelled` (encerramento por revogação/kill switch/desabilitação). */
+export const ENTRY_VERDICTS = [...PR_VERDICTS, 'cancelled'] as const;
+export type EntryVerdict = (typeof ENTRY_VERDICTS)[number];
+
+/**
+ * Entrada do histórico de verificações (Issue #008, §5.2, R1): SOMENTE DE ACRÉSCIMO, imutável, no
+ * mesmo ledger assinado. Nenhum corpo de PR, diff, conteúdo ou lista de arquivos: só códigos e resumos.
+ */
+export interface OrderVerification {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  orderId: string;
+  /** 1, 2, 3… por ordem; lacuna ou repetição → ledger recusado. */
+  seq: number;
+  /** Cabeça do PR confirmada no início e no fim da leitura (V12). `null` só em encerramento `cancelled`. */
+  headSha: string | null;
+  baseSha: string;
+  verdict: EntryVerdict;
+  rules: Array<{ rule: PrRule; result: PrRuleResult; reason: string | null }>;
+  /** Resumos (SHA-256) das respostas normalizadas: consulta do PR, comparação REST e confirmação do HEAD. */
+  evidence: { pullRequest: string | null; compare: string | null; confirm: string | null };
+  supersedes: string | null;
+  checkedAt: string;
+  checkedBy: { kind: 'human' | 'system'; id: string };
+  /** Entrada final: nenhuma verificação nova depois dela (`order_closed`). */
+  closes: boolean;
+  reason: string | null;
+}
+
+/** Marcas da ordem (Issue #008): uma de cada tipo por ordem, imutáveis. */
+export interface OrderMark {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  orderId: string;
+  kind: 'forwarded' | 'pr_linked';
+  at: string;
+  by: string;
+  prNumber: number | null;
+}
+
+/** Habilitação por projeto (Issue #008, D-08.11): somente de acréscimo; a mais recente vale. */
+export interface ProjectSetting {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  enabled: boolean;
+  repository: string | null;
+  at: string;
+  by: string;
+  /** Aprovação de configuração (#011) consumida na habilitação; `null` na desabilitação. */
+  approvalId: string | null;
+  reason: string;
+}
+
 export interface GatewayBody {
   scopes: GatewayScope[];
   invocations: GatewayInvocation[];
   handoffs: GatewayHandoff[];
   contents: GatewayContentRef[];
+  /** Issue #008 (aditivos; ausentes em ledgers anteriores = vazios). */
+  verifications?: OrderVerification[];
+  orderMarks?: OrderMark[];
+  projectSettings?: ProjectSetting[];
 }
+
+/** Limites do fluxo assistido do Claude Code (Issue #008). Ampliar qualquer um exige PR revisado. */
+export const ORDER_LIMITS = {
+  maxVerifications: 50,
+  minVerificationIntervalMs: 30_000,
+  /** Uma leitura do PR só conta como "atual" por este tempo (depois, a conformidade aparece desatualizada). */
+  freshObservationMs: 5 * 60 * 1000,
+  maxCriteria: 20,
+  maxCriterionBytes: 512,
+  /** Resultado do handoff = só a referência `owner/repo#N`. */
+  referenceBytes: 256,
+  maxPrNumber: 1_000_000_000,
+  /** Validade PEDIDA do escopo; a efetiva é o menor prazo das aprovações (15 min de publicação). */
+  validitySeconds: 60 * 60,
+} as const;
 
 export const GATEWAY_EVENTS = [
   'gateway.store_initialized',
@@ -258,6 +363,14 @@ export const GATEWAY_EVENTS = [
   'gateway.content_deleted',
   'gateway.provider_status',
   'gateway.interrupted',
+  // Issue #008 — ordens do Claude Code (fluxo assistido).
+  'gateway.order_requested',
+  'gateway.order_forwarded',
+  'gateway.pr_linked',
+  'gateway.pr_verified',
+  'gateway.pr_verification_superseded',
+  'gateway.order_closed',
+  'gateway.project_enablement',
 ] as const;
 export type GatewayEvent = (typeof GATEWAY_EVENTS)[number];
 

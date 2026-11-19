@@ -2,10 +2,11 @@
 
 > **Status: ESPECIFICAÇÃO + NÚCLEO DORMENTE E SIMULADO (PR 2, §16). Não autoriza integração, credenciais, gastos, deploy nem execução.**
 > - `REAL_EXECUTION_ENABLED = false as const` (inalterado).
-> - Todos os perfis de `server/limits/providers.ts` continuam `unverified` (motivo `not_verified_issue_028`). Marcar qualquer perfil como `available` exige PR revisado e aprovação específica do Product Owner (PO).
+> - Todos os perfis de `server/limits/providers.ts` continuam `unverified` (motivo `not_verified_issue_028`), **exceto** `claude-code/subscription_assisted` (Issue #008, PR 2, D-08.3: `available`, só para o fluxo assistido). Marcar qualquer outro perfil como `available` exige PR revisado e aprovação específica do Product Owner (PO).
 > - Orçamento adicional autorizado: **R$ 0** (`DEFAULT_LIMITS.budget.globalMinor = 0`).
 > - Documentar uma integração **não** é autorização para integrar.
 > - PR 2: `server/gateway/` implementado, sem ligação no `server/index.ts`, sem rota HTTP e só com adaptadores simulados (§16).
+> - Issue #008 (PR 2): o gateway passa a ser ligado no servidor **só no canal assistido** do Claude Code (`docs/CLAUDE_CODE_ASSISTED.md` §13), sem adaptador, fila, executor nem execução; os adaptadores continuam só simulados e só nos testes.
 >
 > Base: `main` `f25aa492434c60f56424f23ac5d3e1efe3ddfde2`. Fontes consultadas em **2026-11-18** (registro completo em `docs/evidence/issue028-pr1-sources.txt`).
 

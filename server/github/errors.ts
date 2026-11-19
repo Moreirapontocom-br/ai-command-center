@@ -11,7 +11,8 @@ export type IntegrationErrorReason =
   | 'graphql_not_found'
   | 'credential_unavailable'
   | 'credential_rejected_after_renewal'
-  | 'document_not_approved';
+  | 'document_not_approved'
+  | 'rest_request_not_allowed';
 
 /**
  * Erro normalizado da integração. A mensagem é sempre um texto fixo definido aqui — nunca o corpo
@@ -75,6 +76,17 @@ export const ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   approval_binding_mismatch: 'Os detalhes apresentados não correspondem à solicitação registrada.',
   approval_presentation_invalid: 'Os parâmetros da solicitação não puderam ser apresentados e conferidos; a aprovação está bloqueada (rejeitar continua possível).',
   approval_blocked: 'Bloqueio de emergência ativo: nenhuma aprovação de execução pode ser concedida ou usada neste escopo.',
+  order_conflict: 'A ordem não está em um estado que permita esta operação (ou já foi feita com outros dados).',
+  order_closed: 'A ordem foi encerrada; um novo trabalho exige nova ordem e novas aprovações.',
+  order_expired: 'O prazo desta etapa da ordem venceu; nenhuma autorização foi renovada.',
+  project_not_enabled: 'O fluxo assistido do Claude Code não está habilitado neste projeto.',
+  secret_detected: 'O conteúdo parece conter um segredo e foi recusado sem ser gravado.',
+  pr_reference_invalid: 'Referência de PR inválida: use owner/repo#N do repositório da ordem.',
+  verification_limit: 'Limite de verificações desta ordem atingido; nada foi apagado.',
+  head_changed: 'O PR recebeu commits durante a leitura; nada foi gravado. Verifique de novo.',
+  github_unavailable: 'O GitHub não pôde ser consultado agora; nada foi gravado. Tente mais tarde.',
+  github_unauthorized: 'A credencial somente leitura do servidor não conseguiu ler este PR; nada foi gravado.',
+  gateway_unavailable: 'O Agent Gateway não está configurado ou está indisponível neste servidor.',
   internal: 'Erro interno do servidor.',
 };
 
@@ -117,5 +129,16 @@ export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
   approval_binding_mismatch: 409,
   approval_presentation_invalid: 409,
   approval_blocked: 423,
+  order_conflict: 409,
+  order_closed: 409,
+  order_expired: 409,
+  project_not_enabled: 409,
+  secret_detected: 422,
+  pr_reference_invalid: 422,
+  verification_limit: 409,
+  head_changed: 409,
+  github_unavailable: 503,
+  github_unauthorized: 502,
+  gateway_unavailable: 503,
   internal: 500,
 };

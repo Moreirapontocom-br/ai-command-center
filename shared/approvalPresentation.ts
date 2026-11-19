@@ -22,7 +22,7 @@ import { AGENT_IDS, POLICY_ACTIONS, type ApprovalBindingView } from './contracts
  * Arquivo sem dependências do servidor: roda no navegador e no servidor (mesmo cálculo).
  */
 
-export const PRESENTATION_KINDS = ['sandbox', 'admission', 'approvals.retention_change', 'approvals.history_purge', 'gateway.scope'] as const;
+export const PRESENTATION_KINDS = ['sandbox', 'admission', 'approvals.retention_change', 'approvals.history_purge', 'gateway.scope', 'gateway.claude_project_enable'] as const;
 export type ApprovalPresentationKind = (typeof PRESENTATION_KINDS)[number];
 
 /** Espelhos das listas do servidor (um teste garante que são iguais às de `server/`). */
@@ -31,7 +31,14 @@ export const PRESENTATION_USAGE_MODES = ['subscription_assisted', 'official_inte
 export const PRESENTATION_INPUT_KINDS = ['issue', 'pull_request', 'task'] as const;
 export const PRESENTATION_SANDBOX_MAX = { timeoutSeconds: 30 * 60, cpu: 2, memoryMb: 4096, diskMb: 10_240, networkHosts: 10, inputs: 20 } as const;
 /** Espelhos das listas do Agent Gateway (Issue #028); um teste garante que são iguais às de `server/gateway`. */
-export const PRESENTATION_GATEWAY_CAPABILITIES = ['text.review', 'text.draft', 'text.summarize', 'code.plan'] as const;
+export const PRESENTATION_GATEWAY_CAPABILITIES = ['text.review', 'text.draft', 'text.summarize', 'code.plan', 'code.change'] as const;
+/**
+ * Issue #008 (D-08.2): `code.change` só existe para o Claude Code, no canal assistido, no modo de
+ * assinatura e SEMPRE sozinho num escopo com o bloco `code` (repositório, SHA base, branch gerada).
+ */
+export const PRESENTATION_CODE_CHANGE = { agentId: 'claude-code', channel: 'assisted', mode: 'subscription_assisted', capability: 'code.change' } as const;
+/** Branch de trabalho de uma ordem (gerada pelo servidor; o mesmo cálculo de `server/gateway`). */
+export const claudeWorkBranchFor = (taskId: string, orderId: string) => `agent/claude-code/${taskId.slice(0, 8)}-${orderId.slice(0, 8)}`;
 export const PRESENTATION_GATEWAY_CHANNELS = ['simulated', 'assisted'] as const;
 export const PRESENTATION_GATEWAY_MAX = { dataRefs: 20, invocations: 50, validitySeconds: 60 * 60, outputBytes: 64 * 1024, budgetMinor: 100_000_00 } as const;
 /** Tamanho máximo da apresentação canônica (bytes UTF-8). */
@@ -91,10 +98,33 @@ export interface GatewayScopePresentationParams {
   budgetMinor: number;
   validitySeconds: number;
   maxOutputBytes: number;
+  /**
+   * Issue #008: ordem de trabalho do Claude Code (só com `code.change`; ausente nos demais escopos).
+   * Todos os valores vêm do servidor: o repositório vinculado e habilitado no projeto, a identidade
+   * estável dele no GitHub, o SHA de `main` lido na preparação, a branch gerada e o resumo do
+   * objetivo e dos critérios informados pela pessoa (o texto em si não entra na aprovação).
+   */
+  code?: GatewayCodeOrderParams;
+}
+
+export interface GatewayCodeOrderParams {
+  orderId: string;
+  repository: string;
+  repositoryId: string;
+  baseSha: string;
+  workBranch: string;
+  inputDigest: string;
+}
+
+/** Issue #008 (D-08.11): habilitação do fluxo assistido do Claude Code em UM projeto. */
+export interface ClaudeProjectEnablementParams {
+  projectId: string;
+  repository: string;
 }
 
 export type ApprovalPresentation =
   | { kind: 'gateway.scope'; params: GatewayScopePresentationParams }
+  | { kind: 'gateway.claude_project_enable'; params: ClaudeProjectEnablementParams }
   | { kind: 'sandbox'; params: SandboxPresentationParams }
   | { kind: 'admission'; params: AdmissionPresentationParams }
   | { kind: 'approvals.retention_change'; params: { days: number } }
@@ -124,6 +154,10 @@ const INPUT_REF = /^[A-Za-z0-9._/#:-]{1,200}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const WORKSPACE_ID = /^ws-[0-9a-f]{32}$/;
 const WORK_BRANCH = /^acc\/[a-z0-9-]{1,32}\/[0-9a-f]{8}-[0-9a-f]{8}$/;
+const CLAUDE_WORK_BRANCH = /^agent\/claude-code\/[0-9a-f]{8}-[0-9a-f]{8}$/;
+/** Identidade estável (id do nó) de um repositório no GitHub. */
+const NODE_ID = /^[A-Za-z0-9_=-]{1,100}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
 
 /** Derivações determinísticas do sandbox (#021) — as mesmas de `server/sandbox`; um teste compara. */
 export const sandboxWorkspaceIdFor = (requestId: string) => `ws-${requestId.replaceAll('-', '')}`;
@@ -236,8 +270,37 @@ function parseAdmission(raw: unknown): AdmissionPresentationParams {
   };
 }
 
+const GATEWAY_SCOPE_FIELDS = ['scopeId', 'projectId', 'taskId', 'agentIds', 'capabilities', 'dataRefs', 'channel', 'mode', 'externalSharing', 'maxInvocations', 'budgetMinor', 'validitySeconds', 'maxOutputBytes'] as const;
+
 function parseGatewayScope(raw: unknown): GatewayScopePresentationParams {
-  const p = exact(raw, ['scopeId', 'projectId', 'taskId', 'agentIds', 'capabilities', 'dataRefs', 'channel', 'mode', 'externalSharing', 'maxInvocations', 'budgetMinor', 'validitySeconds', 'maxOutputBytes']);
+  // O bloco `code` (Issue #008) é a única chave opcional: escopos sem `code.change` nunca o têm.
+  const withCode = isPlain(raw) && Object.hasOwn(raw, 'code');
+  const p = exact(raw, withCode ? [...GATEWAY_SCOPE_FIELDS, 'code'] : GATEWAY_SCOPE_FIELDS);
+  const parsed = parseGatewayScopeBase(p);
+  if (!withCode) {
+    if ((parsed.capabilities as string[]).includes(PRESENTATION_CODE_CHANGE.capability)) fail();
+    return parsed;
+  }
+  // `code.change`: só Claude Code, canal assistido, modo de assinatura, sozinho, uma ordem por escopo.
+  const c = PRESENTATION_CODE_CHANGE;
+  if (parsed.capabilities.length !== 1 || parsed.capabilities[0] !== c.capability) fail();
+  if (parsed.agentIds.length !== 1 || parsed.agentIds[0] !== c.agentId || parsed.channel !== c.channel || parsed.mode !== c.mode) fail();
+  if (parsed.maxInvocations !== 1 || parsed.budgetMinor !== 0) fail();
+  const k = exact(p.code, ['orderId', 'repository', 'repositoryId', 'baseSha', 'workBranch', 'inputDigest']);
+  const code: GatewayCodeOrderParams = {
+    orderId: str(k.orderId, UUID),
+    repository: str(k.repository, REPOSITORY),
+    repositoryId: str(k.repositoryId, NODE_ID),
+    baseSha: str(k.baseSha, SHA),
+    workBranch: str(k.workBranch, CLAUDE_WORK_BRANCH),
+    inputDigest: str(k.inputDigest, HEX64),
+  };
+  // A branch é sempre a derivada da tarefa e da ordem (nunca escolhida por quem pede).
+  if (code.workBranch !== claudeWorkBranchFor(parsed.taskId, code.orderId)) fail();
+  return { ...parsed, code };
+}
+
+function parseGatewayScopeBase(p: Record<string, unknown>): GatewayScopePresentationParams {
   const max = PRESENTATION_GATEWAY_MAX;
   const channel = oneOf(p.channel, PRESENTATION_GATEWAY_CHANNELS);
   const mode = oneOf(p.mode, PRESENTATION_USAGE_MODES);
@@ -292,6 +355,11 @@ export function parsePresentation(raw: unknown): ApprovalPresentation {
     case 'gateway.scope':
       presentation = { kind, params: parseGatewayScope(p.params) };
       break;
+    case 'gateway.claude_project_enable': {
+      const params = exact(p.params, ['projectId', 'repository']);
+      presentation = { kind, params: { projectId: str(params.projectId, UUID), repository: str(params.repository, REPOSITORY) } };
+      break;
+    }
     case 'approvals.retention_change': {
       const params = exact(p.params, ['days']);
       presentation = { kind, params: { days: int(params.days, 1, 100 * 365) } };
@@ -324,7 +392,7 @@ export function expectedPresentationKind(binding: Pick<ApprovalBindingView, 'act
   if (requestedBy.kind === 'system' && requestedBy.id === 'sandbox') return binding.action === 'sandbox.execute' ? 'sandbox' : null;
   if (requestedBy.kind === 'system' && requestedBy.id === 'limits') return Object.hasOwn(POLICY_ACTIONS, binding.action) ? 'admission' : null;
   if (requestedBy.kind === 'system' && requestedBy.id === 'gateway') return binding.action === 'agent.invoke' || binding.action === 'data.send_external' ? 'gateway.scope' : null;
-  if (requestedBy.kind === 'human' && (binding.action === 'approvals.retention_change' || binding.action === 'approvals.history_purge')) return binding.action;
+  if (requestedBy.kind === 'human' && (binding.action === 'approvals.retention_change' || binding.action === 'approvals.history_purge' || binding.action === 'gateway.claude_project_enable')) return binding.action;
   return null;
 }
 
@@ -381,6 +449,17 @@ function consistent(binding: ApprovalBindingView, p: ApprovalPresentation): bool
         binding.target.ref === null
       );
     }
+    case 'gateway.claude_project_enable':
+      // Configuração de UM projeto, pedida pela própria pessoa (nunca por agente).
+      return (
+        binding.action === p.kind &&
+        binding.subject.kind === 'human' &&
+        binding.projectId === p.params.projectId &&
+        binding.resource.type === 'project' &&
+        binding.resource.id === p.params.projectId &&
+        binding.target.sha === null &&
+        binding.target.ref === null
+      );
     case 'approvals.retention_change':
     case 'approvals.history_purge':
       return (

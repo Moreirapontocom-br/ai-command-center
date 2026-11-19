@@ -6,7 +6,7 @@ import { REAL_EXECUTION_ENABLED } from '../sandbox/contracts.ts';
 import { CANARY_TOKEN } from '../test/fixtures.ts';
 import { DEFAULT_LIMITS, HARD_CEILINGS, USAGE_MODES, type CancellationResult, type ControllerLimits, type HumanApproval, type ProviderProfile } from './contracts.ts';
 import { createLimitsController, LimitsError, type ControllerActor } from './controller.ts';
-import { defaultProviderCatalog } from './providers.ts';
+import { assistedProfileAvailable, defaultProviderCatalog } from './providers.ts';
 import { createSimulatedApprovalVerifier } from './simulatedApprovalVerifier.ts';
 import { limitsFingerprint, LimitsValidationError } from './validation.ts';
 
@@ -128,12 +128,20 @@ describe('padrões aprovados pelo PO e catálogo real', () => {
     expect(Object.isFrozen(DEFAULT_LIMITS)).toBe(true);
   });
 
-  it('catálogo real: nenhum provedor verificado; NENHUMA admissão em nenhum modo', () => {
+  it('catálogo real: só claude-code/subscription_assisted disponível (Issue #008); nenhuma admissão de execução em nenhum modo', () => {
     const { controller } = setup({ real: true });
     for (const agentId of AGENT_IDS) {
       for (const mode of USAGE_MODES) {
         const body = mode === 'metered_api' ? metered({ agentId }) : subscription({ agentId, mode });
-        expect(code(() => controller.admit('admin', body))).toBe('provider_unverified');
+        if (agentId === 'claude-code' && mode === 'subscription_assisted') {
+          // O perfil existe, mas NENHUMA ação de execução fica disponível pela política real (§10.7):
+          // `agent.invoke`/`data.send_external` só pela exceção do gateway, nunca pela admissão.
+          for (const action of ['agent.invoke', 'data.send_external', 'tool.use', 'sandbox.execute', 'change.prepare'] as const) {
+            expect(code(() => controller.admit('admin', subscription({ agentId, mode, action })))).toBe('capability_unavailable');
+          }
+        } else {
+          expect(code(() => controller.admit('admin', body))).toBe('provider_unverified');
+        }
       }
     }
     expect(controller.activeCount()).toBe(0);
@@ -142,7 +150,12 @@ describe('padrões aprovados pelo PO e catálogo real', () => {
 
   it('classificação de cobrança conservadora: créditos gratuitos não presumidos, Nemotron sem assinatura', () => {
     const catalog = defaultProviderCatalog();
-    expect(catalog.every((p) => p.status === 'unverified')).toBe(true);
+    // Issue #008 (D-08.3): exatamente UM perfil disponível; os outros 11 continuam `unverified`.
+    expect(catalog.filter((p) => p.status !== 'unverified').map((p) => [p.provider, p.mode, p.status, p.billing])).toEqual([['claude-code', 'subscription_assisted', 'available', 'included']]);
+    expect(catalog.filter((p) => p.status === 'unverified')).toHaveLength(11);
+    expect(assistedProfileAvailable(catalog)).toBe(true);
+    expect(assistedProfileAvailable(catalog.map((p) => ({ ...p, status: 'unverified' as const })))).toBe(false);
+    expect(assistedProfileAvailable([])).toBe(false);
     expect(catalog.filter((p) => p.mode === 'metered_api').every((p) => p.billing === 'metered')).toBe(true);
     expect(catalog.filter((p) => p.mode === 'official_integration').every((p) => p.billing === 'unknown')).toBe(true);
     expect(catalog.find((p) => p.provider === 'nemotron' && p.mode === 'subscription_assisted')?.billing).toBe('unknown');

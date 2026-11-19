@@ -132,6 +132,17 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
     title: 'Evidência obrigatória',
     description: 'Tarefa atribuída a agente só pode ser concluída com uma referência a PR ou branch como evidência.',
   },
+  order_conflict: { title: 'Operação não permitida', description: 'A ordem não está em um estado que permita esta operação.' },
+  order_closed: { title: 'Ordem encerrada', description: 'Esta ordem foi encerrada. Um novo trabalho exige nova ordem e novas aprovações.' },
+  order_expired: { title: 'Prazo vencido', description: 'O prazo desta etapa venceu. Nenhuma autorização foi renovada.' },
+  project_not_enabled: { title: 'Projeto não habilitado', description: 'O fluxo assistido do Claude Code não está habilitado neste projeto.' },
+  secret_detected: { title: 'Possível segredo', description: 'O conteúdo parece conter um segredo e foi recusado sem ser gravado.' },
+  pr_reference_invalid: { title: 'Referência inválida', description: 'Use o formato owner/repo#N, com o repositório da ordem.' },
+  verification_limit: { title: 'Limite de verificações', description: 'Esta ordem atingiu o limite de verificações. Nada foi apagado.' },
+  head_changed: { title: 'PR alterado durante a leitura', description: 'O PR recebeu commits durante a verificação. Nada foi gravado; verifique de novo.' },
+  github_unavailable: { title: 'GitHub indisponível', description: 'Não foi possível consultar o GitHub agora. Nada foi gravado.' },
+  github_unauthorized: { title: 'Leitura recusada pelo GitHub', description: 'A credencial somente leitura do servidor não conseguiu ler este PR. Nada foi gravado.' },
+  gateway_unavailable: { title: 'Gateway indisponível', description: 'O Agent Gateway não está configurado ou está indisponível neste servidor.' },
   internal: { title: 'Erro inesperado', description: 'Ocorreu um erro interno no servidor.' },
 };
 

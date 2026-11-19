@@ -51,6 +51,8 @@ export interface ServerConfig {
   approvals: ApprovalsConfig;
   /** Fila de execução (Issue #012, PR 1 — dormente). */
   queue: QueueConfig;
+  /** Agent Gateway (Issue #008, PR 2): só o canal assistido do Claude Code. */
+  gateway: GatewayConfig;
 }
 
 /**
@@ -129,6 +131,43 @@ export function resolveQueueConfig(env: Record<string, string | undefined>, appr
     if (nested(queueDir, other) || nested(other, queueDir)) return { state: 'invalid', reason: 'queue_dir_must_be_separate' };
   }
   return { state: 'configured', queueDir, initialize: initialize === 'if_absent' ? 'if_absent' : 'never' };
+}
+
+/**
+ * Agent Gateway (Issue #008, PR 2 — SÓ o canal assistido do Claude Code):
+ * - `ACC_GATEWAY_DIR` e `ACC_GATEWAY_CONTENT_DIR`: caminhos ABSOLUTOS, distintos e separados (não
+ *   aninhados) entre si e dos diretórios das aprovações e da fila (validados de novo ao abrir);
+ * - anchor no diretório de anchors das aprovações e chaves (MAC e conteúdo) derivadas por HKDF da
+ *   chave das aprovações: por isso o gateway EXIGE aprovações configuradas;
+ * - `ACC_GATEWAY_INITIALIZE=if_absent`: primeira instalação EXPLÍCITA.
+ *
+ * Nenhuma variável é de provedor de IA: o gateway não tem credencial nem rede.
+ * Sem `ACC_GATEWAY_DIR`, `ACC_GATEWAY_CONTENT_DIR` nem `ACC_GATEWAY_INITIALIZE`: `disabled`.
+ */
+export type GatewayConfig =
+  | { state: 'disabled' }
+  | { state: 'invalid'; reason: string }
+  | { state: 'configured'; gatewayDir: string; contentDir: string; initialize: 'never' | 'if_absent' };
+
+export function resolveGatewayConfig(env: Record<string, string | undefined>, approvals: ApprovalsConfig, queue: QueueConfig): GatewayConfig {
+  const dir = env.ACC_GATEWAY_DIR?.trim() ?? '';
+  const content = env.ACC_GATEWAY_CONTENT_DIR?.trim() ?? '';
+  const initialize = env.ACC_GATEWAY_INITIALIZE?.trim() ?? '';
+  if (dir === '' && content === '' && initialize === '') return { state: 'disabled' };
+  if (dir === '' || content === '') return { state: 'invalid', reason: 'gateway_dirs_required' };
+  if (!isAbsolute(dir) || !isAbsolute(content)) return { state: 'invalid', reason: 'gateway_dirs_must_be_absolute' };
+  if (initialize !== '' && initialize !== 'if_absent') return { state: 'invalid', reason: 'gateway_initialize_invalid' };
+  if (approvals.state !== 'configured') return { state: 'invalid', reason: 'approvals_required' };
+  const gatewayDir = resolve(dir);
+  const contentDir = resolve(content);
+  const key = (path: string) => resolve(path).toLowerCase().replace(/[\\/]+$/, '');
+  const nested = (a: string, b: string) => key(a) === key(b) || key(a).startsWith(`${key(b)}${sep}`) || key(a).startsWith(`${key(b)}/`);
+  const others = [approvals.approvalsDir, approvals.anchorDir, ...(queue.state === 'configured' ? [queue.queueDir] : [])];
+  if (nested(gatewayDir, contentDir) || nested(contentDir, gatewayDir)) return { state: 'invalid', reason: 'gateway_dirs_must_be_separate' };
+  for (const mine of [gatewayDir, contentDir]) {
+    for (const other of others) if (nested(mine, other) || nested(other, mine)) return { state: 'invalid', reason: 'gateway_dirs_must_be_separate' };
+  }
+  return { state: 'configured', gatewayDir, contentDir, initialize: initialize === 'if_absent' ? 'if_absent' : 'never' };
 }
 
 export class ConfigError extends Error {
@@ -271,6 +310,7 @@ export function loadConfig(
   const admin = resolveAdmin(env);
   const dataDir = resolve(env.ACC_DATA_DIR?.trim() || 'data');
   const approvals = resolveApprovalsConfig(env);
+  const queue = resolveQueueConfig(env, approvals);
 
   return {
     deployment,
@@ -294,6 +334,7 @@ export function loadConfig(
     tasksFile: join(dataDir, 'tasks.json'),
     auditFile: join(dataDir, 'audit.json'),
     approvals,
-    queue: resolveQueueConfig(env, approvals),
+    queue,
+    gateway: resolveGatewayConfig(env, approvals, queue),
   };
 }

@@ -3,8 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { POLICY_ACTIONS, type AgentRef, type PolicyAction, type PolicyActionInfo } from '../../shared/contracts.ts';
-import { createPasswordConfirmer, createStepUpRegistry, type IdentityContext, type StepUpRegistry } from '../approvals/identity.ts';
-import { parsePasswordHash } from '../auth/password.ts';
+import type { IdentityContext, StepUpRegistry } from '../approvals/identity.ts';
 import { createSimulatedAdapters, type SimulatedAdapter } from '../gateway/adapters.ts';
 import { createContentManager, type ContentManager } from '../gateway/content.ts';
 import { createRoutingExecutor } from '../gateway/routingExecutor.ts';
@@ -14,7 +13,7 @@ import type { ExecutionResult } from '../queue/ports.ts';
 import { writeFileAtomic } from '../storage/jsonFile.ts';
 import { openSealedBlobStore } from '../storage/sealedBlobs.ts';
 import { deriveSubkey } from '../storage/subkeys.ts';
-import { TEST_ADMIN_PASSWORD, testPasswordHash } from './authFixtures.ts';
+import { TEST_ADMIN_PASSWORD } from './authFixtures.ts';
 import { createSchedulerStack, testCatalog, TASK_B, TASK_C, TASK_D, type SchedulerStack, type StackOptions } from './schedulerFixtures.ts';
 import { PROJECT, PROJECT_B, TASK } from './queueFixtures.ts';
 
@@ -73,7 +72,6 @@ export async function createGatewayStack(options: { stack?: StackOptions; gatewa
   const master = randomBytes(32);
   const macKey = deriveSubkey(master, GATEWAY_KEY_DOMAIN);
   const contentKey = deriveSubkey(master, GATEWAY_CONTENT_KEY_DOMAIN);
-  const identity = createStepUpRegistry({ confirmers: [createPasswordConfirmer({ userId: 'admin', passwordHash: parsePasswordHash(await testPasswordHash()) })], now: () => g.s?.h.clock.now ?? Date.now() });
   const adapters = createSimulatedAdapters({}, options.delayMs ?? 0);
   const data = new Map<string, string>([
     [`${PROJECT}|task|${TASK}`, 'Descrição da tarefa A (dado de projeto).'],
@@ -104,9 +102,15 @@ export async function createGatewayStack(options: { stack?: StackOptions; gatewa
       projects: { get: (o, id) => s().fixtures.projects.get(o, id) },
       tasks: { get: (o, p, id) => s().fixtures.tasks.get(o, p, id) },
       resolveData: ({ projectId, kind, ref }) => data.get(`${projectId}|${kind}|${ref}`) ?? null,
-      approvals: { request: (i) => s().service.request(i), reserve: (i) => s().service.reserve(i), recordOutcome: (i) => s().service.recordOutcome(i) },
-      approvalVerifier: { id: 'acc-approvals:gateway', kind: 'trusted', verifyGrant: (grant) => s().service.verifierFor('gateway').verifyGrant(grant) },
-      identity: { consume: (proofId, ctx) => identity.consume(proofId, ctx) },
+      approvals: { request: (i) => s().service.request(i), reserve: (i) => s().service.reserve(i), recordOutcome: (i) => s().service.recordOutcome(i), confirmOwner: (i) => s().service.confirmOwner(i) },
+      approvalVerifier: {
+        id: 'acc-approvals:gateway',
+        kind: 'trusted',
+        verifyGrant: (grant) => s().service.verifierFor('gateway').verifyGrant(grant),
+        verify: (approval) => s().service.verifierFor('gateway').verify(approval),
+      },
+      // O MESMO registro do núcleo de aprovações (como no servidor): uma prova serve a um só uso.
+      identity: { consume: (proofId, ctx) => s().identity.consume(proofId, ctx) },
       barriers: { blocked: (projectId) => {
         const decision = s().gate.check(projectId);
         return decision.open ? null : decision.reason;
@@ -149,12 +153,12 @@ export async function createGatewayStack(options: { stack?: StackOptions; gatewa
 
   Object.assign(g, {
     adapters,
-    identity,
+    identity: g.s.identity,
     dirs,
     keys: { mac: macKey, content: contentKey },
     data,
     async confirm() {
-      return { proofId: (await identity.confirm(CTX, 'password', TEST_ADMIN_PASSWORD)).proofId, identity: CTX };
+      return { proofId: (await g.s.identity.confirm(CTX, 'password', TEST_ADMIN_PASSWORD)).proofId, identity: CTX };
     },
     approveAll() {
       // Decisões do PO no núcleo (#011), cada uma com prova de step-up e o resumo da apresentação.

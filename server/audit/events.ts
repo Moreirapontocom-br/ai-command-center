@@ -54,7 +54,7 @@ export function createAuditSequence(): AuditSequence {
 const TOKEN = /^[A-Za-z0-9_:.-]{1,64}$/;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ACTOR_ID = /^[a-z0-9][a-z0-9:_-]{0,63}$/;
-const RESOURCE_TYPES = ['project', 'task', 'session', 'route', 'approval'] as const;
+const RESOURCE_TYPES = ['project', 'task', 'session', 'route', 'approval', 'claude_order'] as const;
 
 /** Chaves de contexto permitidas. Novas chaves exigem revisão (e entram aqui). */
 export const CONTEXT_KEYS = [
@@ -76,6 +76,10 @@ export const CONTEXT_KEYS = [
   'rule',
   // Issue #011 (PR 2): operação de aprovação (`approve`, `reject`, `revoke`, `retention_change`…).
   'operation',
+  // Issue #008: veredito, cabeça (SHA) e sequência de uma verificação de PR; nunca conteúdo.
+  'verdict',
+  'head',
+  'seq',
 ] as const;
 
 function isContextValue(value: unknown): value is AuditContextValue {

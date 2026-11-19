@@ -157,6 +157,18 @@ export type ApiErrorCode =
   | 'approval_binding_mismatch'
   | 'approval_presentation_invalid'
   | 'approval_blocked'
+  // Issue #008 — ordens do Claude Code (fluxo assistido) e verificação do PR.
+  | 'order_conflict'
+  | 'order_closed'
+  | 'order_expired'
+  | 'project_not_enabled'
+  | 'secret_detected'
+  | 'pr_reference_invalid'
+  | 'verification_limit'
+  | 'head_changed'
+  | 'github_unavailable'
+  | 'github_unauthorized'
+  | 'gateway_unavailable'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -396,6 +408,14 @@ export const AUDIT_ACTIONS = [
   'approval.attempt_acknowledged',
   'approval.configuration',
   'approval.hold',
+  // Issue #008: espelho dos eventos das ordens do Claude Code (histórico oficial = ledger do gateway).
+  'claude_order.requested',
+  'claude_order.package_released',
+  'claude_order.forwarded',
+  'claude_order.pr_linked',
+  'claude_order.verified',
+  'claude_order.cancelled',
+  'claude_project.enablement',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -419,7 +439,7 @@ export interface AuditEvent {
   action: AuditAction;
   actor: AuditActor;
   projectId: string | null;
-  resource: { type: 'project' | 'task' | 'session' | 'route' | 'approval'; id: string | null };
+  resource: { type: 'project' | 'task' | 'session' | 'route' | 'approval' | 'claude_order'; id: string | null };
   outcome: AuditOutcome;
   context: Record<string, AuditContextValue>;
 }
@@ -694,4 +714,106 @@ export interface ApprovalHistoryResponse {
 export interface StepUpResponse {
   proofId: string;
   expiresAt: string;
+}
+
+// ---------- Issue #008: ordens de trabalho do Claude Code (fluxo assistido) ----------
+
+/**
+ * Estado PROJETADO da ordem (§5.1). `awaiting_approval` antecede `prepared` (escopo pedido, à espera
+ * das duas aprovações). `verified` só vale para o `headSha` confirmado numa leitura recente.
+ */
+export const CLAUDE_ORDER_STATES = ['awaiting_approval', 'prepared', 'delivered', 'awaiting_pr', 'pr_linked', 'verified', 'rejected', 'expired', 'cancelled'] as const;
+export type ClaudeOrderState = (typeof CLAUDE_ORDER_STATES)[number];
+
+export interface ClaudeOrderRuleView {
+  rule: string;
+  result: 'ok' | 'pending' | 'fail' | 'info';
+  reason: string | null;
+}
+
+export interface ClaudeOrderVerificationView {
+  id: string;
+  seq: number;
+  headSha: string | null;
+  baseSha: string;
+  verdict: 'conforming' | 'needs_review' | 'nonconforming' | 'cancelled';
+  rules: ClaudeOrderRuleView[];
+  supersedes: string | null;
+  checkedAt: string;
+  closes: boolean;
+  reason: string | null;
+}
+
+export interface ClaudeOrderView {
+  orderId: string;
+  projectId: string;
+  taskId: string;
+  agentId: 'claude-code';
+  repository: string;
+  baseSha: string;
+  workBranch: string;
+  /** Resumo do objetivo e dos critérios (o texto não é devolvido na listagem). */
+  inputDigest: string;
+  criteriaCount: number;
+  dataRefs: Array<{ kind: string; ref: string }>;
+  createdAt: string;
+  state: ClaudeOrderState;
+  stateReason: string | null;
+  scope: { id: string; state: string; validUntil: string | null; approvalDeadline: string; policyVersion: string };
+  approvals: Array<{ action: 'agent.invoke' | 'data.send_external'; approvalId: string | null; state: string }>;
+  package: { digest: string; releasedAt: string | null; relayDeadline: string | null } | null;
+  forwardedAt: string | null;
+  pullRequest: { number: number; reference: string; url: string; linkedAt: string } | null;
+  verification: {
+    latest: ClaudeOrderVerificationView | null;
+    /** A conformidade da última entrada vale para a cabeça lida há pouco (leitura atual)? */
+    current: boolean;
+    staleReason: 'not_rechecked' | 'head_changed' | null;
+    observedHeadSha: string | null;
+    observedAt: string | null;
+    used: number;
+    max: number;
+    nextAllowedAt: string | null;
+  };
+  history: ClaudeOrderVerificationView[];
+  closed: boolean;
+}
+
+export interface ClaudeOrderListResponse {
+  gateway: { state: 'available' | 'unavailable'; reason: string | null };
+  enablement: { enabled: boolean; repository: string | null; at: string | null };
+  /** Repositórios vinculados ao projeto que podem ser habilitados. */
+  linkableRepositories: string[];
+  orders: ClaudeOrderView[];
+}
+
+export interface ClaudeOrderResponse {
+  order: ClaudeOrderView;
+}
+
+/** Liberação: o pacote em texto, só nesta resposta (nunca na listagem). */
+export interface ClaudeOrderPackageResponse {
+  order: ClaudeOrderView;
+  package: string;
+}
+
+export interface ClaudeOrderVerifyResponse {
+  order: ClaudeOrderView;
+  outcome: {
+    headSha: string | null;
+    verdict: 'conforming' | 'needs_review' | 'nonconforming';
+    /** `false`: mesma cabeça e mesmo resultado da última entrada (nada novo gravado). */
+    created: boolean;
+    rules: ClaudeOrderRuleView[];
+    alerts: string[];
+    checks: { state: string | null; failing: string[]; pending: string[]; total: number };
+    commits: { total: number; listed: number; truncated: boolean; authors: Array<{ author: string | null; committer: string | null; signatureValid: boolean | null }> };
+    files: { total: number; complete: boolean; forbidden: string[] };
+    state: { isDraft: boolean | null; mergeable: string | null; reviewDecision: string | null; prState: string | null };
+    compare: { status: string | null; aheadBy: number | null; behindBy: number | null };
+  };
+}
+
+export interface ClaudeEnablementResponse {
+  enablement: { enabled: boolean; repository: string | null; at: string | null };
 }

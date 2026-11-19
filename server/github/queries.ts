@@ -94,3 +94,76 @@ query RepoSnapshot($owner: String!, $name: String!) {
   }
 }
 `;
+
+/**
+ * Issue #008 — leitura do SHA de `main` e da identidade estável do repositório na preparação de uma
+ * ordem do Claude Code (o SHA base nunca vem do navegador nem do agente).
+ */
+export const MAIN_HEAD_QUERY = `
+query MainHead($owner: String!, $name: String!) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    id
+    nameWithOwner
+    ref(qualifiedName: "refs/heads/main") { name target { oid } }
+  }
+}
+`;
+
+/** Limites da leitura do PR (V8–V11). Os arquivos são paginados por `$filesAfter`, até 3 páginas. */
+export const PR_VERIFICATION_LIMITS = { commits: 100, contexts: 100, filesPerPage: 100, filePages: 3 } as const;
+
+/**
+ * Issue #008 — verificação de um PR (regras V1–V13), somente leitura. A cabeça (`headRefOid`) é
+ * lida no início e de novo no fim (V12) com este mesmo documento.
+ */
+export const PR_VERIFICATION_QUERY = `
+query PullRequestVerification($owner: String!, $name: String!, $number: Int!, $filesAfter: String) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    id
+    nameWithOwner
+    pullRequest(number: $number) {
+      number
+      state
+      merged
+      mergedAt
+      isDraft
+      headRefName
+      headRefOid
+      baseRefName
+      isCrossRepository
+      headRepository { id }
+      mergeable
+      reviewDecision
+      commits(first: ${PR_VERIFICATION_LIMITS.commits}) {
+        totalCount
+        nodes { commit { oid author { user { login } } committer { user { login } } signature { isValid } } }
+      }
+      lastCommit: commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              state
+              contexts(first: ${PR_VERIFICATION_LIMITS.contexts}) {
+                totalCount
+                nodes {
+                  __typename
+                  ... on CheckRun { name status conclusion }
+                  ... on StatusContext { context state }
+                }
+              }
+            }
+          }
+        }
+      }
+      files(first: ${PR_VERIFICATION_LIMITS.filesPerPage}, after: $filesAfter) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { path }
+      }
+    }
+  }
+}
+`;

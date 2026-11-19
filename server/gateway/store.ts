@@ -57,7 +57,7 @@ export async function openGatewayStore(options: OpenGatewayStoreOptions): Promis
       namespace: GATEWAY_SPEC_NAMESPACE,
       format: 'acc-gateway',
       filePrefix: 'gateway',
-      emptyBody: () => ({ scopes: [], invocations: [], handoffs: [], contents: [] }),
+      emptyBody: () => ({ scopes: [], invocations: [], handoffs: [], contents: [], verifications: [], orderMarks: [], projectSettings: [] }),
       checkBody: checkGatewayBody,
       checkEntry: checkGatewayEntry,
       checkChange: (before, after) => checkGatewayChange(before, after),

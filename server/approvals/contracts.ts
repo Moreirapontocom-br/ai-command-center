@@ -54,6 +54,8 @@ export const CONFIGURATION_OPERATIONS = [
   'killswitch.release',
   'approvals.retention_change',
   'approvals.history_purge',
+  // Issue #008 (D-08.11): habilitar o fluxo assistido do Claude Code em UM projeto.
+  'gateway.claude_project_enable',
 ] as const;
 export type ConfigurationOperation = (typeof CONFIGURATION_OPERATIONS)[number];
 

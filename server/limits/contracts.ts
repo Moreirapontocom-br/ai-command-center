@@ -158,8 +158,11 @@ export type CancellationResult = 'cancelled' | 'not_supported' | 'failed';
  */
 export interface HumanApproval {
   id: string;
-  operation: 'limits.change' | 'killswitch.release';
-  /** `limits.change`: impressão digital dos novos limites. `killswitch.release`: `global` ou id do projeto. */
+  operation: 'limits.change' | 'killswitch.release' | 'gateway.claude_project_enable';
+  /**
+   * `limits.change`: impressão digital dos novos limites. `killswitch.release`: `global` ou id do
+   * projeto. `gateway.claude_project_enable` (Issue #008): resumo dos parâmetros (projeto + repositório).
+   */
   target: string;
   approvedBy: { kind: 'human'; id: string };
   approvedAt: string;

@@ -33,6 +33,13 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'approval.attempt_acknowledged': 'Tentativa indeterminada reconhecida',
   'approval.configuration': 'Configuração do histórico de aprovações',
   'approval.hold': 'Preservação de registros de aprovação',
+  'claude_order.requested': 'Ordem para Claude Code solicitada',
+  'claude_order.package_released': 'Pacote da ordem liberado (uso fora do ACC)',
+  'claude_order.forwarded': 'Ordem marcada como encaminhada',
+  'claude_order.pr_linked': 'PR vinculado à ordem',
+  'claude_order.verified': 'Verificação do PR (somente leitura)',
+  'claude_order.cancelled': 'Ordem cancelada',
+  'claude_project.enablement': 'Habilitação do Claude Code no projeto',
 };
 
 const OUTCOME_LABELS: Record<AuditOutcome, string> = { success: 'Sucesso', failure: 'Falha', blocked: 'Bloqueado' };

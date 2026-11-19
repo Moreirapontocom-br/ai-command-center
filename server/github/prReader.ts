@@ -43,8 +43,13 @@ const login = (v: unknown): string | null => {
 };
 const digest = (value: unknown) => createHash('sha256').update(`acc-pr-evidence:v1\n${JSON.stringify(value)}`, 'utf8').digest('hex');
 
-function splitRepository(repository: string): { owner: string; name: string } {
-  if (!REPOSITORY.test(repository)) throw new GitHubReadError('github_unauthorized');
+/**
+ * Formato válido E presença EXATA na allowlist do servidor, antes de qualquer credencial ou rede.
+ * Defesa em profundidade: os chamadores (gateway) já conferem a allowlist, mas a credencial pode
+ * ler outros repositórios da conta (ex.: `gh-cli`), então o leitor não confia nessa conferência.
+ */
+function splitRepository(repository: string, allowed: ReadonlySet<string>): { owner: string; name: string } {
+  if (typeof repository !== 'string' || !REPOSITORY.test(repository) || !allowed.has(repository)) throw new GitHubReadError('github_unauthorized');
   const [owner, name] = repository.split('/');
   return { owner, name };
 }
@@ -153,10 +158,19 @@ export function normalizeCompare(body: unknown): CompareRead {
   }
 }
 
-export function createPullRequestReader(options: { graphql: GraphQLClient; rest: RestCompareClient }): PullRequestReaderPort {
+export interface PullRequestReaderOptions {
+  graphql: GraphQLClient;
+  rest: RestCompareClient;
+  /** Allowlist do servidor (`config.allowedRepositories`). Obrigatória; vazia = nada é consultado. */
+  allowedRepositories: readonly string[];
+}
+
+export function createPullRequestReader(options: PullRequestReaderOptions): PullRequestReaderPort {
+  // Cópia privada feita na construção: alterar o array original depois não amplia o acesso.
+  const allowed: ReadonlySet<string> = new Set(options.allowedRepositories.filter((r) => typeof r === 'string' && REPOSITORY.test(r)));
   return {
     async mainHead(repository: string): Promise<MainHeadRead> {
-      const { owner, name } = splitRepository(repository);
+      const { owner, name } = splitRepository(repository, allowed);
       let data: unknown;
       try {
         data = (await options.graphql.query<unknown>(MAIN_HEAD_QUERY, { owner, name })).data;
@@ -178,7 +192,7 @@ export function createPullRequestReader(options: { graphql: GraphQLClient; rest:
     },
 
     async pullRequest(repository: string, number: number): Promise<PullRequestRead> {
-      const { owner, name } = splitRepository(repository);
+      const { owner, name } = splitRepository(repository, allowed);
       const fetchPage = async (after: string | null) => {
         try {
           return (await options.graphql.query<unknown>(PR_VERIFICATION_QUERY, after === null ? { owner, name, number } : { owner, name, number, filesAfter: after })).data;
@@ -215,7 +229,7 @@ export function createPullRequestReader(options: { graphql: GraphQLClient; rest:
     },
 
     async compare(repository: string, baseSha: string, headSha: string): Promise<CompareRead> {
-      const { owner, name } = splitRepository(repository);
+      const { owner, name } = splitRepository(repository, allowed);
       let result;
       try {
         result = await options.rest.compare(owner, name, baseSha, headSha);

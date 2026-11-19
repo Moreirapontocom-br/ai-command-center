@@ -259,6 +259,7 @@ if (config.gateway.state === 'invalid') {
       ? createPullRequestReader({
           graphql: createGraphQLClient({ credentials: config.credentials, timeoutMs: config.requestTimeoutMs }),
           rest: createRestCompareClient({ credentials: config.credentials, timeoutMs: config.requestTimeoutMs }),
+          allowedRepositories: config.allowedRepositories,
         })
       : null;
     const orders = createClaudeOrders({

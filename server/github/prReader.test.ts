@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import type { GraphQLClient, RestCompareClient } from './client.ts';
+import { createGraphQLClient, createRestCompareClient, type GraphQLClient, type RestCompareClient } from './client.ts';
 import { IntegrationError } from './errors.ts';
 import { createPullRequestReader, normalizeCompare } from './prReader.ts';
 import { MAIN_HEAD_QUERY, PR_VERIFICATION_QUERY } from './queries.ts';
@@ -54,7 +54,7 @@ function reader(pages: unknown[], rest?: Partial<RestCompareClient>) {
   });
   const graphql = { query } as unknown as GraphQLClient;
   const compare = vi.fn(rest?.compare ?? (async () => ({ status: 200 as const, body: { status: 'ahead', ahead_by: 1, behind_by: 0, base_commit: { sha: BASE }, merge_base_commit: { sha: BASE }, commits: [{}], files: [] } })));
-  return { r: createPullRequestReader({ graphql, rest: { compare } }), query, compare };
+  return { r: createPullRequestReader({ graphql, rest: { compare }, allowedRepositories: ['owner/repo'] }), query, compare };
 }
 
 describe('leitura do PR (GraphQL aprovado)', () => {
@@ -144,6 +144,62 @@ describe('SHA de main (preparação)', () => {
     await expect(reader([{ rateLimit: {}, repository: { id: 'R_1', nameWithOwner: 'owner/repo', ref: null } }]).r.mainHead('owner/repo')).rejects.toMatchObject({ code: 'github_unavailable' });
     await expect(reader([{ rateLimit: {}, repository: { id: 'R_1', nameWithOwner: 'owner/repo', ref: { name: 'main', target: { oid: 'x' } } } }]).r.mainHead('owner/repo')).rejects.toMatchObject({ code: 'github_unavailable' });
     await expect(reader([{ rateLimit: {}, repository: null }]).r.mainHead('owner/repo')).rejects.toMatchObject({ code: 'github_unauthorized' });
+  });
+});
+
+describe('allowlist de repositórios (defesa em profundidade, P2)', () => {
+  // Clientes REAIS com credencial e rede-armadilha: qualquer toque conta.
+  function trapped(allowedRepositories: readonly string[]) {
+    const touches = { credential: 0, network: 0 };
+    const credentials = { kind: 'fine-grained' as const, getAuthorizationHeader: async () => { touches.credential += 1; return 'Bearer trap'; } };
+    const fetchImpl = async () => { touches.network += 1; throw new Error('network'); };
+    const options = { credentials, fetchImpl, timeoutMs: 1_000 } as unknown as Parameters<typeof createGraphQLClient>[0];
+    const r = createPullRequestReader({ graphql: createGraphQLClient(options), rest: createRestCompareClient(options), allowedRepositories });
+    return { r, touches };
+  }
+  const calls = (r: ReturnType<typeof createPullRequestReader>, repository: string) => [
+    () => r.mainHead(repository),
+    () => r.pullRequest(repository, 7),
+    () => r.compare(repository, BASE, HEAD),
+  ];
+
+  it.each([
+    ['outro repositório do mesmo dono', 'owner/other'],
+    ['outro dono', 'someone/repo'],
+    ['variação de caixa (comparação exata)', 'Owner/Repo'],
+    ['formato inválido', '../repo'],
+  ])('fora da allowlist (%s) → github_unauthorized em mainHead, pullRequest e compare, sem credencial nem rede', async (_name, repository) => {
+    const { r, touches } = trapped(['owner/repo']);
+    for (const call of calls(r, repository)) await expect(call()).rejects.toMatchObject({ code: 'github_unauthorized' });
+    expect(touches).toEqual({ credential: 0, network: 0 });
+  });
+
+  it('allowlist vazia → nada é consultado', async () => {
+    const { r, touches } = trapped([]);
+    for (const call of calls(r, 'owner/repo')) await expect(call()).rejects.toMatchObject({ code: 'github_unauthorized' });
+    expect(touches).toEqual({ credential: 0, network: 0 });
+  });
+
+  it('a allowlist é copiada na construção: alterar o array depois não amplia o acesso', async () => {
+    const list = ['owner/repo'];
+    const { r, touches } = trapped(list);
+    list.push('owner/other');
+    for (const call of calls(r, 'owner/other')) await expect(call()).rejects.toMatchObject({ code: 'github_unauthorized' });
+    expect(touches).toEqual({ credential: 0, network: 0 });
+  });
+
+  it('repositório autorizado segue para a credencial e a rede (as três consultas)', async () => {
+    const { r, touches } = trapped(['owner/repo']);
+    for (const call of calls(r, 'owner/repo')) await expect(call()).rejects.toMatchObject({ code: 'github_unavailable' });
+    expect(touches.credential).toBe(3);
+    expect(touches.network).toBe(3);
+  });
+
+  it('com o leitor simulado: repositório fora da lista nunca chama GraphQL nem REST', async () => {
+    const { r, query, compare } = reader([]);
+    for (const call of calls(r, 'owner/other')) await expect(call()).rejects.toMatchObject({ code: 'github_unauthorized' });
+    expect(query).not.toHaveBeenCalled();
+    expect(compare).not.toHaveBeenCalled();
   });
 });
 

@@ -1,0 +1,52 @@
+Issue #008 — PR 1 — Verificações
+================================
+
+Data: 2026-11-19. Ambiente local: Windows 11, Node v24.18.1.
+Base: origin/main 5ac983abaeb80418da6113a98f6346c75f118ffc. Branch: feature/008-claude-assisted-spec.
+
+1. Estado inicial
+-----------------
+$ git fetch origin --prune && git rev-parse origin/main
+5ac983abaeb80418da6113a98f6346c75f118ffc            (merge do PR #48; igual ao SHA de referência)
+$ git merge-base --is-ancestor e6728a14d42335456657b4e242c081da5aae05cb origin/main
+ok                                                   (PR #48 presente)
+Nenhum arquivo versionado modificado. Não versionados preexistentes, NÃO incluídos nem alterados:
+ACC_Explicacao_Tecnica.pdf, docs/evidence/issue002-review-validation.txt,
+documenta_o_t_cnica_initial_issue_001.md
+$ git switch -c feature/008-claude-assisted-spec origin/main && git branch --unset-upstream
+
+2. Escopo do diff
+-----------------
+Arquivos do PR (somente documentação):
+docs/CLAUDE_CODE_ASSISTED.md                 (novo)
+docs/IMPLEMENTATION_REPORT_008_PR1.md        (novo)
+docs/evidence/issue008-pr1-checks.txt        (novo)
+docs/evidence/issue008-pr1-sources.txt       (novo)
+docs/AGENT_GATEWAY.md                        (1 linha: referência cruzada em §3.4)
+$ git diff --stat origin/main -- .github scripts server shared src package.json package-lock.json
+(vazio)                                      código, contratos, políticas, catálogo, workflows e dependências inalterados
+REAL_EXECUTION_ENABLED = false as const em server/sandbox/contracts.ts (inalterado)
+server/index.ts sem referência ao gateway (inalterado)
+'agent.invoke' e 'data.send_external' com available: false em shared/contracts.ts (inalterado)
+
+3. Varredura de segredos
+------------------------
+$ npm run check:secrets:repo       -> Nenhuma credencial encontrada (276 arquivo(s) versionado(s)).
+$ npm run check:secrets:history    -> Nenhuma credencial encontrada (81 commit(s) do histórico de HEAD).
+$ npm run check:secrets            -> Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+(contagens antes do commit; o hook pre-commit roda a varredura staged)
+
+4. Lint, testes e build
+-----------------------
+$ npm run lint                     -> exit 0
+$ npm run build                    -> exit 0
+$ npm test                         -> 1210 passed, 1 failed (1211)
+  Falha: scripts/main-audit.test.mjs > "a auditoria roda em push na main e manualmente, só com
+  permissões de leitura". Causa conhecida e só local: core.autocrlf=true faz o checkout dos
+  workflows com CRLF no Windows, e o teste espera LF. Nenhum workflow foi alterado (seção 2).
+  Na CI (Linux, LF) o teste passa — ver o resultado da CI no relatório do PR.
+
+5. Custos e serviços externos
+-----------------------------
+Nenhuma conta criada, nenhuma credencial usada, nenhuma API de provedor chamada. Leituras: só
+páginas públicas de documentação oficial (docs/evidence/issue008-pr1-sources.txt).

@@ -112,7 +112,7 @@
 | Privacidade / localização | não comprovado | não comprovado | `inference_geo` permite inferência só nos EUA com multiplicador 1,1× [A2 (D)]. LGPD: não comprovado. |
 | Uso assistido possível? | **Sim**, como uso manual pela pessoa (chat ou Claude Code local dela). | — | — |
 | Restrições para produto comercial | O ACC não pode usar a assinatura do PO para atender o servidor nem guardar o token dela. | Produto hospedado exige Commercial Terms; não pode pagar ou intermediar uso dos usuários [A4 (D)]. | Uso cobrado ao dono da chave; sem revenda [A4 (D)]. |
-| **Conclusão para o ACC** | Viável só como fluxo assistido manual. | **Decisão da #008/#031**: um ACC de administrador único rodando Claude Code com a credencial do próprio PO precisa de leitura jurídica de A4; até lá, bloqueado. | Bloqueado: orçamento R$ 0. |
+| **Conclusão para o ACC** | Viável só como fluxo assistido manual. | **Decisão da #008/#031**: um ACC de administrador único rodando Claude Code com a credencial do próprio PO precisa de leitura jurídica de A4; até lá, bloqueado. Atualização (#008, 2026-11-19): continua bloqueado; a #008 adota só o uso assistido, ver `docs/CLAUDE_CODE_ASSISTED.md` §8. | Bloqueado: orçamento R$ 0. |
 
 ### 3.5 Google — Gemini
 

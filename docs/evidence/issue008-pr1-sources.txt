@@ -1,0 +1,94 @@
+Issue #008 — PR 1 — Registro de fontes oficiais
+================================================
+
+Data da consulta: 2026-11-19. Leitura direta (D) das páginas oficiais, sem conta, sem credencial,
+sem chamada de API. Citações curtas, em inglês, como publicadas. Termos mudam: revisar antes de
+qualquer ativação e a cada 90 dias.
+
+A3 — https://code.claude.com/docs/en/iam (Authentication)
+---------------------------------------------------------
+- Tipos de conta: "Claude Pro, Max, or Ultra subscription: log in with your claude.ai account."
+- setup-token: "For CI pipelines, scripts, or other environments where interactive browser login
+  isn't available, generate a one-year OAuth token with `claude setup-token`".
+  "This token authenticates with your Claude subscription and requires a Pro, Max, Ultra, Team, or
+  Enterprise plan. It can only make model requests".
+- "Bare mode does not read `CLAUDE_CODE_OAUTH_TOKEN`."
+- Precedência: variáveis de provedor cloud > ANTHROPIC_AUTH_TOKEN > ANTHROPIC_API_KEY > apiKeyHelper
+  > CLAUDE_CODE_OAUTH_TOKEN > perfis > login de assinatura.
+Conclusão: login de assinatura no Claude Code é oficial para o próprio assinante. O ACC não deve
+receber nem guardar esse token (ver A4).
+
+A4 — https://code.claude.com/docs/en/legal-and-compliance
+---------------------------------------------------------
+- "Consumer Terms of Service - for Free, Pro, Max, and Ultra users".
+- "OAuth authentication is intended exclusively for purchasers of Claude Free, Pro, Max, Ultra,
+  Team, and Enterprise subscription plans and is designed to support ordinary use of Claude Code
+  and other native Anthropic applications."
+- "Developers building products or services that interact with Claude's capabilities, including
+  those using the Agent SDK, should use API key authentication through Claude Console or a
+  supported cloud provider. Anthropic does not permit third-party developers to offer Claude.ai
+  login into their own applications, or to route requests through Free, Pro, Max, or Ultra plan
+  credentials on behalf of their users. Moreover, developers may not collect, store, or
+  intermediate Claude.ai credentials or session tokens".
+- "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their
+  own Claude subscription".
+- "Advertised usage limits for Pro, Max, and Ultra plans assume ordinary, individual usage of
+  Claude Code and the Agent SDK."
+- Produtos: "preinstalling or running Claude Code in your products or services (e.g. in hosted
+  sandboxes or other agent infrastructure) requires agreeing to our Commercial Terms of Service";
+  "The Claude Code binary must not be modified"; "Customers may not pay for, resell, or
+  intermediate Claude usage on their end users' behalf."
+Conclusão: uso assistido pelo próprio PO = permitido. O servidor do ACC acionar o Claude Code com
+a assinatura do PO = não esclarecido pelas fontes → bloqueado.
+
+A7 — https://code.claude.com/docs/en/headless (Run Claude Code programmatically)
+--------------------------------------------------------------------------------
+- `claude -p` com `--output-format json|stream-json`, `--allowedTools`, `--permission-mode`.
+- "`--bare` is the recommended mode for scripted and SDK calls"; "In bare mode, Claude Code never
+  reads OAuth credentials or the system keychain."
+- Saída JSON inclui `total_cost_usd` (estimativa do cliente).
+Conclusão: o caminho programático recomendado pressupõe chave de API → custo → bloqueado (R$ 0).
+
+A8 — https://code.claude.com/docs/en/github-actions
+---------------------------------------------------
+- Secrets: "`ANTHROPIC_API_KEY`: a Claude API key" ou "`CLAUDE_CODE_OAUTH_TOKEN`: an OAuth token
+  that authenticates with your Claude subscription, available on Pro, Max, Ultra, Team, and
+  Enterprise plans."
+- Custos: "GitHub Actions minutes" e "API tokens"; "If you authenticate with an OAuth token, runs
+  use your Claude subscription instead of API billing."
+- App oficial: permissões incluem Actions, Contents, Issues, Pull requests e Workflows (read and
+  write), Administration (read), Repository creation (read and write); "GitHub doesn't let you
+  accept a subset"; alternativa: "create a custom GitHub App with Contents, Issues, and Pull
+  requests".
+- "on issue and pull request events, the triggering user must have write access to the repository."
+- "GitHub doesn't trigger workflows on commits made with the default `GITHUB_TOKEN`."
+Conclusão: caminho oficial e de custo zero adicional possível no futuro (alternativa 2), mas exige
+alteração de workflow, secret e app — fora do escopo da #008 PR 1/PR 2.
+
+A9 — https://code.claude.com/docs/en/agent-sdk/overview
+-------------------------------------------------------
+- "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai
+  login or rate limits for their products, including agents built on the Claude Agent SDK. Use the
+  API key authentication methods described in the Quickstart instead."
+- "Use of the Claude Agent SDK is governed by Anthropic's Commercial Terms of Service".
+Conclusão: Agent SDK no servidor do ACC = chave de API = custo → bloqueado.
+
+A10 — https://code.claude.com/docs/en/sandboxing
+------------------------------------------------
+- "On native Windows, Claude Code runs commands unsandboxed. To use the sandbox on a Windows
+  machine, run Claude Code inside a WSL2 distribution."
+- Sandbox "off by default"; "when the platform doesn't support the sandbox or the dependency check
+  at startup fails, Claude Code runs commands without sandboxing" (salvo `failIfUnavailable`).
+- Leituras amplas por padrão, incluindo "credential files such as `~/.ssh` and `~/.aws/credentials`".
+Conclusão: o ACC não pode afirmar isolamento do ambiente do PO.
+
+GH1 — https://docs.github.com/en/billing/concepts/product-billing/github-actions
+--------------------------------------------------------------------------------
+- "The use of standard GitHub-hosted runners is free:" — "In public repositories".
+- "Larger runners are billed for public repositories."
+Conclusão: runners padrão em repositório público não geram custo (relevante só para a alternativa 2).
+
+Não relidas nesta data (valem as leituras de 2026-11-18, docs/evidence/issue028-pr1-sources.txt):
+A1 (rate limits da API), A2 (preços da API), A5/A6 da #028 (retenção).
+Fontes NÃO usadas como prova: fóruns, blogs, notícias.
+Valor e limites exatos do plano Claude Pro: não comprovado.

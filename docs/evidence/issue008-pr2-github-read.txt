@@ -1,0 +1,54 @@
+Issue #008 — PR 2 — Verificação REAL, SOMENTE LEITURA, no GitHub (§12 da ordem do PO)
+Data: 2026-11-19. Repositório: Moreirapontocom-br/ai-command-center (público, o próprio ACC).
+
+Objetivo
+--------
+Confirmar, contra o GitHub real, que:
+- os dois documentos GraphQL novos (MainHead, PullRequestVerification) são aceitos pelo esquema;
+- o único GET REST novo (compare {baseSha}...{headSha}?per_page=1) responde no formato normalizado;
+- o avaliador V1–V13 produz o resultado esperado para um PR conhecido.
+
+Como
+----
+Script descartável fora do repositório (scratchpad), usando o MESMO código de produção:
+createGraphQLClient + createRestCompareClient (allowlist) + createPullRequestReader + evaluatePullRequest.
+Credencial: provedor gh-cli (login do PO no keyring do GitHub CLI), com GITHUB_TOKEN vazio no ambiente.
+Nenhuma escrita: só `query` GraphQL (documentos aprovados) e um GET REST fechado. Nada de corpo de PR,
+diff ou conteúdo foi impresso: só formatos, códigos e SHAs públicos. Custo: R$ 0 (API pública, limite
+de taxa conferido antes: core 4996, graphql 5000).
+
+Resultado (PR #49, já mesclado; base = 5ac983abaeb80418da6113a98f6346c75f118ffc)
+--------------------------------------------------------------------------------
+mainHead {
+  nameWithOwner: 'Moreirapontocom-br/ai-command-center',
+  repositoryIdFormat: true,
+  sha: '7ec45ee0f679d7dc21af5a0ba9bd5e00ba8d1552'     <- = origin/main (merge do PR #49)
+}
+pullRequest ok {
+  number: 49, state: 'MERGED', merged: true,
+  headRefName: 'feature/008-claude-assisted-spec',
+  headRefOid: '16134181e6af47ff64f9ecdb47b888fc3ac27d62',
+  baseRefName: 'main', commits: 2, files: 5, filesComplete: true,
+  checks: 'SUCCESS', contexts: 3
+}
+compare { status: 'ahead', aheadBy: 2, behindBy: 0, baseOk: true, mergeBaseOk: true }
+verdict {
+  verdict: 'nonconforming',
+  rules: 'V1:ok V2:ok V3:ok V4:ok V5:ok V6:ok V7:fail(merged) V8:ok V9:info(declared_only) V10:ok V11:ok V12:ok V13:info'
+}
+
+Leitura: correto. O PR #49 foi mesclado (V7 → falha eliminatória, alerta de merge fora do fluxo);
+todas as outras provas conferem, inclusive a ancestralidade por SHAs completos (§6.4).
+
+PR inexistente (número 999999)
+------------------------------
+pullRequest pr_missing   <- V2 (PR não existe no repositório autorizado)
+
+Limitação NÃO resolvida aqui
+----------------------------
+A credencial usada foi a do GitHub CLI (escopos amplos), NÃO o token fine-grained somente leitura da
+#002 (não disponível nesta sessão; nenhuma credencial nova foi criada nem pedida). A permissão
+fine-grained exigida pelo endpoint de comparação continua NÃO CONFIRMADA. Enquanto isso, qualquer
+401/403 da comparação vira `github_unauthorized`: nada é gravado e nenhuma conformidade é registrada
+(falha fechada, coberta por teste). Recomenda-se ao PO repetir esta leitura com o token fine-grained
+(`Contents: Read-only`, `Pull requests: Read-only`, `Metadata: Read-only`).

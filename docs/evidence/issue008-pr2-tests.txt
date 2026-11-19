@@ -1,0 +1,62 @@
+Issue #008 — PR 2 — Testes (local, Windows 11, Node v24.18.1, vitest 5.1.0) — 2026-11-19
+
+Suíte completa (`npx vitest run`)
+---------------------------------
+Linha de base (main 7ec45ee, antes de qualquer alteração):
+  Test Files  1 failed | 57 passed (58)
+       Tests  1 failed | 1210 passed (1211)
+Depois do PR 2:
+  Test Files  1 failed | 65 passed (66)
+       Tests  1 failed | 1317 passed (1318)
+
+A única falha nos dois casos é a já conhecida e só local:
+  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente...
+  (core.autocrlf=true faz o checkout dos workflows em CRLF no Windows; na CI, Linux/LF, passa.)
+Nenhum teste novo ou alterado falha.
+
+Testes novos (103 casos em 8 arquivos)
+--------------------------------------
+42  server/gateway/orders.test.ts            fluxo (A), aprovações (B), habilitação/restrições (C),
+                                             GitHub via ordem (D), histórico (E): sequência, supersedes,
+                                             duplicada, limite de 50, intervalo de 30 s, HEAD alterado,
+                                             encerramento, reinício, falha de persistência, corrupção,
+                                             validação estrutural, concorrência, cancelamento.
+16  server/gateway/prVerification.test.ts    uma ou mais por regra V1–V13 + tabela da ancestralidade (§6.4).
+16  server/github/prReader.test.ts           normalização fechada, malformado, checks, paginação de
+                                             arquivos (3 páginas, mesma cabeça), erros da integração.
+ 8  server/http/claudeOrders.test.ts         rotas reais: fluxo completo, CSRF/sessão/método, corpos
+                                             fechados, step-up, isolamento, barreira inicial (423),
+                                             gateway ausente (503), GitHub indisponível/HEAD alterado.
+ 6  src/features/tasks/ClaudeOrderPanel.test.tsx  avisos fixos, habilitação, criação, liberação com
+                                             step-up, verificação, erro público.
+ 5  server/policy/assisted.test.ts           matriz ação × agente × canal × modo × capacidade ×
+                                             componente × projeto (> 10.000 combinações; só as 2
+                                             aprovadas mudam, e sempre para REQUIRE_APPROVAL);
+                                             fatos ausentes/forjados; aprovação continua exigida.
+ 5  server/github/restCompare.test.ts        GET único: 200/404/422, renovação em 401, limite, 5xx,
+                                             JSON inválido, rede/timeout, credencial ausente.
+ 5  server/gateway/claudeContracts.test.ts   apresentação `code`, habilitação por projeto, ledger
+                                             aditivo (corpo da #028 continua válido), configuração.
+
+Testes alterados (estreitados, nunca afrouxados)
+------------------------------------------------
+server/security.test.ts (26 → 29 casos)
+  - endpoints do GitHub: GraphQL fixo + a origem REST, `/repos/` só no caminho da comparação;
+  - novo: allowlist REST (só GET, caminho fechado, SHAs completos, só per_page=1, recusa antes da rede);
+  - POST_ROUTES: + 7 rotas da #008 (nenhuma com release/exec/merge/kill…; `/release` → 405);
+  - limites: o servidor só importa `assistedProfileAvailable` de providers.ts (nunca o controlador);
+  - gateway: só index.ts e as rotas usam o gateway; produção com `adapters: {}`, sem fila/executor;
+    o gateway conhece o GitHub só por `import type` de prTypes.ts;
+  - novo bloco #008: flags globais false; exceção com exatamente 2 entradas congeladas; TTLs da #011,
+    HANDOFF_TRANSITIONS e REAL_EXECUTION_ENABLED inalterados; um único perfil disponível; nenhum
+    SDK/variável/host de provedor de IA; nenhum workflow com Claude Code; 3 documentos GraphQL.
+server/hardening.test.ts  métodos HTTP declarados: POST (GraphQL) + GET (comparação REST).
+server/github/client.test.ts  allowlist = snapshot + MainHead + PullRequestVerification.
+server/limits/limits.test.ts  catálogo real: só claude-code/subscription_assisted disponível; nenhuma
+                              ação de execução admitida (agent.invoke, data.send_external, tool.use,
+                              sandbox.execute, change.prepare → capability_unavailable).
+server/queue/scheduler.test.ts  "provedor não verificado" passa a usar official_integration
+                              (claude-code/subscription_assisted agora é o único perfil disponível).
+server/test/* (fixtures)     o gateway usa o MESMO registro de confirmação do núcleo (como no servidor).
+
+Nenhum teste faz chamada a provedor de IA; o GitHub é falso (memória) em todos os testes automatizados.

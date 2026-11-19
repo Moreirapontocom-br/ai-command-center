@@ -1,0 +1,45 @@
+Issue #008 — PR 2 — Verificações (2026-11-19)
+
+Base e branch
+-------------
+git fetch origin
+origin/main = 7ec45ee0f679d7dc21af5a0ba9bd5e00ba8d1552 (merge do PR #49) — esperado; main não avançou.
+Branch: feature/008-claude-assisted-implementation (criada a partir de origin/main 7ec45ee).
+Arquivos não versionados preexistentes preservados e não incluídos:
+  ACC_Explicacao_Tecnica.pdf, docs/evidence/issue002-review-validation.txt, documenta_o_t_cnica_initial_issue_001.md
+
+Locais (Windows 11, Node v24.18.1)
+----------------------------------
+npx eslint .                      -> sem problemas
+npx tsc -b                        -> sem erros
+npx vitest run                    -> 1318 testes: 1317 ok, 1 falha local conhecida (CRLF em
+                                     scripts/main-audit.test.mjs; presente também na linha de base)
+npm run build                     -> ok (dist/index.html, 1 CSS, 1 JS)
+npm run check:csp                 -> "Build compatível com a CSP de produção (dist\index.html e bundles verificados)."
+npm run check:secrets             -> "Nenhuma credencial encontrada em 4 arquivo(s) de dist/."
+npm run check:secrets:repo        -> "Nenhuma credencial encontrada (280 arquivo(s) versionado(s))."  (antes dos arquivos novos)
+
+Garantias estruturais (server/security.test.ts, server/hardening.test.ts) — todas verdes
+---------------------------------------------------------------------------------------
+- REAL_EXECUTION_ENABLED = false as const.
+- POLICY_ACTIONS['agent.invoke'].available === false; POLICY_ACTIONS['data.send_external'].available === false.
+- ASSISTED_AVAILABILITY: exatamente 2 entradas, congeladas; fatos só do gateway; nenhuma rota usa a exceção.
+- APPROVAL_TTL_MS = { execution: 60 min, configuration/merge/publication/cost: 15 min } (inalterado).
+- HANDOFF_TRANSITIONS idêntico ao da #028.
+- Catálogo: um único perfil `available` (claude-code/subscription_assisted); metered_api `unverified`/`metered`.
+- GitHub: GraphQL fixo + origem REST; `/repos/` só no caminho da comparação; GET único com allowlist
+  (método, caminho, SHAs completos, só per_page=1); nenhuma mutation; 3 documentos na allowlist.
+- Métodos HTTP declarados no servidor: POST (GraphQL) e GET (comparação REST), ambos em server/github/client.ts.
+- Gateway em produção: `adapters: {}`, sem fila/executor/invocação/kill switch por rota; só index.ts e
+  as rotas das ordens o usam; o gateway conhece o GitHub só por `import type` de prTypes.ts.
+- Nenhum child_process/spawn/exec no caminho da #008; nenhum SDK, host ou variável de provedor de IA;
+  nenhum workflow com claude-code-action/CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY.
+- POST_ROUTES = as 16 anteriores + 7 da #008 (nenhuma com release/exec/run/merge/kill/limit/secret…).
+
+GitHub real, somente leitura
+----------------------------
+Ver docs/evidence/issue008-pr2-github-read.txt.
+
+CI
+--
+(preenchido depois da abertura do PR)

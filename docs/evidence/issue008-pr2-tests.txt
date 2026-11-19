@@ -8,8 +8,14 @@ Linha de base (main 7ec45ee, antes de qualquer alteração):
 Depois do PR 2:
   Test Files  1 failed | 65 passed (66)
        Tests  1 failed | 1317 passed (1318)
+Depois da revisão P1–P3 (5152549):
+  Test Files  1 failed | 65 passed (66)
+       Tests  1 failed | 1325 passed (1326)
+Depois de P2/R1–R2 (allowlist no leitor, +8 casos em server/github/prReader.test.ts):
+  Test Files  1 failed | 65 passed (66)
+       Tests  1 failed | 1333 passed (1334)
 
-A única falha nos dois casos é a já conhecida e só local:
+A única falha em todos os casos é a já conhecida e só local:
   scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente...
   (core.autocrlf=true faz o checkout dos workflows em CRLF no Windows; na CI, Linux/LF, passa.)
 Nenhum teste novo ou alterado falha.

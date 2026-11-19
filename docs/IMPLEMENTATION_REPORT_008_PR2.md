@@ -210,6 +210,28 @@ Isso altera o contrato N9 da #011, que é sensível e está fora do escopo autor
   2. Gravá-lo em `.env.local`.
   3. Repetir `docs/evidence/issue008-pr2-github-read.txt`. Esperado: PR #49 → `nonconforming` só por V7; PR 999999 → `pr_missing`; nenhum 401/403.
 
+**Decisão do PO (2026-11-19): GitHub CLI como credencial local, sem PAT manual.** O modo `gh-cli` da #002 já existia e foi validado sem mudança de código (`docs/evidence/issue008-pr2-p2-ghcli.txt`):
+- O leitor da #008, com `GITHUB_AUTH=gh-cli` e `ACC_DEPLOYMENT=local`, leu a `main`, os PRs #49 e #50 com checks por SHA e três comparações REST. Foram 6 requisições, todas `GET` ou consultas do tipo `query`.
+- Mutação GraphQL, consulta não aprovada e `POST`/`PUT`/caminho/parâmetro/origem fora da allowlist REST foram recusados antes da credencial e da rede.
+- O token do `gh` tem escopos amplos (`repo`, `workflow`). A garantia de leitura continua vindo só das barreiras do servidor. Em nuvem, o `gh-cli` segue recusado e será preciso outra credencial: fine-grained somente leitura ou GitHub App.
+
+A validação levou a duas correções neste PR:
+- **R1 — Receita do PowerShell.** `$env:GITHUB_TOKEN=''` remove a variável no PowerShell, e o servidor voltava a ler o `GITHUB_TOKEN` antigo do `.env.local` ("Configuração ambígua"). A documentação (`docs/GITHUB_INTEGRATION.md`, "Iniciar com o GitHub CLI") passa a indicar duas formas:
+  - a configuração permanente no `.env.local`;
+  - para uma sessão pontual, `ProcessStartInfo` com variável realmente vazia, ou a atribuição vazia do bash.
+
+  O carregamento de variáveis não mudou. As duas receitas foram testadas com o servidor real (`authMode: "gh-cli"`).
+- **R2 — Allowlist no leitor (defesa em profundidade).** `createPullRequestReader` exige `allowedRepositories`, recebe `config.allowedRepositories` em `server/index.ts` e guarda uma cópia na construção. `mainHead`, `pullRequest` e `compare` recusam repositórios fora da lista, por comparação exata, com `github_unauthorized`, antes de credencial ou rede. Testes novos em `server/github/prReader.test.ts` cobrem:
+  - outro repositório do mesmo dono;
+  - outro dono;
+  - variação de caixa;
+  - formato inválido;
+  - lista vazia;
+  - alteração do array depois da construção;
+  - caminho autorizado preservado.
+
+  Os contratos e as consultas autorizadas não mudaram.
+
 ### P3 — Concorrência na verificação (falha confirmada e corrigida)
 
 **Falha.** `orders.ts` gravava a "leitura atual" (base do estado `verified`) **antes** de `appendVerification`. Se a leitura nova desse outro resultado para a mesma cabeça (por exemplo, PR fechado) e a gravação falhasse, a conformidade **anterior** voltava a aparecer como `verified`. O mesmo acontecia em dois outros casos:

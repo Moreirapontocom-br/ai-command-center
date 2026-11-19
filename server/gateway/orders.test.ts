@@ -600,6 +600,158 @@ describe('histórico de verificações (E)', () => {
   });
 });
 
+describe('concorrência: novo push durante a verificação (revisão P3)', () => {
+  /** Índice da leitura do PR que a PRÓXIMA verificação fará primeiro (início) e por último (fim). */
+  const nextReads = (stack: OrderStack) => {
+    const base = stack.github.calls.filter((c) => c.op === 'pullRequest').length;
+    return { start: base, end: base + 1 };
+  };
+  /** Faz o push DEPOIS que a leitura `index` do PR já devolveu o resultado. */
+  const pushAfterRead = (stack: OrderStack, index: number, head: string) => {
+    const original = stack.github.pullRequest.bind(stack.github);
+    let n = stack.github.calls.filter((c) => c.op === 'pullRequest').length;
+    stack.github.pullRequest = async (repository, number) => {
+      const current = n;
+      n += 1;
+      const read = await original(repository, number);
+      if (current === index) push(stack, head);
+      return read;
+    };
+  };
+
+  it('push durante a leitura inicial (snapshot inconsistente ou páginas de cabeças diferentes) → nada gravado', async () => {
+    o = await createOrderStack();
+    await o.enable();
+    const linked = await o.linked();
+    const stack = o;
+    // GraphQL devolveu headRefOid novo mas o último commit ainda da cabeça antiga (push no meio da leitura).
+    const reads = nextReads(stack);
+    stack.github.onPullRequest = (call) => {
+      if (call === reads.start) stack.github.pr = { ...stack.github.pr!, headRefOid: HEAD_2 };
+    };
+    expect(await codeOf(o.orders.verify('admin', PROJECT, linked.orderId, o.actor))).toBe('head_changed');
+    expect(o.orders.get('admin', PROJECT, linked.orderId).history).toHaveLength(0);
+    // Páginas de arquivos de cabeças diferentes: o leitor devolve `malformed` (prReader.test) → nada gravado.
+    stack.github.onPullRequest = null;
+    push(stack, HEAD_2);
+    o.waitInterval();
+    stack.github.faults.push('malformed');
+    expect(await codeOf(o.orders.verify('admin', PROJECT, linked.orderId, o.actor))).toBe('github_response_invalid');
+    const view = o.orders.get('admin', PROJECT, linked.orderId);
+    expect(view.history).toHaveLength(0);
+    expect(view.state).toBe('pr_linked');
+    expect(view.verification.current).toBe(false);
+  });
+
+  it('push entre a comparação REST e a segunda leitura → head_changed, nada gravado, conformidade anterior desatualizada', async () => {
+    o = await createOrderStack();
+    await o.enable();
+    const linked = await o.linked();
+    await o.orders.verify('admin', PROJECT, linked.orderId, o.actor);
+    o.waitInterval();
+    const stack = o;
+    const original = stack.github.compareWith;
+    stack.github.compareWith = (base, head) => {
+      const result = original(base, head);
+      push(stack, HEAD_2); // a comparação já foi feita com a cabeça antiga
+      return result;
+    };
+    expect(await codeOf(o.orders.verify('admin', PROJECT, linked.orderId, o.actor))).toBe('head_changed');
+    const compares = stack.github.calls.filter((c) => c.op === 'compare');
+    expect(compares[compares.length - 1].args[2]).toBe(HEAD);
+    const view = o.orders.get('admin', PROJECT, linked.orderId);
+    expect(view.history.map((h) => h.headSha)).toEqual([HEAD]);
+    expect(view.state).toBe('pr_linked');
+    expect(view.verification).toMatchObject({ current: false, staleReason: 'head_changed', observedHeadSha: HEAD_2 });
+  });
+
+  it('push entre a segunda leitura e a gravação → o resultado fica preso ao SHA verificado; a próxima verificação o substitui', async () => {
+    o = await createOrderStack();
+    await o.enable();
+    const linked = await o.linked();
+    const reads = nextReads(o);
+    pushAfterRead(o, reads.end, HEAD_2);
+    const result = await o.orders.verify('admin', PROJECT, linked.orderId, o.actor);
+    // Gravado para HEAD (o que foi lido e comparado), nunca para HEAD_2 (não verificado).
+    expect(result.outcome.headSha).toBe(HEAD);
+    expect(result.order.history.map((h) => h.headSha)).toEqual([HEAD]);
+    expect(result.order.verification).toMatchObject({ current: true, observedHeadSha: HEAD });
+    expect(result.order.verification.latest!.headSha).toBe(HEAD);
+    o.waitInterval();
+    const next = await o.orders.verify('admin', PROJECT, linked.orderId, o.actor);
+    expect(next.order.history.map((h) => h.headSha)).toEqual([HEAD, HEAD_2]);
+    expect(next.order.history[1].supersedes).toBe(next.order.history[0].id);
+    expect(next.order.verification.latest!.headSha).toBe(HEAD_2);
+  });
+
+  it('push antes da próxima apresentação: verified só com leitura atual (5 min) e sempre com o SHA; depois, desatualizada', async () => {
+    o = await createOrderStack();
+    await o.enable();
+    const linked = await o.linked();
+    await o.orders.verify('admin', PROJECT, linked.orderId, o.actor);
+    push(o, HEAD_2); // o ACC não lê o GitHub ao apresentar: a garantia é da cabeça HEAD, lida em observedAt
+    const within = o.orders.get('admin', PROJECT, linked.orderId);
+    expect(within.state).toBe('verified');
+    expect(within.verification).toMatchObject({ current: true, observedHeadSha: HEAD });
+    expect(within.verification.latest!.headSha).toBe(HEAD);
+    expect(within.verification.observedAt).not.toBeNull();
+    o.g.s.advance(ORDER_LIMITS.freshObservationMs + 1);
+    const later = o.orders.get('admin', PROJECT, linked.orderId);
+    expect(later.state).toBe('pr_linked');
+    expect(later.verification).toMatchObject({ current: false, staleReason: 'not_rechecked', observedHeadSha: null });
+    // Reinício também não preserva a garantia.
+    await o.g.restartGateway();
+    rebuildOrders(o);
+    expect(o.orders.get('admin', PROJECT, linked.orderId).state).toBe('pr_linked');
+  });
+
+  it('regressão: leitura atual com outro resultado e gravação falha → a conformidade anterior NÃO volta a aparecer como verified', async () => {
+    o = await createOrderStack();
+    await o.enable();
+    const linked = await o.linked();
+    expect((await o.orders.verify('admin', PROJECT, linked.orderId, o.actor)).order.state).toBe('verified');
+    o.g.s.advance(ORDER_LIMITS.freshObservationMs + 1);
+    // Mesma cabeça, mas o PR foi fechado: a leitura nova é nonconforming; a gravação falha.
+    o.github.pr = { ...o.github.pr!, state: 'CLOSED' };
+    o.g.faults.failWrite = () => true;
+    expect(await codeOf(o.orders.verify('admin', PROJECT, linked.orderId, o.actor))).not.toBe('ok');
+    o.g.faults.failWrite = null;
+    const view = o.orders.get('admin', PROJECT, linked.orderId);
+    expect(view.state).not.toBe('verified');
+    expect(view.verification.current).toBe(false);
+  });
+
+  it('regressão: falha do GitHub numa nova verificação também retira a leitura atual anterior', async () => {
+    o = await createOrderStack();
+    await o.enable();
+    const linked = await o.linked();
+    await o.orders.verify('admin', PROJECT, linked.orderId, o.actor);
+    o.waitInterval();
+    o.github.faults.push('unavailable');
+    expect(await codeOf(o.orders.verify('admin', PROJECT, linked.orderId, o.actor))).toBe('github_unavailable');
+    expect(o.orders.get('admin', PROJECT, linked.orderId)).toMatchObject({ state: 'pr_linked', verification: { current: false } });
+  });
+
+  it('regressão: head_changed que volta a uma cabeça já conforme não confirma nada (verificação incompleta)', async () => {
+    o = await createOrderStack();
+    await o.enable();
+    const linked = await o.linked();
+    await o.orders.verify('admin', PROJECT, linked.orderId, o.actor); // HEAD conforme
+    o.waitInterval();
+    push(o, HEAD_2);
+    const stack = o;
+    const reads = nextReads(stack);
+    stack.github.onPullRequest = (call) => {
+      if (call === reads.end) push(stack, HEAD); // força-push de volta durante a verificação
+    };
+    expect(await codeOf(o.orders.verify('admin', PROJECT, linked.orderId, o.actor))).toBe('head_changed');
+    const view = o.orders.get('admin', PROJECT, linked.orderId);
+    expect(view.history.map((h) => h.headSha)).toEqual([HEAD]);
+    expect(view.state).toBe('pr_linked');
+    expect(view.verification).toMatchObject({ current: false, staleReason: 'head_changed' });
+  });
+});
+
 // ---------- utilidades locais ----------
 
 const scopeApprovals = (stack: OrderStack) => stack.g.s.service.list('admin').filter((a) => a.binding.resource.type === 'gateway_scope');

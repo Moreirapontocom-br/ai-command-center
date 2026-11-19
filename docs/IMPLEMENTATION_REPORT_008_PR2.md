@@ -150,13 +150,86 @@ Sem alteração direta na `main`; sem merge; sem execução de agentes; nenhum `
 ## 10. Pendências, limitações e riscos
 
 1. **Produção bloqueada pela barreira global inicial (#011, N9).** Em instalação nova, a criação de ordens responde 423 (`approval_blocked`) até o PO liberar a barreira, e essa liberação continua sem rota (decisão R2 da #011). A habilitação por projeto (configuração) funciona. **O fluxo completo só foi exercitado em testes, com a barreira liberada pelo fluxo de configuração.** Não declaro o fluxo "em uso" em produção.
-2. **Permissão fine-grained da comparação REST não confirmada.** A leitura real usou a credencial do GitHub CLI. Com o token fine-grained, um 403 vira `github_unauthorized` (falha fechada, sem gravação). Recomenda-se repetir `docs/evidence/issue008-pr2-github-read.txt` com esse token.
+2. **Credencial fine-grained ainda não validada na prática** (ver §11, P2). Pela documentação oficial, a comparação exige `Contents: read`, permissão que já está na lista da #002. O token local, porém, é rejeitado pelo GitHub (401) até na consulta de snapshot da #002. A verificação real depende de um token novo, que precisa de autorização do PO. A falha fechada foi confirmada contra o GitHub real.
 3. **Catálogo da #022.** Com `claude-code/subscription_assisted` disponível, o controlador (dormente, não instanciado em produção) passaria a admitir itens de **observação** desse perfil, se a fila fosse ligada no futuro. Nenhuma ação de execução fica admissível (testado). Revisar quando a fila for ligada.
-4. **"Visto em" e leitura atual** ficam em memória (por processo): depois de um reinício, a conformidade aparece desatualizada até nova verificação (falha fechada, intencional).
+4. **"Visto em" e leitura atual** ficam em memória (por processo): depois de um reinício, a conformidade aparece desatualizada até nova verificação (falha fechada, intencional). Dentro dos 5 min, `verified` vale para o HEAD lido e sempre aparece com o SHA e a hora. O ACC não lê o GitHub ao apresentar a ordem (§11, P3).
 5. **Proveniência e isolamento** não são comprovados pelo ACC (V9 informativa; Windows nativo sem sandbox no Claude Code). A interface diz isso.
 6. **Pedidos órfãos.** Se a gravação do escopo falhar depois dos pedidos de aprovação, os pedidos ficam pendentes até vencer (comportamento da #028).
 7. **Recomendações futuras** (cada uma exige autorização própria): decisão do PO sobre como liberar a barreira inicial; confirmação com o token fine-grained; alternativa GitHub Action (D-08.8); resolução de issue/PR como dado do pacote.
 
-## 11. Governança
+## 11. Revisão complementar (P1–P3)
+
+Pedido do PO sobre o SHA `50cb0ae`. Evidências em `docs/evidence/issue008-pr2-review-p1p3.txt`.
+
+### P1 — Barreira global inicial (bloqueio que exige decisão do PO)
+
+**Por que 423.**
+- Toda instalação nova da #011 nasce com `barriers.global = { reason: 'initial_install' }` (`server/approvals/store.ts`, `startLineage`; decisão R2 da #011 PR 1).
+- O gateway consulta a barreira pela porta `barriers.blocked` (`server/index.ts`). Barreira global durável → `global_barrier` → 423 `approval_blocked`.
+- A mesma barreira faz o núcleo recusar decisões de execução e de publicação (N6, `barredClass`).
+- Configuração não é barrada; por isso a habilitação do projeto funciona.
+
+**Contratos que controlam.**
+- `server/approvals/service.ts`: `blocked()`, `barredClass()`, `engageBarrier()`, `releaseBarrier()`, `releaseBarrierIn()`, `recordOutcome()` (liberação pelo controlador #022) e a validação do vínculo `killswitch.release`.
+- `server/approvals/contracts.ts`: ação `killswitch.release`, da classe configuração, com TTL de 15 min (inalterado).
+- `IMPLEMENTATION_REPORT_011_PR1.md` (R2, N3, N6, N9) e `IMPLEMENTATION_REPORT_011_PR2.md` §12: "a liberação operacional depende de etapa futura aprovada pelo Product Owner".
+
+**Mecanismos aprovados para liberar.** Só uma aprovação `killswitch.release` do escopo exato (`global`). Ela precisa:
+- nascer de `confirmOwner`, com prova de step-up de uso único do PO;
+- ser reservada pelo componente `approvals`;
+- ser consumida por `releaseBarrier` (ou pelo controlador #022, via `recordOutcome`).
+
+Por decisão N9, nenhum desses caminhos tem rota HTTP.
+
+**O que foi feito.** Nada foi removido, contornado ou enfraquecido, e nenhuma rota foi criada. Um teste novo em `server/http/claudeOrders.test.ts` ("revisão P1") prova, pelas rotas reais:
+- com a barreira, a criação responde 423;
+- não existe nenhum caminho HTTP plausível de liberação;
+- liberação sem aprovação, com agente como sujeito ou com prova forjada é recusada;
+- pelo mecanismo da #011, a barreira é liberada uma única vez e auditada (`approval.barrier_released`, ator humano, motivo `human_approved`);
+- depois disso, a criação continua exigindo as duas aprovações por ordem;
+- reacionar a barreira bloqueia de novo.
+
+**Proposta de desbloqueio supervisionado (para decisão do PO; não implementada).**
+1. Uma rota única, por exemplo `POST /api/approvals/barrier-unlock`. Hoje, `server/security.test.ts` proíbe `kill`, `barrier` e `release` em POST_ROUTES e proíbe que rotas chamem `releaseBarrier`. Por isso, qualquer rota de desbloqueio exige uma exceção explícita do PO, restrita a esse único caminho. Corpo fechado: `{ scope: 'global' | <projectId>, proofId }`.
+2. O servidor monta o vínculo `killswitch.release`; o cliente nunca o envia. O sujeito é a pessoa da sessão, e ids de agente são recusados.
+3. Step-up obrigatório (senha, uso único, 5 min, por sessão), com CSRF e sessão como nas demais rotas.
+4. Fluxo `confirmOwner` → `reserve('approvals')` → `releaseBarrier` numa única chamada, como `service.configure` já faz para a retenção.
+5. Recusa se o armazenamento da #011 estiver degradado, se houver divergência de restauração da fila (#012) ou se o kill switch do controlador estiver acionado.
+6. Auditoria nos dois históricos (#011 e o espelho da #006), com motivo e escopo. Nenhuma aprovação revogada é reativada.
+7. Testes: estrutural (rota exata, corpo fechado), sem step-up, prova reutilizada, agente, escopo de outro projeto, barreira reacionada, falha de gravação e reinício.
+
+Isso altera o contrato N9 da #011, que é sensível e está fora do escopo autorizado. **Esta frente fica interrompida até a decisão do PO.**
+
+### P2 — Credencial do GitHub
+
+- **Permissão exigida.** A documentação oficial do GitHub ("Permissions required for fine-grained personal access tokens") lista `GET /repos/{owner}/{repo}/compare/{basehead}` com **Contents: read**. Essa permissão já consta da lista da #002 (`docs/GITHUB_INTEGRATION.md`), então **nenhuma permissão nova é necessária**.
+- **Verificação real (somente leitura, R$ 0).** Usei o provedor de produção `createFineGrainedTokenProvider` com o token do `.env.local`, sem imprimi-lo. O GitHub respondeu **401** às três leituras: o snapshot da #002 (anterior a este PR), o MainHead e a comparação. Ou seja, o GitHub rejeitou o token local como credencial (vencido ou revogado); não é falta de permissão. A mesma sonda com a credencial do GitHub CLI funciona.
+- **Comportamento.** A falha fechada foi confirmada contra o GitHub real: `github_unauthorized`, nada gravado. Nenhuma credencial foi criada, copiada, alterada ou elevada.
+- **Procedimento de validação (exige o PO).**
+  1. Gerar um token fine-grained novo, só para `Moreirapontocom-br/ai-command-center`, com `Metadata`, `Contents`, `Pull requests` e `Commit statuses` em Read-only. Acrescentar `Checks: Read-only` só se os checks vierem vazios.
+  2. Gravá-lo em `.env.local`.
+  3. Repetir `docs/evidence/issue008-pr2-github-read.txt`. Esperado: PR #49 → `nonconforming` só por V7; PR 999999 → `pr_missing`; nenhum 401/403.
+
+### P3 — Concorrência na verificação (falha confirmada e corrigida)
+
+**Falha.** `orders.ts` gravava a "leitura atual" (base do estado `verified`) **antes** de `appendVerification`. Se a leitura nova desse outro resultado para a mesma cabeça (por exemplo, PR fechado) e a gravação falhasse, a conformidade **anterior** voltava a aparecer como `verified`. O mesmo acontecia em dois outros casos:
+- uma verificação que falhava no GitHub;
+- um `head_changed` que terminava numa cabeça já conforme (força-push de volta).
+
+Os três casos foram reproduzidos por teste antes da correção.
+
+**Correção.**
+- Cada nova tentativa apaga a leitura atual da ordem. Ela só volta a existir depois que o resultado **desta** verificação é gravado, e para o `headSha` efetivamente lido e comparado.
+- Uma leitura interrompida (`head_changed`) registra a cabeça vista com `confirms: false` e nunca confirma nada.
+- A interface acrescenta: "vale só para este HEAD, lido há menos de 5 min; commits novos exigem nova verificação".
+
+**Testes novos** (`server/gateway/orders.test.ts`, bloco "revisão P3"), um para cada momento:
+- push durante a leitura inicial (snapshot inconsistente e páginas de cabeças diferentes);
+- push entre a comparação REST e a segunda leitura;
+- push entre a segunda leitura e a gravação: o resultado fica preso ao SHA verificado e é substituído pela próxima verificação;
+- push antes da próxima apresentação: `verified` só com leitura atual de até 5 min e com o SHA; depois disso, e após reinício, desatualizada;
+- mais três regressões.
+
+## 12. Governança
 
 Nenhuma alteração direta na `main`; nenhum merge; nenhuma outra issue iniciada; nenhuma API paga; nenhum gasto adicional; Issue #008 mantida aberta. O merge depende da revisão independente e da autorização explícita do PO.

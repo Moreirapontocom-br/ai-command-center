@@ -53,8 +53,12 @@ const entryView = (v: OrderVerification): ClaudeOrderVerificationView => ({
 export function createClaudeOrders(deps: ClaudeOrdersDeps) {
   const { gateway } = deps;
   const now = deps.now ?? Date.now;
-  /** Última cabeça observada por ordem NESTE processo (base da "leitura atual" da projeção). */
-  const observed = new Map<string, { headSha: string | null; at: number }>();
+  /**
+   * Última cabeça observada por ordem NESTE processo (base da "leitura atual" da projeção).
+   * `confirms` só é verdadeiro depois de uma verificação COMPLETA cujo resultado foi gravado; uma
+   * leitura interrompida (`head_changed`) só registra a cabeça vista e nunca confirma nada.
+   */
+  const observed = new Map<string, { headSha: string | null; at: number; confirms: boolean }>();
 
   /** Estado projetado (§5.1) a partir do que está persistido + da última leitura desta execução. */
   function project(record: OrderRecord): ClaudeOrderView {
@@ -101,11 +105,11 @@ export function createClaudeOrders(deps: ClaudeOrdersDeps) {
             stateReason = latest.reason ?? (latest.verdict === 'cancelled' ? 'cancelled' : 'pr_nonconforming');
           } else if (latest?.verdict === 'conforming') {
             // R1: conformidade vale só para o `headSha` confirmado numa leitura ATUAL desta mesma cabeça.
-            if (fresh && seen!.headSha === latest.headSha) {
+            if (fresh && seen!.confirms && seen!.headSha === latest.headSha) {
               state = 'verified';
               current = true;
             } else {
-              staleReason = fresh && seen!.headSha !== latest.headSha ? 'head_changed' : 'not_rechecked';
+              staleReason = fresh && (seen!.headSha !== latest.headSha || !seen!.confirms) ? 'head_changed' : 'not_rechecked';
               stateReason = staleReason;
             }
           } else if (latest) {
@@ -239,6 +243,9 @@ export function createClaudeOrders(deps: ClaudeOrdersDeps) {
       if (!deps.reader) throw new GatewayError('github_unavailable');
       const reader = deps.reader;
       const done = gateway.beginVerification(orderId);
+      // Uma nova tentativa retira a leitura atual anterior: só volta a haver "verified" se ESTA
+      // verificação terminar e o resultado dela for gravado (revisão P3).
+      observed.delete(orderId);
       try {
         const start = await reader.pullRequest(facts.repository, facts.prNumber);
         let compare: CompareRead | null = null;
@@ -247,11 +254,12 @@ export function createClaudeOrders(deps: ClaudeOrdersDeps) {
         const outcome = evaluatePullRequest(facts, start, compare, end);
         if (outcome.kind === 'invalid_read') throw new GatewayError('github_response_invalid');
         if (outcome.kind === 'head_changed') {
-          observed.set(orderId, { headSha: outcome.observedHeadSha, at: now() });
+          observed.set(orderId, { headSha: outcome.observedHeadSha, at: now(), confirms: false });
           throw new GatewayError('head_changed');
         }
-        observed.set(orderId, { headSha: outcome.headSha, at: now() });
         const result = await gateway.appendVerification(ownerId, projectId, orderId, outcome, actor);
+        // Só depois da gravação: a leitura atual passa a valer para o SHA efetivamente verificado.
+        observed.set(orderId, { headSha: outcome.headSha, at: now(), confirms: true });
         return {
           order: viewOf(ownerId, projectId, orderId),
           outcome: {

@@ -113,7 +113,8 @@ describe('painel de ordens do Claude Code', () => {
 
   it('verifica o PR e mostra regras, checks e a cabeça a que o resultado se refere', async () => {
     const linked = order({ state: 'pr_linked', pullRequest: { number: 7, reference: `${REPO}#7`, url: `https://github.com/${REPO}/pull/7`, linkedAt: '2026-11-19T12:06:00Z' } });
-    const verified = { ...linked, state: 'verified' as const };
+    const entry = { id: 'v-1', seq: 1, headSha: 'a1'.repeat(20), baseSha: 'b'.repeat(40), verdict: 'conforming' as const, rules: [], supersedes: null, checkedAt: '2026-11-19T12:07:00Z', closes: false, reason: null };
+    const verified = { ...linked, state: 'verified' as const, verification: { ...linked.verification, latest: entry, current: true, observedHeadSha: entry.headSha, observedAt: entry.checkedAt, used: 1 }, history: [entry] };
     mockFetch({
       [`GET /api/projects/${PROJECT}/claude-orders`]: [() => reply(list([linked])), () => reply(list([verified]))],
       [`POST /api/claude-orders/${ORDER}/verify`]: [
@@ -138,8 +139,10 @@ describe('painel de ordens do Claude Code', () => {
     await openPanel();
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Verificar PR (somente leitura)' }));
     expect(await screen.findByText(/V6 — Ancestralidade do SHA base comprovada/)).toBeInTheDocument();
-    expect(screen.getByText(/a1a1a1a1a1a1/)).toBeInTheDocument();
+    expect(screen.getAllByText(/a1a1a1a1a1a1/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Checks: SUCCESS/)).toBeInTheDocument();
+    // A conformidade nunca aparece como permanente: vale para este HEAD e por pouco tempo.
+    expect(await screen.findByText(/vale só para este HEAD, lido há menos de 5 min/)).toBeInTheDocument();
   });
 
   it('erro do servidor aparece com a mensagem pública (sem detalhes internos)', async () => {

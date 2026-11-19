@@ -176,7 +176,7 @@ async function startApp(options: { gateway?: boolean; barrier?: boolean } = {}) 
       expect(reply.status).toBe(200);
     }
   }
-  return { post, get, login, proofId, approveAll, project, other, task, gptTask, github, logLines, audit, service, gatewayStore, advance: (ms: number) => ((clock.wall += ms), (clock.mono += ms)) };
+  return { post, get, login, proofId, approveAll, project, other, task, gptTask, github, logLines, audit, service, identity, gatewayStore, advance: (ms: number) => ((clock.wall += ms), (clock.mono += ms)) };
 }
 
 type App = Awaited<ReturnType<typeof startApp>>;
@@ -300,6 +300,46 @@ describe('rotas das ordens do Claude Code', () => {
     expect(reply.status).toBe(423);
     expect(reply.json().error.code).toBe('approval_blocked');
     expect((await app.get('/api/projects', cookie)).status).toBe(200);
+  });
+
+  it('revisão P1: a barreira só sai pelo mecanismo da #011 (killswitch.release confirmada pelo PO); não há rota de liberação', async () => {
+    const app = await startApp({ barrier: true });
+    const cookie = await app.login();
+    await enable(app, cookie);
+    expect((await app.post(createPath(app), createBody(), cookie)).status).toBe(423);
+    // Nenhuma rota libera a barreira (N9): caminhos plausíveis não existem ou não aceitam POST.
+    for (const path of ['/api/approvals/barrier/release', '/api/approvals/killswitch/release', '/api/killswitch/release', '/api/claude-orders/barrier', `/api/projects/${app.project.id}/claude-enablement/release`]) {
+      expect([404, 405]).toContain((await app.post(path, { proofId: await app.proofId(cookie) }, cookie)).status);
+    }
+    expect(app.service.barriers().durable.global).not.toBeNull();
+    // Mecanismo interno sem aprovação válida → recusado; a barreira continua.
+    await expect(app.service.releaseBarrier({ attemptId: '00000000-0000-4000-8000-000000000000' })).rejects.toBeTruthy();
+    const ctx: IdentityContext = { userId: 'admin', sessionKey: createHash('sha256').update('p1-release').digest('hex') };
+    const binding: ApprovalBinding = { action: 'killswitch.release', projectId: null, resource: { type: 'killswitch', id: 'global' }, target: { sha: null, ref: null }, subject: { kind: 'human', id: 'admin' }, paramsDigest: paramsDigestOf('killswitch.release', { scope: 'global' }), policyVersion: VERSION };
+    // Agente como sujeito, ou prova de identidade inválida → recusado.
+    const agentBinding = { ...binding, subject: { kind: 'agent', id: 'claude-code' } } as unknown as ApprovalBinding;
+    await expect(app.service.confirmOwner({ ownerId: 'admin', binding: agentBinding, bindingDigest: bindingDigest(agentBinding), proofId: (await app.identity.confirm(ctx, 'password', TEST_ADMIN_PASSWORD)).proofId, identity: ctx })).rejects.toBeTruthy();
+    await expect(app.service.confirmOwner({ ownerId: 'admin', binding, bindingDigest: bindingDigest(binding), proofId: 'prova-forjada', identity: ctx })).rejects.toBeTruthy();
+    expect(app.service.barriers().durable.global).not.toBeNull();
+    expect((await app.post(createPath(app), createBody(), cookie)).status).toBe(423);
+    // Desbloqueio supervisionado (proposta, docs §P1): confirmação de identidade + aprovação de
+    // configuração exata, de uso único, reservada pelo núcleo e auditada.
+    const release = await app.service.confirmOwner({ ownerId: 'admin', binding, bindingDigest: bindingDigest(binding), proofId: (await app.identity.confirm(ctx, 'password', TEST_ADMIN_PASSWORD)).proofId, identity: ctx });
+    const reservation = await app.service.reserve({ ownerId: 'admin', approvalId: release.id, component: 'approvals', binding });
+    await app.service.releaseBarrier({ attemptId: reservation.attemptId });
+    await expect(app.service.releaseBarrier({ attemptId: reservation.attemptId })).rejects.toBeTruthy(); // uso único
+    expect(app.service.barriers().durable.global).toBeNull();
+    const released = app.service.history().items.filter((e) => 'event' in e && e.event === 'approval.barrier_released');
+    expect(released).toHaveLength(1);
+    expect(released[0]).toMatchObject({ actor: { kind: 'human', id: 'admin' }, reason: 'human_approved' });
+    // Liberada a barreira, a criação segue exigindo as duas aprovações por ordem (nada é aprovado junto).
+    const created = await app.post(createPath(app), createBody(), cookie);
+    expect(created.status).toBe(201);
+    expect(created.json().order.state).toBe('awaiting_approval');
+    expect(app.service.list('admin').filter((a) => a.state === 'pending').map((a) => a.binding.action).sort()).toEqual(['agent.invoke', 'data.send_external']);
+    // Barreira acionada de novo → bloqueia outra vez (fail-closed).
+    await app.service.engageBarrier({ scope: { kind: 'global' }, actor: { kind: 'human', id: 'admin' }, reason: 'manual' });
+    expect((await app.post(createPath(app), createBody(), cookie)).status).toBe(423);
   });
 
   it('sem gateway configurado: listagem informa indisponível; escritas → 503', async () => {

@@ -1,0 +1,70 @@
+Issue #008 — PR 2 — Revisão complementar P1–P3 (2026-11-19)
+SHA analisado: 50cb0aef79c740b47aa522f1ab5977831bd91416. origin/main = 7ec45ee (inalterada).
+Relatório: docs/IMPLEMENTATION_REPORT_008_PR2.md §11.
+
+P1 — Barreira global inicial
+----------------------------
+Causa do 423: barriers.global = { reason: 'initial_install' } em toda linhagem nova da #011
+(server/approvals/store.ts startLineage, R2) → porta barriers.blocked do gateway (server/index.ts)
+→ 'global_barrier' → 423 approval_blocked. Configuração não é barrada (habilitação funciona).
+Único mecanismo aprovado de liberação: aprovação killswitch.release (configuração, 15 min, uso único)
+via confirmOwner (step-up) → reserve('approvals') → releaseBarrier (ou controlador #022 via recordOutcome).
+Sem rota HTTP (N9). Nada foi alterado nesse mecanismo; nenhuma rota criada.
+Teste: server/http/claudeOrders.test.ts › "revisão P1: a barreira só sai pelo mecanismo da #011 …"
+  - 423 com a barreira; 5 caminhos POST plausíveis de liberação → 404/405;
+  - releaseBarrier sem aprovação, confirmOwner com agente e com prova forjada → recusados;
+  - liberação pelo mecanismo da #011 → uma vez só (2ª tentativa recusada), approval.barrier_released
+    (ator humano, human_approved); criação → 201 awaiting_approval com 2 pedidos pendentes;
+  - barreira reacionada → 423 de novo.
+Bloqueio: expor a liberação altera N9 da #011 → depende de decisão do PO (proposta no relatório).
+
+P2 — Credencial do GitHub (somente leitura, R$ 0)
+--------------------------------------------------
+Documentação oficial do GitHub (Permissions required for fine-grained personal access tokens):
+  GET /repos/{owner}/{repo}/compare/{basehead} → Repository permissions "Contents": read.
+  Já consta da lista da #002 (docs/GITHUB_INTEGRATION.md): nenhuma permissão nova.
+Sonda real (script descartável no scratchpad, código de produção: createFineGrainedTokenProvider +
+createGraphQLClient + createRestCompareClient; token lido de .env.local dentro do processo, nunca
+impresso; GITHUB_TOKEN removido do ambiente do shell):
+  snapshot(#002)  { code: 'unauthorized' }   ← consulta anterior a este PR
+  mainHead(#008)  { code: 'unauthorized' }
+  compare(#008)   { code: 'unauthorized' }
+  controle gh-cli: rate_limit core = 4983 (credencial do CLI funciona)
+Leitura: o token fine-grained local é rejeitado pelo GitHub como credencial (401: vencido ou
+revogado), inclusive na integração da #002; não é falta de permissão da #008. Falha fechada
+confirmada no GitHub real: github_unauthorized, nada gravado.
+Observação: uma primeira chamada da sonda com argumentos errados foi recusada pela allowlist REST
+ANTES da rede (code internal / rest_request_not_allowed), o comportamento esperado.
+Procedimento de validação (exige o PO): novo token fine-grained só para o repositório, Read-only em
+Metadata, Contents, Pull requests e Commit statuses (Checks só se os checks vierem vazios); gravar em
+.env.local; repetir docs/evidence/issue008-pr2-github-read.txt. Esperado: nenhum 401/403.
+
+P3 — Concorrência na verificação
+--------------------------------
+Falha confirmada (3 testes falharam ANTES da correção):
+  × leitura atual com outro resultado e gravação falha → conformidade anterior voltava como verified
+  × falha do GitHub numa nova verificação → verified anterior continuava atual
+  × head_changed que volta a uma cabeça já conforme → aparecia verified
+Correção (server/gateway/orders.ts): a leitura atual é apagada no início de cada tentativa e só é
+regravada DEPOIS de appendVerification, para o headSha lido e comparado; head_changed registra a
+cabeça vista com confirms: false (nunca confirma). UI: aviso "vale só para este HEAD, lido há menos
+de 5 min; commits novos exigem nova verificação".
+Testes novos (server/gateway/orders.test.ts › "concorrência: novo push durante a verificação"):
+  ✓ push durante a leitura inicial (snapshot inconsistente; páginas de cabeças diferentes) → nada gravado
+  ✓ push entre a comparação REST e a segunda leitura → head_changed, nada gravado
+  ✓ push entre a segunda leitura e a gravação → resultado preso ao SHA verificado; próxima o substitui
+  ✓ push antes da próxima apresentação → verified só com leitura de até 5 min e com SHA; depois e
+    após reinício, desatualizada
+  ✓ 3 regressões acima
+ClaudeOrderPanel.test.tsx: o aviso de validade aparece no estado verified.
+
+Suíte local (Windows 11, Node v24.18.1)
+---------------------------------------
+npx vitest run → 1326 testes: 1325 ok, 1 falha local conhecida (CRLF em scripts/main-audit.test.mjs;
+presente também na linha de base; passa na CI). Antes desta revisão: 1318 (1317 ok). +8 testes.
+npx eslint .               -> sem problemas
+npx tsc -b                 -> sem erros
+npm run build              -> ok
+npm run check:csp          -> "Build compatível com a CSP de produção (dist\index.html e bundles verificados)."
+npm run check:secrets      -> "Nenhuma credencial encontrada em 4 arquivo(s) de dist/."
+npm run check:secrets:repo -> "Nenhuma credencial encontrada (300 arquivo(s) versionado(s))."

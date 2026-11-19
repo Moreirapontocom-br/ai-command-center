@@ -255,6 +255,7 @@ function OrderCard({ order, onChange }: { order: ClaudeOrderView; onChange: () =
           <code>{short(order.verification.latest.headSha)}</code> em {formatDateTime(order.verification.latest.checkedAt)}
           {order.verification.staleReason === 'not_rechecked' && ' — desatualizada: verifique de novo para confirmar o HEAD atual.'}
           {order.verification.staleReason === 'head_changed' && ' — desatualizada: o PR recebeu commits novos.'}
+          {order.verification.current && ' — vale só para este HEAD, lido há menos de 5 min; commits novos exigem nova verificação.'}
           {` (${order.verification.used}/${order.verification.max})`}
         </p>
       )}

@@ -8,10 +8,29 @@
 2. **Uma branch por issue ou incremento aprovado**, criada a partir da `origin/main` atualizada: `feature/<nº da issue>-<descrição>` (ex.: `feature/003-security-foundation`). Uma issue dividida em vários PRs usa uma branch por PR.
 3. **PR obrigatório.** Toda mudança chega à `main` por pull request com a descrição do escopo, evidências e a issue referenciada (`Refs #N` enquanto houver PRs pendentes da issue; `Closes #N` só no último).
 4. **Revisão independente pelo ChatGPT** (coordenador técnico e revisor) antes do merge. Quem implementa não revisa o próprio trabalho como aprovação final.
-5. **Checks obrigatórios verdes** (CI: testes, lint, build, verificação de segredos) e **aprovação humana do Product Owner** antes do merge. O PO é a autoridade final e o único que executa ou autoriza o merge.
-6. **Proibido:** `git push --force`/`--force-with-lease` em branches compartilhadas, exclusão da `main` ou de branches de outra issue, merge sem autorização explícita do PO, `--no-verify` para contornar hooks.
+5. **Checks obrigatórios verdes** (CI: testes, lint, build, verificação de segredos) antes do merge. O PO é a autoridade final. Desde 24/11/2026 o merge segue a **autorização permanente da seção 1.1**; sem ela, só o PO executa ou autoriza o merge.
+6. **Proibido:** `git push --force`/`--force-with-lease` em branches compartilhadas, exclusão da `main` ou de branches de outra issue, merge fora das condições da seção 1.1 sem autorização explícita do PO, `--no-verify` para contornar hooks, `--admin` ou qualquer bypass do ruleset.
 7. **Sem custos:** o repositório permanece no plano gratuito; nenhuma alteração paga sem aprovação. Mudanças de visibilidade e de configurações do GitHub (proteções, rulesets, segurança) são decisão do PO.
 8. Antes de publicar: `git fetch origin` e conferir se a `main` remota mudou; divergência relevante interrompe o trabalho para revisão.
+
+### 1.1 Autorização permanente de merge (decisão do PO, 24/11/2026)
+
+O PO dispensou a autorização **individual** de cada merge **neste repositório (ACC)**. O Claude Code pode fazer o merge de um PR quando **todas** as condições abaixo forem atendidas e registradas no PR:
+
+1. Os três checks obrigatórios estão verdes no SHA da cabeça do PR, e a branch está atualizada com a `main` (ruleset estrito).
+2. O ChatGPT emitiu **parecer favorável de revisão independente sobre esse SHA exato**. Um commit novo depois do parecer exige um novo parecer.
+3. O merge é travado no SHA revisado: `gh pr merge <N> --merge --match-head-commit <SHA>`, sem `--admin` e sem bypass.
+4. Depois do merge, a CI no push da `main` e o `Main audit` são conferidos; uma falha é tratada como incidente (seção 6).
+
+**Continuam exigindo autorização explícita e específica do PO**, mesmo com tudo verde:
+- liberar de fato a barreira global ou o kill switch, ou executar agentes de verdade;
+- habilitar execução real (`REAL_EXECUTION_ENABLED`), provedores ou APIs pagas, ou gerar qualquer custo;
+- alterar o ruleset, a visibilidade, as permissões ou as configurações de segurança do GitHub;
+- criar, alterar ou revogar credenciais, ou reescrever o histórico;
+- abrir uma nova issue para implementação (implementar continua exigindo autorização da issue);
+- encerrar uma issue com critérios de aceite obrigatórios ainda pendentes.
+
+A autorização vale só para o ACC e pode ser revogada pelo PO a qualquer momento. Sem ela, a regra 5 volta à forma anterior (o PO executa ou autoriza cada merge).
 
 ## 2. Proteção da `main` no servidor do GitHub
 
@@ -112,7 +131,7 @@ Secret scanning e push protection foram ativados junto com o ruleset (gratuitos 
 | Secret scanning + push protection (GitHub) | Preventivo no servidor + detectivo | Recusa no servidor push com padrão de credencial conhecido e gera alertas para credenciais no histórico | Cobre só padrões que o GitHub reconhece; não substitui `check-secrets.mjs` |
 | CI (`.github/workflows/ci.yml`) | Preventivo **por processo** + detectivo | Em PR: testes, lint, build, segredos — o PO só faz merge com checks verdes. Em push na `main`: revalida o estado da `main` | O bloqueio do merge no servidor vem do ruleset (seção 2.2), que exige estes checks |
 | Auditoria (`.github/workflows/main-audit.yml`) | **Detectivo** | Após cada push na `main`, informa se cada commit chegou por PR mesclado e se o GitHub reportou push forçado/exclusão | Não impede nada; roda depois do fato. Quem tem acesso de administrador pode desativar workflows ou apagar execuções |
-| Revisão independente + aprovação do PO | Preventivo por processo | Ninguém faz merge sozinho | Depende de disciplina |
+| Revisão independente + aprovação do PO | Preventivo por processo | Ninguém faz merge sem parecer favorável do ChatGPT no SHA exato; desde 24/11/2026, o merge sob a autorização permanente (seção 1.1) é travado com `--match-head-commit` | Depende de disciplina |
 | Ruleset `main-protection` (seção 2.2) | **Preventivo no servidor** — ativo | Exige PR, conversas resolvidas, checks verdes e branch atualizada; bloqueia push forçado e exclusão, inclusive para o dono | Não exige aprovação de revisor (único mantenedor); um administrador pode desativar o ruleset |
 
 ## 4. Ativando os hooks (`core.hooksPath`)

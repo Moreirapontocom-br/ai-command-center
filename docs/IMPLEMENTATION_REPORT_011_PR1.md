@@ -67,6 +67,8 @@
 ## 4. N1–N10 neste PR
 N1 época (aprovações concedidas expiram ao reiniciar; pendentes sobrevivem) · N2 caminhos efetivos validados · N3 barreira durável independente do controlador · N4 `method`, exceção controlada e verificador tipado · N5 step-up (sessão, uso único, 5 min, 5 falhas → 15 min) · N6 sem aprovação de pedidos em escopo barrado · N7 compactação segura · N8 preservação · N9 nenhuma rota · N10 faixa de retenção.
 
+> **Emenda ao N9 (Issue #008, P1, autorizada pelo PO).** Continua não existindo rota HTTP que acione ou libere o kill switch ou a barreira. A única exceção é o comando LOCAL `npm run admin:release-barrier` (`server/admin/`), que libera **somente** a barreira global `initial_install`, com senha do administrador, terminal interativo, frase ligada à linhagem e aprovação de configuração de uso único pelo próprio núcleo. Todas as demais proibições do N9 permanecem. Procedimento: `docs/BARRIER_RELEASE.md`.
+
 ## 5. Testes
 - `server/approvals/approvals.test.ts`: **77 testes** (52 iniciais + 25 da rodada R1), cobrindo todos os cenários da seção 7 do pedido (válida, forjada, identidade, autoaprovação, SHA, parâmetros, política, expirada, revogada, reutilização, concorrência, reinício, falha de escrita, ledger corrompido, anchor ausente/divergente, rollback, recibo expirado/de outro componente, revogação durante a tentativa, kill switch durante o consumo e após reinício, histórico preservado, compactação, chave indisponível, falha de verificador, compatibilidade #020/#022, execução real desligada, caminhos e bloqueio).
 - `server/security.test.ts`: +1 teste estrutural (núcleo dormente; sem rede, subprocesso, `process.env`, sandbox, controlador ou verificador simulado; senha só em `identity.ts`; nenhuma rota).

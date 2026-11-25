@@ -7,7 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { acquireInstanceLock, adminReleasePending, INSTANCE_LOCK_FILES, InstanceLockError } from './instance.ts';
@@ -41,7 +41,7 @@ describe('lock de instância (unidade)', () => {
 
   it('lock de processo morto é retomado; de processo vivo nunca é removido', async () => {
     const d = await dir();
-    const content = JSON.stringify({ pid: process.pid + 100_000, host: (await import('node:os')).hostname(), nonce: randomBytes(16).toString('hex'), at: new Date().toISOString() });
+    const content = JSON.stringify({ pid: process.pid + 100_000, host: hostname(), nonce: randomBytes(16).toString('hex'), at: new Date().toISOString() });
     await writeFile(join(d, INSTANCE_LOCK_FILES.lock), content);
     await expect(acquireInstanceLock(d, { alive: () => true })).rejects.toMatchObject({ code: 'store_locked' });
     expect(await readFile(join(d, INSTANCE_LOCK_FILES.lock), 'utf8')).toBe(content);
@@ -52,7 +52,7 @@ describe('lock de instância (unidade)', () => {
 
   it('arquivo de retomada abandonado → lock_recovery_stale (intervenção humana)', async () => {
     const d = await dir();
-    const host = (await import('node:os')).hostname();
+    const host = hostname();
     const stale = (pid: number) => JSON.stringify({ pid, host, nonce: randomBytes(16).toString('hex'), at: new Date().toISOString() });
     await writeFile(join(d, INSTANCE_LOCK_FILES.lock), stale(process.pid + 100_000));
     await writeFile(join(d, INSTANCE_LOCK_FILES.takeover), stale(process.pid + 100_001));

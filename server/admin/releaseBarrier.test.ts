@@ -25,6 +25,9 @@ import { deriveSubkey, QUEUE_KEY_DOMAIN } from '../storage/subkeys.ts';
 import { TEST_ADMIN_PASSWORD, testPasswordHash } from '../test/authFixtures.ts';
 import { acquireInstanceLock, adminReleasePending, INSTANCE_LOCK_FILES } from './instance.ts';
 import { JOURNAL_FILE, readJournal } from './journal.ts';
+import { defaultJournalOps } from './journal.ts';
+import { PromptCancelled } from './releaseBarrierCli.ts';
+import { writeFileAtomic } from '../storage/jsonFile.ts';
 import { assessState, globalReleaseBinding, openedWithUnapplied, phraseFor, runBarrierRelease, type Checkpoint, type ReleaseDeps, type ReleasePrompt } from './releaseBarrier.ts';
 import { HARD_LOCK_FAILURES, THROTTLE_FILE } from './throttle.ts';
 
@@ -283,7 +286,6 @@ describe('F6 — senha incorreta', () => {
 
   it('cancelar no prompt (Ctrl+C) → recusa "cancelled", conta como tentativa e nada muda', async () => {
     const t = await setup();
-    const { PromptCancelled } = await import('./releaseBarrierCli.ts');
     const prompt = { show: () => undefined, password: async () => Promise.reject(new PromptCancelled('cancelled')), line: async () => '' };
     expect(await runBarrierRelease({ config: t.config, env: t.env, prompt, now: () => t.clock.wall })).toMatchObject({ exitCode: 1, outcome: 'refused', reason: 'cancelled' });
     expect((await t.inspect()).global).toMatchObject({ reason: 'initial_install' });
@@ -365,7 +367,7 @@ describe('F7 — limite persistente de tentativas (R3, H2)', () => {
 
   it('falha ao gravar o limite → recusa antes de pedir a senha', async () => {
     const t = await setup();
-    const ops = { ...(await import('./journal.ts')).defaultJournalOps, write: async () => Promise.reject(new Error('disk')) };
+    const ops = { ...defaultJournalOps, write: async () => Promise.reject(new Error('disk')) };
     expect(await t.run({}, { throttleOps: ops })).toMatchObject({ reason: 'throttle_write_failed' });
     expect(t.calls.password).toBe(0);
   });
@@ -396,9 +398,22 @@ describe('F8 — reinício (queda injetada) e reconciliação determinística (R
     expect(await adminReleasePending(t.dirs.data)).toBe(true);
     expect((await t.inspect()).global).toBeNull();
     expect(await t.run()).toMatchObject({ exitCode: 0, outcome: 'reconciled', reason: 'reconciled' });
-    const last = (await t.audit()).at(-1)!;
-    expect(last).toMatchObject({ action: 'approval.configuration', outcome: 'success', context: { operation: OP, reason: 'reconciled' } });
+    // Exatamente UM registro final na #006 (idempotente: depois do P12 o original já existia).
+    const finals = (await t.audit()).filter((e) => e.action === 'approval.configuration');
+    expect(finals).toHaveLength(1);
+    expect(finals[0]).toMatchObject({ outcome: 'success', context: { operation: OP, seq: releaseEvents((await t.inspect()).events)[0].seq } });
+    expect(finals[0].context.reason).toBe(point === 'P12' ? undefined : 'reconciled');
     expect(await t.journalExists()).toBe(false);
+  });
+
+  it('falha ao apagar o diário na reconciliação → recusa; a próxima não duplica o registro', async () => {
+    const t = await setup();
+    await t.run({}, t.crashAt('P6'));
+    const stuck = { ...defaultJournalOps, remove: async () => Promise.reject(new Error('EBUSY')) };
+    expect(await t.run({}, { journalOps: stuck })).toMatchObject({ exitCode: 1, reason: 'reconcile_journal_remove_failed' });
+    expect(await adminReleasePending(t.dirs.data)).toBe(true);
+    expect(await t.run()).toMatchObject({ exitCode: 0, outcome: 'reconciled', reason: 'interrupted' });
+    expect((await t.audit()).filter((e) => e.action === 'approval.configuration' && e.context.reason === 'interrupted')).toHaveLength(1);
   });
 
   it('diário ilegível → recusa e o servidor continua vendo pendência', async () => {
@@ -439,7 +454,6 @@ describe('F9 — falha de armazenamento da #011', () => {
     let armed = false;
     const approvalsWriteFile = async (path: string, content: string) => {
       if (armed && path.endsWith(file)) throw new Error('disk_full');
-      const { writeFileAtomic } = await import('../storage/jsonFile.ts');
       return writeFileAtomic(path, content);
     };
     const result = await t.run({}, { approvalsWriteFile, checkpoint: (p) => void (p === 'P8' ? (armed = true) : undefined) });
@@ -454,7 +468,6 @@ describe('F9 — falha de armazenamento da #011', () => {
 describe('F10 — falha de auditoria', () => {
   const failingAudit = (when: () => boolean) => async (path: string, content: string) => {
     if (when()) throw new Error('audit_disk');
-    const { writeFileAtomic } = await import('../storage/jsonFile.ts');
     return writeFileAtomic(path, content);
   };
 

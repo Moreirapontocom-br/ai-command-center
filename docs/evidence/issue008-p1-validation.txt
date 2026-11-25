@@ -51,3 +51,11 @@ git diff origin/main --stat:
  server/index.ts                        |  36 +-
  server/security.test.ts                | 101 +++++-
  17 files changed, 2432 insertions(+), 7 deletions(-)
+
+== Revisão R1 (2026-11-24) ==
+CRLF na baseline df442e7:
+  checkout padrão (core.autocrlf=true): git ls-files --eol -> i/lf w/crlf .github/workflows/main-audit.yml -> 1 falha (main-audit.test.mjs)
+  checkout LF (core.autocrlf=false):    i/lf w/lf -> scripts/main-audit.test.mjs: Tests 33 passed (33)
+Suíte completa após R1: Test Files 1 failed | 70 passed (71); Tests 1 failed | 1459 passed (1460) (só a falha de CRLF)
+P1 + estruturais após R1: Tests 155 passed (155)
+lint limpo; tsc -b limpo; build ok; check:csp ok; check:secrets:repo nenhuma credencial

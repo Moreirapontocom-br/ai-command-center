@@ -271,7 +271,7 @@ export async function runBarrierRelease(deps: ReleaseDeps): Promise<ReleaseResul
     const pending = await readJournal(dataDir, journalOps);
     if (pending.kind === 'invalid') refuse('journal_unreadable');
     if (pending.kind === 'present') {
-      return await reconcile({ journal: pending.journal, store, lineage: lineageA?.lineage ?? null, mirror, dataDir, journalOps, prompt });
+      return await reconcile({ journal: pending.journal, store, lineage: lineageA?.lineage ?? null, mirror, audit, dataDir, journalOps, prompt });
     }
 
     // ── R4: estado ───────────────────────────────────────────────────────────────────────────
@@ -430,6 +430,7 @@ async function reconcile(input: {
   store: ApprovalStore;
   lineage: string | null;
   mirror: (event: AuditEventInput) => Promise<void>;
+  audit: Pick<AuditLog, 'log'>;
   dataDir: string;
   journalOps: JournalFileOps;
   prompt: ReleasePrompt;
@@ -447,9 +448,23 @@ async function reconcile(input: {
   const completed = journal.state !== 'intent' && global === null && released.length === 1 && attempt?.state === 'succeeded';
   if (!interrupted && !completed) refuse('reconcile_divergence');
 
+  // Idempotente: se o registro final desta operação já está na #006 (queda depois do P12, ou falha
+  // ao apagar o diário numa reconciliação anterior), não grava de novo — só apaga o diário.
+  const since = Date.parse(journal.startedAt);
+  const recorded = input.audit.log().events.some(
+    (e) =>
+      e.action === 'approval.configuration' &&
+      e.actor.kind === 'human' &&
+      e.actor.id === ADMIN_USER_ID &&
+      e.resource.type === 'approval' &&
+      e.resource.id === journal.approvalId &&
+      e.context.operation === RELEASE_OPERATION &&
+      Date.parse(e.at) >= since &&
+      (interrupted ? e.outcome === 'failure' && e.context.reason === 'interrupted' : e.outcome === 'success' && e.context.seq === released[0].seq),
+  );
   try {
-    if (interrupted) await input.mirror({ ...base, action: 'approval.configuration', outcome: 'failure', context: { operation: RELEASE_OPERATION, reason: 'interrupted' } });
-    else await input.mirror({ ...base, action: 'approval.configuration', outcome: 'success', context: { operation: RELEASE_OPERATION, reason: 'reconciled', seq: released[0].seq } });
+    if (!recorded && interrupted) await input.mirror({ ...base, action: 'approval.configuration', outcome: 'failure', context: { operation: RELEASE_OPERATION, reason: 'interrupted' } });
+    else if (!recorded) await input.mirror({ ...base, action: 'approval.configuration', outcome: 'success', context: { operation: RELEASE_OPERATION, reason: 'reconciled', seq: released[0].seq } });
   } catch {
     refuse('reconcile_audit_failed');
   }

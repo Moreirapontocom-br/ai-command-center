@@ -15,7 +15,7 @@ Toda instalação nova do núcleo de aprovações (#011) nasce com a **barreira 
 ## 2. Pré-requisitos
 
 1. **Servidor parado.** O comando e o servidor disputam o mesmo lock de instância (`ACC_DATA_DIR/acc-instance.lock`). Se um estiver ativo, o outro recusa.
-2. `.env.local` com `ACC_DEPLOYMENT=local`, aprovações configuradas (`ACC_APPROVALS_DIR`, `ACC_APPROVALS_ANCHOR_DIR`, chave) e o administrador (`ACC_ADMIN_EMAIL`, `ACC_ADMIN_PASSWORD_HASH`). `NODE_ENV=production` é recusado.
+2. A mesma configuração do servidor (`.env.local` no diretório do projeto; o ambiente tem precedência). O comando não usa o GitHub, mas valida a configuração inteira como o servidor: se você inicia o servidor com o GitHub CLI e `GITHUB_TOKEN` vazio (`docs/GITHUB_INTEGRATION.md`, "Iniciar com o GitHub CLI"), use a mesma receita aqui. É preciso `ACC_DEPLOYMENT=local`, aprovações configuradas (`ACC_APPROVALS_DIR`, `ACC_APPROVALS_ANCHOR_DIR`, chave) e o administrador (`ACC_ADMIN_EMAIL`, `ACC_ADMIN_PASSWORD_HASH`). `NODE_ENV=production` é recusado.
 3. O armazenamento da #011 já precisa existir (criado na primeira subida do servidor com `ACC_APPROVALS_INITIALIZE=if_absent`). O comando **nunca** cria um armazenamento.
 4. **Terminal interativo real:** PowerShell ou Windows Terminal. O Git Bash (mintty) não oferece modo raw e é recusado. Sessões com variáveis típicas de agente ou automação (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `GITHUB_ACTIONS`, `CI` e outras) são recusadas. Essa recusa é defesa adicional; a garantia vem da senha e da #011.
 
@@ -87,6 +87,8 @@ Na próxima execução, o comando reconcilia e termina:
 | Ilegível | — | Recusa; as aprovações continuam indisponíveis |
 
 Entradas que a #011 declarou não aplicadas (`history_unapplied`) não contam como fato.
+
+A reconciliação **não pede senha**: ela não libera nada, só completa a #006 a partir dos fatos da #011 e apaga o diário. Ela é idempotente: se o registro final já estiver na #006 (queda depois do P12, ou falha ao apagar o diário), não grava de novo.
 
 **Diário corrompido:** confira o estado na #011 (histórico de aprovações). Só apague o diário à mão se a barreira e os eventos estiverem coerentes com uma das duas primeiras linhas; a próxima execução confere tudo de novo.
 

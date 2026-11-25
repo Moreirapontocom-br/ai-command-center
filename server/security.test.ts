@@ -16,6 +16,7 @@ import { HANDOFF_TRANSITIONS } from './gateway/contracts.ts';
 import { ASSISTED_AVAILABILITY } from './policy/engine.ts';
 import { defaultProviderCatalog } from './limits/providers.ts';
 import { REAL_EXECUTION_ENABLED } from './sandbox/contracts.ts';
+import { RELEASABLE_REASONS } from './admin/releaseBarrier.ts';
 import * as queries from './github/queries.ts';
 
 function sources(dir: string): Array<{ path: string; code: string }> {
@@ -591,8 +592,7 @@ describe('Issue #008, P1 — comando local de liberação da barreira global (N9
     }
   });
 
-  it('só initial_install é liberável; sem modo automático (nenhuma senha/frase fora do prompt)', async () => {
-    const { RELEASABLE_REASONS } = await import('./admin/releaseBarrier.ts');
+  it('só initial_install é liberável; sem modo automático (nenhuma senha/frase fora do prompt)', () => {
     expect([...RELEASABLE_REASONS]).toEqual(['initial_install']);
     expect(Object.isFrozen(RELEASABLE_REASONS)).toBe(true);
     const orchestrator = code('server/admin/releaseBarrier.ts');

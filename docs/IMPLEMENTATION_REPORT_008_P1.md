@@ -81,8 +81,8 @@ Fonte das decisões: revisão final de segurança da P1 (2026-11-19, seção H: 
 | Verificação | Resultado |
 |---|---|
 | Testes (antes, `origin/main` df442e7) | 1334 (1333 ✓ + 1 falha local conhecida) |
-| Testes (depois) | 1459 (1458 ✓ + a mesma falha local) — **+125** |
-| Falha local conhecida | `scripts/main-audit.test.mjs` (workflows com CRLF por `core.autocrlf=true`); idêntica na main; passa na CI (Linux) |
+| Testes (depois, após a revisão R1) | 1460 (1459 ✓ + a mesma falha local) — **+126** |
+| Falha local conhecida | `scripts/main-audit.test.mjs` (workflows com CRLF por `core.autocrlf=true`). Reproduzida na baseline `df442e7` com o checkout padrão (1 falha) e ausente na mesma baseline com checkout LF (`core.autocrlf=false`: 33/33). Passa na CI (Linux) |
 | `npm run lint` | limpo |
 | `tsc -b` | limpo |
 | `npm run build`, `check:csp`, `check:secrets` | ok |
@@ -106,3 +106,17 @@ Detalhes em `docs/evidence/issue008-p1-validation.txt`.
 - Revisão independente (ChatGPT) e autorização do PO para o merge deste PR.
 - Configuração local das aprovações e do administrador, e autorização **separada** para a primeira liberação real.
 - Depois da liberação real: exercitar o fluxo assistido completo em produção local (hoje só exercitado em testes, `IMPLEMENTATION_REPORT_008_PR2.md` §limitações).
+
+## 9. Revisão crítica R1 (antes do merge)
+
+| Ponto revisado | Resultado |
+|---|---|
+| Lock de instância e corridas | Sem defeito. Servidor e comando checam o diário só com o lock; não há janela TOCTOU. Duas execuções simultâneas → uma recusa (testado). Sinal durante a subida do servidor (antes do tratador) → lock órfão retomável (documentado). |
+| Reconciliação do diário | **Corrigido:** a gravação na #006 não era idempotente (queda depois do P12, ou falha ao apagar o diário, gerava um segundo registro). Agora o registro final existente é reconhecido e não é duplicado. Teste novo: falha ao apagar o diário + nova reconciliação → um único registro. |
+| Fail-closed | Sem defeito. Diário/limite ilegíveis, store degradado, fila divergente, auditoria sem escrita → recusa. A reconciliação não pede senha, mas não libera nada (agora documentado). |
+| Exceção do N9 | Sem defeito. Único chamador de `releaseBarrier` fora do núcleo; `POST_ROUTES` inalterado; só `initial_install`. |
+| H2 / H3 | Sem defeito. Trava dura de 20 permanente até o procedimento manual; nenhuma variável de linhagem esperada. |
+| Reutilização de aprovações | Sem defeito. Aprovação consumida na reserva; recibo em memória de uso único; nova época expira aprovações abertas. |
+| CRLF | Reproduzido na baseline e confirmado como efeito do checkout (ver §6). Não é defeito de código; fora do escopo. |
+| Robustez dos testes | **Corrigido:** `import()` dinâmicos nos testes da P1 podiam estourar o tempo padrão do vitest sob carga (falhou uma vez na suíte completa local). Trocados por importações estáticas. |
+| Documentação | **Corrigido:** `BARRIER_RELEASE.md` explica que o comando valida a mesma configuração do servidor (receita do `GITHUB_TOKEN` vazio) e que a reconciliação é idempotente e sem senha. |

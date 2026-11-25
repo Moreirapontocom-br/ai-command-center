@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { dirname } from 'node:path';
+import { acquireInstanceLock, ADMIN_RECONCILE_PENDING, adminReleasePending } from './admin/instance.ts';
 import { createPasswordConfirmer, createStepUpRegistry } from './approvals/identity.ts';
 import { createEnvKeyProvider, createFileKeyProvider } from './approvals/keyProvider.ts';
 import { createMaintenanceScheduler } from './approvals/maintenance.ts';
@@ -72,6 +74,22 @@ if (!auth.configured) {
   );
 }
 
+// Lock de instância (Issue #008, P1 — R1): um único processo do ACC por `ACC_DATA_DIR`, obtido
+// ANTES de abrir qualquer arquivo de dados. O comando local `admin:release-barrier` obtém o mesmo
+// lock: o servidor não sobe com o comando ativo e o comando não roda com o servidor ativo.
+const dataDir = dirname(config.auditFile);
+let instanceLock;
+try {
+  instanceLock = await acquireInstanceLock(dataDir);
+} catch {
+  logger.log('error', 'Outra instância do ACC ou comando administrativo ativo (lock de instância). Veja docs/BARRIER_RELEASE.md.', { event: 'instance_locked' });
+  process.exit(1);
+}
+const exitWithLockReleased = async (code: number): Promise<never> => {
+  await instanceLock.release().catch(() => undefined);
+  process.exit(code);
+};
+
 // Projetos (Issue #004) e tarefas (Issue #005): arquivos locais validados na abertura.
 // Corrompido → o servidor não inicia (e o arquivo não é sobrescrito).
 // Auditoria (Issue #006): sequência global compartilhada pelos três arquivos.
@@ -85,7 +103,7 @@ try {
   audit = await openAuditLog({ filePath: config.auditFile, sequence });
 } catch (error) {
   logger.log('error', error instanceof DataFileError ? error.message : 'Falha ao abrir os arquivos de dados.');
-  process.exit(1);
+  await exitWithLockReleased(1);
 }
 
 // Aprovações humanas (Issue #011, PR 2). Qualquer problema deixa SÓ este subsistema indisponível
@@ -93,7 +111,12 @@ try {
 // nunca vão para o log: apenas o estado e o motivo-token.
 let approvals: ApprovalsRuntime | null = null;
 let approvalStore: ApprovalStore | null = null;
-if (config.approvals.state === 'invalid') {
+// Liberação administrativa pendente (diário do comando local, R2): as aprovações ficam
+// INDISPONÍVEIS (nega tudo) até o comando reconciliar; o restante do ACC sobe normalmente.
+const releasePending = config.approvals.state === 'configured' && (await adminReleasePending(dataDir));
+if (releasePending) {
+  logger.log('warn', 'Aprovações indisponíveis: liberação administrativa pendente de reconciliação (npm run admin:release-barrier).', { event: 'approvals_unavailable', reason: ADMIN_RECONCILE_PENDING });
+} else if (config.approvals.state === 'invalid') {
   logger.log('warn', 'Aprovações indisponíveis: configuração inválida.', { event: 'approvals_config_invalid', reason: config.approvals.reason });
 } else if (config.approvals.state === 'disabled') {
   logger.log('warn', 'Aprovações não configuradas (ACC_APPROVALS_DIR, ACC_APPROVALS_ANCHOR_DIR e chave): subsistema indisponível.', { event: 'approvals_disabled' });
@@ -308,7 +331,7 @@ if (config.credentials?.kind === 'gh-cli') {
     await config.credentials.getAuthorizationHeader();
   } catch {
     logger.log('error', GH_CLI_ERROR_MESSAGE);
-    process.exit(1);
+    await exitWithLockReleased(1);
   }
   logger.log(
     'warn',
@@ -317,10 +340,13 @@ if (config.credentials?.kind === 'gh-cli') {
   );
 }
 
-// Encerramento: libera os bloqueios de escritor único (aprovações e fila).
+// Encerramento: libera os bloqueios de escritor único (aprovações e fila) e, por último, o lock de
+// instância (depois de fechar todos os armazenamentos).
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    void Promise.allSettled([gatewayStore?.close(), queueStore?.close(), approvalStore?.close()]).finally(() => process.exit(0));
+    void Promise.allSettled([gatewayStore?.close(), queueStore?.close(), approvalStore?.close()])
+      .then(() => instanceLock.release())
+      .finally(() => process.exit(0));
   });
 }
 

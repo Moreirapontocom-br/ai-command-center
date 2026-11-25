@@ -259,6 +259,8 @@ describe('superfície de escrita do servidor', () => {
     // PR 2: só estes pontos revisados usam o núcleo — a configuração/abertura do servidor, as rotas
     // de decisão do administrador e os componentes que pedem/consomem aprovações (#021/#022).
     expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts|maintenance|presentation)/).sort()).toEqual([
+      // Issue #008 (P1): o comando LOCAL de liberação da barreira inicial (nunca uma rota; N9 emendado).
+      'server/admin/releaseBarrier.ts',
       // Issue #028 (I1): só o TIPO `ApprovalCoordinator` (pedido, reserva de uso único e resultado).
       'server/gateway/service.ts',
       'server/http/approvalRoutes.ts',
@@ -342,7 +344,8 @@ describe('superfície de escrita do servidor', () => {
       expect(file.code).not.toMatch(/approvals\/|sandbox\/(service|simulatedProvider|provider)|limits\/(controller|providers|simulatedApprovalVerifier)/);
     }
     // Só a inicialização do servidor usa a fila; nenhuma rota.
-    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/') && !f.path.startsWith('server/test/')), /queue\/(store|barrierGate|contracts|documents|classification)/)).toEqual(['server/index.ts']);
+    // Issue #008 (P1): o comando local abre a fila e roda `reconcile()` (só pode ACIONAR barreiras).
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/') && !f.path.startsWith('server/test/')), /queue\/(store|barrierGate|contracts|documents|classification)/).sort()).toEqual(['server/admin/releaseBarrier.ts', 'server/index.ts']);
     // PR 2 (Q7): o agendador NÃO é instanciado em produção — nenhum arquivo fora da fila o usa.
     expect(filesMatching(server.filter((f) => !f.path.startsWith('server/queue/')), /queue\/scheduler|createQueueScheduler|QueueScheduler/)).toEqual([]);
     expect(server.find((f) => f.path === 'server/index.ts')!.code).not.toMatch(/queue\/scheduler|createQueueScheduler|queueAdmission|queueExecutor|\.tick\(/);
@@ -502,6 +505,102 @@ describe('Issue #008 — garantias estruturais do fluxo assistido', () => {
     for (const file of workflows) expect(readFileSync(join('.github/workflows', file), 'utf8')).not.toMatch(/claude-code-action|anthropics\/|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/);
     // Nenhum documento GraphQL novo além dos dois de leitura da #008.
     expect(APPROVED_DOCUMENTS.size).toBe(3);
+  });
+});
+
+describe('Issue #008, P1 — comando local de liberação da barreira global (N9 emendado)', () => {
+  const admin = server.filter((f) => f.path.startsWith('server/admin/'));
+  const code = (path: string) => stripComments(server).find((f) => f.path === path)!.code;
+  const importsOf = (path: string) => [...code(path).matchAll(/^import (?:type )?[^;]*? from '([^']+)';$/gm)].map((m) => m[1]).sort();
+
+  it('arquivos fixos; sem rede, subprocesso, HTTP, eval nem execução', () => {
+    expect(admin.map((f) => f.path).sort()).toEqual([
+      'server/admin/instance.ts',
+      'server/admin/journal.ts',
+      'server/admin/releaseBarrier.ts',
+      'server/admin/releaseBarrierCli.ts',
+      'server/admin/throttle.ts',
+    ]);
+    for (const file of admin) {
+      expect(file.code).not.toMatch(/node:child_process|node:net|node:http|node:https|node:vm|node:worker_threads|\bfetch\(|\beval\(|new Function\(/);
+      expect(file.code).not.toMatch(/from '\.\.\/(gateway|sandbox|limits|github|http)\//);
+    }
+  });
+
+  it('lista FECHADA de importações do orquestrador e do terminal', () => {
+    expect(importsOf('server/admin/releaseBarrier.ts')).toEqual([
+      '../approvals/binding.ts',
+      '../approvals/contracts.ts',
+      '../approvals/documents.ts',
+      '../approvals/identity.ts',
+      '../approvals/keyProvider.ts',
+      '../approvals/service.ts',
+      '../approvals/store.ts',
+      '../audit/auditLog.ts',
+      '../audit/events.ts',
+      '../auth/adminAuth.ts',
+      '../config.ts',
+      '../policy/defaultPolicy.ts',
+      '../projects/projectStore.ts',
+      '../queue/barrierGate.ts',
+      '../queue/store.ts',
+      '../storage/jsonFile.ts',
+      '../storage/lock.ts',
+      '../storage/subkeys.ts',
+      '../tasks/taskStore.ts',
+      './instance.ts',
+      './journal.ts',
+      './throttle.ts',
+      'node:crypto',
+      'node:fs/promises',
+      'node:path',
+    ]);
+    expect(importsOf('server/admin/releaseBarrierCli.ts')).toEqual(['../auth/credentials.ts', '../config.ts', './releaseBarrier.ts', 'node:fs', 'node:path', 'node:url']);
+    expect(importsOf('server/admin/instance.ts')).toEqual(['../storage/errors.ts', '../storage/lock.ts', './journal.ts', 'node:fs/promises']);
+    expect(importsOf('server/admin/journal.ts')).toEqual(['../storage/jsonFile.ts', 'node:fs/promises', 'node:path']);
+    expect(importsOf('server/admin/throttle.ts')).toEqual(['./journal.ts', 'node:path']);
+  });
+
+  it('nenhuma rota: POST_ROUTES sem liberação; nada em http/ importa admin/; o servidor só usa o lock e o diário', () => {
+    expect(POST_ROUTES.some((route) => /kill|barrier|release|unlock|admin/.test(route))).toBe(false);
+    expect(filesMatching(server.filter((f) => f.path.startsWith('server/http/')), /admin\//)).toEqual([]);
+    expect(filesMatching(server.filter((f) => !f.path.startsWith('server/admin/')), /from '[^']*admin\//)).toEqual(['server/index.ts']);
+    expect([...code('server/index.ts').matchAll(/from '(\.\/admin\/[^']+)'/g)].map((m) => m[1])).toEqual(['./admin/instance.ts']);
+    expect(code('server/index.ts')).not.toMatch(/releaseBarrier|runBarrierRelease|releaseBarrierCli/);
+    // Só o comando (e o núcleo, que a define) chama `releaseBarrier`.
+    expect(filesMatching(stripComments(server).filter((f) => !f.path.startsWith('server/test/')), /\.releaseBarrier\(/)).toEqual(['server/admin/releaseBarrier.ts']);
+  });
+
+  it('lock de instância ANTES de abrir qualquer arquivo de dados no servidor; liberado depois de fechar os stores', () => {
+    const index = code('server/index.ts');
+    const lockAt = index.indexOf('await acquireInstanceLock(dataDir)');
+    expect(lockAt).toBeGreaterThan(0);
+    for (const open of ['openProjectStore(', 'openTaskStore(', 'openAuditLog(', 'openApprovalStore(', 'openQueueStore(', 'openGatewayStore(', 'openSealedBlobStore(']) {
+      expect(index.indexOf(open)).toBeGreaterThan(lockAt);
+    }
+    expect(index).toMatch(/approvalStore\?\.close\(\)\]\)\s*\.then\(\(\) => instanceLock\.release\(\)\)/);
+    // Diário pendente: as aprovações nem são abertas.
+    expect(index.indexOf('adminReleasePending(dataDir)')).toBeLessThan(index.indexOf('openApprovalStore('));
+  });
+
+  it('tripwire #022: ninguém entrega `controllerKillSwitch` ao serviço de aprovações em produção', () => {
+    for (const path of ['server/index.ts', 'server/admin/releaseBarrier.ts']) {
+      const calls = code(path).match(/createApprovalService\(\{[^}]*\}\)/g) ?? [];
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) expect(call).not.toMatch(/controllerKillSwitch/);
+    }
+  });
+
+  it('só initial_install é liberável; sem modo automático (nenhuma senha/frase fora do prompt)', async () => {
+    const { RELEASABLE_REASONS } = await import('./admin/releaseBarrier.ts');
+    expect([...RELEASABLE_REASONS]).toEqual(['initial_install']);
+    expect(Object.isFrozen(RELEASABLE_REASONS)).toBe(true);
+    const orchestrator = code('server/admin/releaseBarrier.ts');
+    expect(orchestrator).not.toMatch(/process\.env|process\.argv|ACC_[A-Z_]*PASSWORD|EXPECTED_LINEAGE/);
+    // H3 = não: não existe variável de linhagem esperada em lugar nenhum do servidor.
+    expect(filesMatching(server, /EXPECTED_LINEAGE/)).toEqual([]);
+    const cli = code('server/admin/releaseBarrierCli.ts');
+    expect(cli).not.toMatch(/--yes|--password|--force|readFileSync|createInterface/);
   });
 });
 

@@ -1,0 +1,61 @@
+Issue #008 — P1: evidências de validação (geradas em 2026-11-25T00:58Z, branch feature/008-p1-barrier-release, base df442e7)
+
+== Baseline origin/main df442e7 (worktree temporária) ==
+ Test Files  1 failed | 65 passed (66)
+      Tests  1 failed | 1333 passed (1334)
+ FAIL scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main ... (CRLF local, core.autocrlf=true)
+
+== Suíte completa nesta branch ==
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  scripts/main-audit.test.mjs > workflows de CI > a auditoria roda em push na main e manualmente, só com permissões de leitura
+ Test Files  1 failed | 70 passed (71)
+      Tests  1 failed | 1458 passed (1459)
+
+== Testes da P1 + estruturais ==
+ Test Files  6 passed (6)
+      Tests  154 passed (154)
+
+== lint ==
+> eslint .
+
+exit 0
+
+== tsc -b ==
+exit 0
+
+== build / CSP / segredos ==
+[32m✓ built in 260ms[39m
+Build compatível com a CSP de produção (dist\index.html e bundles verificados).
+Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+Nenhuma credencial encontrada (302 arquivo(s) versionado(s)).
+Nenhuma credencial encontrada (92 commit(s) do histórico de HEAD).
+
+== Garantias ==
+Nenhuma execução do comando contra dados reais; .env.local não alterado; nenhum agente/provedor invocado; nenhum custo; main não alterada.
+git diff origin/main --stat:
+ docs/ARCHITECTURE.md                   |   2 +-
+ docs/BARRIER_RELEASE.md                | 108 ++++++
+ docs/IMPLEMENTATION_REPORT_008_P1.md   | 108 ++++++
+ docs/IMPLEMENTATION_REPORT_011_PR1.md  |   2 +
+ package.json                           |   1 +
+ server/admin/instance.test.ts          | 168 +++++++++
+ server/admin/instance.ts               |  52 +++
+ server/admin/journal.test.ts           |  75 ++++
+ server/admin/journal.ts                | 135 +++++++
+ server/admin/releaseBarrier.test.ts    | 640 +++++++++++++++++++++++++++++++++
+ server/admin/releaseBarrier.ts         | 467 ++++++++++++++++++++++++
+ server/admin/releaseBarrierCli.test.ts | 100 ++++++
+ server/admin/releaseBarrierCli.ts      | 198 ++++++++++
+ server/admin/throttle.test.ts          | 109 ++++++
+ server/admin/throttle.ts               | 137 +++++++
+ server/index.ts                        |  36 +-
+ server/security.test.ts                | 101 +++++-
+ 17 files changed, 2432 insertions(+), 7 deletions(-)
+
+== Revisão R1 (2026-11-24) ==
+CRLF na baseline df442e7:
+  checkout padrão (core.autocrlf=true): git ls-files --eol -> i/lf w/crlf .github/workflows/main-audit.yml -> 1 falha (main-audit.test.mjs)
+  checkout LF (core.autocrlf=false):    i/lf w/lf -> scripts/main-audit.test.mjs: Tests 33 passed (33)
+Suíte completa após R1: Test Files 1 failed | 70 passed (71); Tests 1 failed | 1459 passed (1460) (só a falha de CRLF)
+P1 + estruturais após R1: Tests 155 passed (155)
+lint limpo; tsc -b limpo; build ok; check:csp ok; check:secrets:repo nenhuma credencial

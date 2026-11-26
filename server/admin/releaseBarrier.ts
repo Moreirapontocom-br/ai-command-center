@@ -20,6 +20,7 @@ import type { WriteFile } from '../storage/jsonFile.ts';
 import type { LockFileOps, StoreLock } from '../storage/lock.ts';
 import { deriveSubkey, QUEUE_KEY_DOMAIN } from '../storage/subkeys.ts';
 import { openTaskStore } from '../tasks/taskStore.ts';
+import { appliedGlobalReleases, checkReleaseAudit, matchesRelease, type ReleaseFact } from './consistency.ts';
 import { acquireInstanceLock } from './instance.ts';
 import { defaultJournalOps, readJournal, RELEASE_OPERATION, removeJournal, writeJournal, type JournalFileOps, type ReleaseJournal } from './journal.ts';
 import { createThrottle, WINDOW_MS } from './throttle.ts';
@@ -40,11 +41,15 @@ import { createThrottle, WINDOW_MS } from './throttle.ts';
  * `releaseBarrierCli.ts` e chega aqui por `ReleasePrompt` (injetável nos testes).
  */
 
-export type ReleaseOutcome = 'released' | 'reconciled' | 'refused' | 'pending' | 'audit_pending';
+export type ReleaseOutcome = 'released' | 'reconciled' | 'refused' | 'pending' | 'audit_pending' | 'indeterminate';
 
 export interface ReleaseResult {
-  /** 0 = liberada ou reconciliada; 1 = recusada/pendente (nada liberado); 3 = liberada na #011, auditoria pendente. */
-  exitCode: 0 | 1 | 3;
+  /**
+   * 0 = liberada ou reconciliada; 1 = recusada/pendente (comprovadamente nada liberado);
+   * 3 = liberada na #011, auditoria pendente; 4 = INDETERMINADO (a gravação da liberação pode ter
+   * sido aplicada em parte, ou a releitura contradiz o commit: não presuma liberada nem ativa).
+   */
+  exitCode: 0 | 1 | 3 | 4;
   outcome: ReleaseOutcome;
   /** Motivo-token (nunca segredo, caminho ou mensagem livre). */
   reason: string;
@@ -143,23 +148,8 @@ export function openedWithUnapplied(items: readonly HistoryEntry[]): boolean {
   return false;
 }
 
-/** Seqs que a #011 declarou NÃO aplicados (ledger perdido): não contam como fato. */
-function unappliedSeqs(items: readonly HistoryEntry[]): Set<number> {
-  const out = new Set<number>();
-  for (const e of items) {
-    if (e.event !== 'approval.history_unapplied' || typeof e.detail !== 'string') continue;
-    const m = /^seq (\d+)-(\d+)$/.exec(e.detail);
-    if (!m) continue;
-    for (let s = Number(m[1]); s <= Number(m[2]) && s - Number(m[1]) < 100_000; s += 1) out.add(s);
-  }
-  return out;
-}
-
-/** Eventos `barrier_released` globais, humanos e aplicados, posteriores a `afterSeq`. */
-function releasesAfter(items: readonly HistoryEntry[], afterSeq: number): HistoryEntry[] {
-  const lost = unappliedSeqs(items);
-  return items.filter((e) => e.seq > afterSeq && !lost.has(e.seq) && e.event === 'approval.barrier_released' && e.projectId === null && e.actor.kind === 'human');
-}
+/** Liberações globais humanas e aplicadas, posteriores a `afterSeq` (regra única em `consistency.ts`). */
+const releasesAfter = (items: readonly HistoryEntry[], afterSeq: number) => appliedGlobalReleases(items, afterSeq);
 
 async function readLineage(dir: string): Promise<{ lineage: string; createdAt: string } | null> {
   try {
@@ -185,7 +175,9 @@ export async function runBarrierRelease(deps: ReleaseDeps): Promise<ReleaseResul
   let store: ApprovalStore | null = null;
   let queue: QueueStore | null = null;
   /** Fase: antes do diário nada mudou; depois dele só a reconciliação ou o sucesso o apagam. */
-  let phase: 'before_journal' | 'journal_written' | 'released' = 'before_journal';
+  // `release_attempted`: a gravação da liberação começou e falhou de um jeito que NÃO prova que
+  // nada foi aplicado; `indeterminate`: a releitura contradiz o commit. Ambos → código 4 (L1).
+  let phase: 'before_journal' | 'journal_written' | 'release_attempted' | 'released' | 'indeterminate' = 'before_journal';
 
   const closeStores = async () => {
     await Promise.allSettled([queue?.close(), store?.close()]);
@@ -270,8 +262,16 @@ export async function runBarrierRelease(deps: ReleaseDeps): Promise<ReleaseResul
     const lineageB = await readLineage(settings.anchorDir);
     const pending = await readJournal(dataDir, journalOps);
     if (pending.kind === 'invalid') refuse('journal_unreadable');
+    // L3: cruzamento #011 × #006, com ou sem diário. Contradição → nada é gravado (decisão humana).
+    const consistency = checkReleaseAudit(store.history(), audit.log());
+    if (consistency.state === 'inconsistent') refuse(`consistency_${consistency.reason}`);
     if (pending.kind === 'present') {
       return await reconcile({ journal: pending.journal, store, lineage: lineageA?.lineage ?? null, mirror, audit, dataDir, journalOps, prompt });
+    }
+    // Sem diário, mas a #011 tem liberação sem registro na #006 (diário apagado, outro ACC_DATA_DIR):
+    // completa a #006 a partir dos fatos. Nunca libera nada.
+    if (consistency.state === 'missing') {
+      return await reconcileFromFacts({ missing: consistency.missing, store, mirror, audit, prompt });
     }
 
     // ── R4: estado ───────────────────────────────────────────────────────────────────────────
@@ -374,7 +374,15 @@ export async function runBarrierRelease(deps: ReleaseDeps): Promise<ReleaseResul
     await checkpoint('P8');
 
     // ── P9: o ÚNICO commit da liberação (histórico → ledger → anchor) ────────────────────────
-    await service.releaseBarrier({ attemptId: reservation.attemptId });
+    phase = 'release_attempted';
+    try {
+      await service.releaseBarrier({ attemptId: reservation.attemptId });
+    } catch (error) {
+      // Recusa do núcleo ANTES de gravar (recibo, tentativa, store indisponível) prova que nada
+      // mudou. Só a falha de gravação (ou um erro desconhecido) deixa o resultado incerto (L1).
+      if (error instanceof ApprovalError && error.code !== 'store_write_failed') phase = 'journal_written';
+      throw error;
+    }
     phase = 'released';
     await checkpoint('P9');
     await writeJournal(dataDir, { ...journal, state: 'committed', approvalId: approval.id, attemptId: reservation.attemptId, updatedAt: new Date(now()).toISOString() }, journalOps);
@@ -384,10 +392,14 @@ export async function runBarrierRelease(deps: ReleaseDeps): Promise<ReleaseResul
     await closeStores();
     store = await openStore();
     await checkpoint('P11');
-    if (store.status().state !== 'available' || store.ledger().barriers.global !== null) refuse('release_not_durable');
-    const released = releasesAfter(entries(store), journal.historySeq);
-    const attempt = store.ledger().attempts.find((t) => t.id === reservation.attemptId);
-    if (released.length !== 1 || attempt?.state !== 'succeeded') refuse('release_not_durable');
+    const durable = store.status().state === 'available' && store.ledger().barriers.global === null;
+    const released = durable ? releasesAfter(entries(store), journal.historySeq) : [];
+    const attempt = durable ? store.ledger().attempts.find((t) => t.id === reservation.attemptId) : undefined;
+    if (!durable || released.length !== 1 || attempt?.state !== 'succeeded') {
+      // A releitura contradiz o commit que o núcleo confirmou: nenhum dos dois estados pode ser afirmado.
+      phase = 'indeterminate';
+      refuse('release_not_durable');
+    }
     await closeStores();
 
     // ── P12: espelho na #006 · P13: diário apagado ───────────────────────────────────────────
@@ -399,6 +411,7 @@ export async function runBarrierRelease(deps: ReleaseDeps): Promise<ReleaseResul
   } catch (error) {
     const reason =
       error instanceof Refusal ? error.reason : error instanceof ApprovalError ? error.code : (error as Error | null)?.name === 'PromptCancelled' ? 'cancelled' : 'internal_error';
+    if (phase === 'release_attempted' || phase === 'indeterminate') return { exitCode: 4, outcome: 'indeterminate', reason };
     if (phase === 'released') return { exitCode: 3, outcome: 'audit_pending', reason };
     if (phase === 'journal_written') return { exitCode: 1, outcome: 'pending', reason };
     return { exitCode: 1, outcome: 'refused', reason };
@@ -460,7 +473,7 @@ async function reconcile(input: {
       e.resource.id === journal.approvalId &&
       e.context.operation === RELEASE_OPERATION &&
       Date.parse(e.at) >= since &&
-      (interrupted ? e.outcome === 'failure' && e.context.reason === 'interrupted' : e.outcome === 'success' && e.context.seq === released[0].seq),
+      (interrupted ? e.outcome === 'failure' && e.context.reason === 'interrupted' : matchesRelease(e, { seq: released[0].seq, approvalId: journal.approvalId! })),
   );
   try {
     if (!recorded && interrupted) await input.mirror({ ...base, action: 'approval.configuration', outcome: 'failure', context: { operation: RELEASE_OPERATION, reason: 'interrupted' } });
@@ -479,4 +492,37 @@ async function reconcile(input: {
       : 'Operação anterior CONCLUÍDA na #011: auditoria completada. A barreira global já está liberada.',
   ]);
   return { exitCode: 0, outcome: 'reconciled', reason: interrupted ? 'interrupted' : 'reconciled' };
+}
+
+/**
+ * Reconciliação SEM diário (L3): a #011 tem liberação aplicada sem o registro final na #006.
+ * Grava um registro por liberação faltante e confere de novo. É idempotente (o cruzamento só aponta
+ * `missing` quando não existe registro correspondente) e não libera nem aprova nada.
+ */
+async function reconcileFromFacts(input: {
+  missing: readonly ReleaseFact[];
+  store: ApprovalStore;
+  mirror: (event: AuditEventInput) => Promise<void>;
+  audit: Pick<AuditLog, 'log'>;
+  prompt: ReleasePrompt;
+}): Promise<ReleaseResult> {
+  for (const fact of input.missing) {
+    try {
+      await input.mirror({
+        action: 'approval.configuration',
+        actor: ACTOR,
+        ownerId: ADMIN_USER_ID,
+        projectId: null,
+        resource: { type: 'approval', id: fact.approvalId },
+        outcome: 'success',
+        context: { operation: RELEASE_OPERATION, reason: 'reconciled_from_facts', seq: fact.seq },
+      });
+    } catch {
+      refuse('reconcile_audit_failed');
+    }
+  }
+  const after = checkReleaseAudit(input.store.history(), input.audit.log());
+  if (after.state !== 'consistent') refuse(after.state === 'inconsistent' ? `consistency_${after.reason}` : 'reconcile_audit_failed');
+  input.prompt.show(['Liberação anterior encontrada na #011 sem registro final na auditoria (diário ausente): auditoria completada a partir dos fatos. Nada foi liberado agora.']);
+  return { exitCode: 0, outcome: 'reconciled', reason: 'reconciled_from_facts' };
 }

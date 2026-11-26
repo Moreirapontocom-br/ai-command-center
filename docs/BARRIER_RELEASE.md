@@ -17,6 +17,8 @@ Toda instalação nova do núcleo de aprovações (#011) nasce com a **barreira 
 1. **Servidor parado.** O comando e o servidor disputam o mesmo lock de instância (`ACC_DATA_DIR/acc-instance.lock`). Se um estiver ativo, o outro recusa.
 2. A mesma configuração do servidor (`.env.local` no diretório do projeto; o ambiente tem precedência). O comando não usa o GitHub, mas valida a configuração inteira como o servidor: se você inicia o servidor com o GitHub CLI e `GITHUB_TOKEN` vazio (`docs/GITHUB_INTEGRATION.md`, "Iniciar com o GitHub CLI"), use a mesma receita aqui. É preciso `ACC_DEPLOYMENT=local`, aprovações configuradas (`ACC_APPROVALS_DIR`, `ACC_APPROVALS_ANCHOR_DIR`, chave) e o administrador (`ACC_ADMIN_EMAIL`, `ACC_ADMIN_PASSWORD_HASH`). `NODE_ENV=production` é recusado.
 3. O armazenamento da #011 já precisa existir (criado na primeira subida do servidor com `ACC_APPROVALS_INITIALIZE=if_absent`). O comando **nunca** cria um armazenamento.
+
+Passo a passo da configuração no Windows, da primeira subida e do exercício ponta a ponta: `docs/evidence/issue008-e2e.md`.
 4. **Terminal interativo real:** PowerShell ou Windows Terminal. O Git Bash (mintty) não oferece modo raw e é recusado. Sessões com variáveis típicas de agente ou automação (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `GITHUB_ACTIONS`, `CI` e outras) são recusadas. Essa recusa é defesa adicional; a garantia vem da senha e da #011.
 
 ## 3. Execução
@@ -38,7 +40,8 @@ Não existe variável de "linhagem esperada" (decisão **H3 = não**): a frase d
 |---|---|
 | P1 | Lock de instância, antes de qualquer arquivo de dados |
 | P2 | Abre projetos, tarefas e auditoria (sequência global), o store da #011 (`initialize: never`, nova época) e a fila (`reconcile()`) |
-| — | Reconciliação do diário, se houver um pendente (§5); a execução termina aí |
+| — | Cruzamento #011 × #006 (§5.1): contradição → recusa sem gravar |
+| — | Reconciliação do diário, se houver um pendente (§5), ou pelos fatos, se faltar registro sem diário (§5.1); a execução termina aí |
 | — | Checagens: store disponível, sem `history_unapplied` nesta abertura, sem barreira volátil, linhagem igual nos dois marcadores, barreira `initial_install` |
 | — | Limite de tentativas (§4) |
 | P3 | Tentativa registrada no arquivo de limite **antes** de ler a senha |
@@ -47,9 +50,9 @@ Não existe variável de "linhagem esperada" (decisão **H3 = não**): a frase d
 | P5 | Diário `intent` |
 | P6, P7 | `confirmOwner` (aprovação de uso único) e `reserve` (tentativa) na #011 |
 | P8 | Diário `reserved` |
-| P9 | `releaseBarrier`: único commit (histórico → ledger → anchor) |
+| P9 | `releaseBarrier`: único commit (histórico → ledger → anchor). Falha de gravação aqui → **indeterminado** (código 4) |
 | P10 | Diário `committed` |
-| P11 | Fecha e reabre o store; confirma `global === null`, um `barrier_released` e a tentativa `succeeded` |
+| P11 | Fecha e reabre o store; confirma `global === null`, um `barrier_released` e a tentativa `succeeded`. Releitura contraditória → **indeterminado** (código 4) |
 | P12 | `approval.configuration` com sucesso na #006 (`resource.id` = aprovação, `context.seq` = seq do `barrier_released`) |
 | P13 | Diário apagado; só então "LIBERADA" |
 
@@ -60,8 +63,11 @@ Não existe variável de "linhagem esperada" (decisão **H3 = não**): a frase d
 | 0 | `LIBERADA` | Liberada, gravada, relida e auditada |
 | 0 | `RECONCILIADA` | Uma operação anterior foi conciliada (§5) |
 | 1 | `RECUSADA` | Nada foi alterado na barreira |
-| 1 | `NÃO LIBERADA` | Interrompida depois do diário; as aprovações ficam indisponíveis no servidor até nova execução |
-| 3 | `LIBERAÇÃO REGISTRADA NA #011, AUDITORIA PENDENTE` | A liberação vale; a #006 será completada na próxima execução |
+| 1 | `NÃO LIBERADA` | Interrompida depois do diário e **comprovadamente** antes de qualquer gravação da liberação (queda até o P8 ou recusa do núcleo antes de gravar, como recibo vencido); as aprovações ficam indisponíveis no servidor até nova execução |
+| 3 | `LIBERAÇÃO REGISTRADA NA #011, AUDITORIA PENDENTE` | O núcleo confirmou o commit; a #006 será completada na próxima execução |
+| 4 | `RESULTADO INDETERMINADO` | A gravação da liberação começou e falhou (por exemplo, ledger gravado e anchor não), ou a releitura no P11 contradiz o commit. **Não presuma liberada nem ativa.** As aprovações ficam indisponíveis; a próxima execução reconcilia pelos fatos da #011 ou, havendo contradição, recusa e pede investigação humana |
+
+Recuperação: em qualquer código diferente de 0, execute o comando de novo, com o servidor parado. A reconciliação é idempotente: nunca grava um segundo registro final e nunca libera nada.
 
 ## 4. Limite de tentativas (R3, H2)
 
@@ -90,7 +96,26 @@ Entradas que a #011 declarou não aplicadas (`history_unapplied`) não contam co
 
 A reconciliação **não pede senha**: ela não libera nada, só completa a #006 a partir dos fatos da #011 e apaga o diário. Ela é idempotente: se o registro final já estiver na #006 (queda depois do P12, ou falha ao apagar o diário), não grava de novo.
 
-**Diário corrompido:** confira o estado na #011 (histórico de aprovações). Só apague o diário à mão se a barreira e os eventos estiverem coerentes com uma das duas primeiras linhas; a próxima execução confere tudo de novo.
+**Diário corrompido:** confira o estado na #011 (histórico de aprovações). Só apague o diário à mão se a barreira e os eventos estiverem coerentes com uma das duas primeiras linhas; a próxima execução confere tudo de novo (inclusive o cruzamento de §5.1, que não depende do diário).
+
+### 5.1 Cruzamento #011 × #006 (fechamento da #008, L3)
+
+O diário mora em `ACC_DATA_DIR`. Para que a segurança não dependa dele (diário apagado, ou servidor com outro `ACC_DATA_DIR` sobre as mesmas aprovações), o **servidor** e o **comando** cruzam os fatos a cada abertura (`server/admin/consistency.ts`, puro):
+
+- Para cada `approval.barrier_released` global, humano e aplicado na #011: a mesma geração do ledger tem exatamente uma `approval.attempt_succeeded` (dá a aprovação e a tentativa), e o pedido dessa aprovação, se retido, é `killswitch.release` global.
+- Na #006 tem de existir **exatamente um** `approval.configuration` com sucesso, do administrador (`ownerId` e ator), sem projeto, operação `barrier_release_global`, `resource = {approval, <id da aprovação>}` e `context.seq = <seq da liberação>`, gravado depois da liberação.
+
+| Veredito | Servidor | Comando |
+|---|---|---|
+| Consistente | Aprovações abertas normalmente | Segue o fluxo |
+| Falta o registro (`missing`) | Aprovações **indisponíveis** (`admin_reconcile_pending`) | Grava o registro que falta (`reason: reconciled_from_facts`), confere de novo e termina com `RECONCILIADA` |
+| Contradição (`inconsistent`): registro duplicado, com seq ou aprovação trocados, ator, dono ou tipo errados, correlação ausente na #011, erro de leitura | Aprovações **indisponíveis** (`admin_audit_inconsistent`) | Recusa (`consistency_<motivo>`) sem gravar nada |
+
+- Registros **anteriores** à liberação (por exemplo, de uma linhagem antiga com o mesmo seq) não contam.
+- Se a retenção da #006 (20.000 eventos) já descartou eventos posteriores à liberação, a ausência é aceita: a #011 continua com a prova, e um histórico legítimo antigo não trava o subsistema.
+- Instalação sem liberação é sempre consistente (compatibilidade com históricos anteriores).
+
+**Contradição (`admin_audit_inconsistent`), procedimento humano:** a auditoria é só de acréscimo, e o ACC nunca apaga nem corrige registros sozinho. Exporte `audit.json` e o histórico de aprovações e compare-os com a tabela acima. Se a adulteração for confirmada, o caminho é a recuperação da #011 (nova linhagem, barreira `recovery`, que este comando não libera) ou a restauração de um backup íntegro de `ACC_DATA_DIR`. Registre a decisão fora do ACC.
 
 ## 6. Locks
 
@@ -108,3 +133,5 @@ Reacionar a barreira pelos caminhos que já existem: o kill switch de emergênci
 - Quem tem escrita em `ACC_DATA_DIR`, nos diretórios da #011 **e** a chave HMAC já consegue forjar estado; isso está fora do alcance do comando.
 - Um agente com pseudoterminal que conheça a senha passaria pelas recusas de terminal. A senha nunca fica em disco; a frase é ligada à linhagem; tudo fica auditado.
 - Relógio adiantado pode encurtar a espera de 15 minutos; a trava dura e o custo do scrypt continuam valendo.
+- **L2 (risco residual aceito):** a trava dura de 20 falhas fica só em `admin-release.throttle.json`. Apagar esse arquivo zera o contador; a conferência cruzada com a #006 cobre apenas a janela de 15 minutos. Isso exige escrita em `ACC_DATA_DIR`, que já está fora do modelo de ameaça. O código do contador não foi alterado.
+- O cruzamento de §5.1 compara arquivos que quem tem escrita em `ACC_DATA_DIR` também pode editar. Ele detecta inconsistência e lacuna, mas não é prova contra adulteração coordenada dos dois lados.

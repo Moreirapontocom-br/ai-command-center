@@ -1,0 +1,25 @@
+Issue #008 — PR de fechamento (L1, L3, L2): validação local
+Data: 2026-11-26 · Base: main 3718703580a073ac099e2aced94ed51338acad36 · Branch: feature/008-closing
+Ambiente: Windows 11, Node v24.18.1, checkout com core.autocrlf=true
+
+Baseline (main 3718703, antes das alterações)
+  npx vitest run → 1460 testes: 1459 ok, 1 falha conhecida (scripts/main-audit.test.mjs, CRLF do checkout)
+
+Com as alterações
+  npx vitest run → Tests  1 failed | 1477 passed (1478)
+                   Test Files  1 failed | 70 passed (71)
+                   falha única: scripts/main-audit.test.mjs (mesma falha de CRLF da baseline; arquivo não alterado)
+  testes novos: 18 (1460 → 1478); F9 ajustado para o código 4 (L1)
+  npx vitest run server/admin server/security.test.ts → todos ok
+  npx eslint . → limpo
+  npx tsc -b / npm run build → ok
+  npm run check:secrets (dist) → nenhuma credencial
+  npm run check:csp → compatível com a CSP de produção
+  node scripts/check-secrets.mjs tracked → nenhuma credencial
+
+Restrições
+  Nenhuma execução contra dados reais; nenhuma liberação de barreira; .env.local não lido nem alterado;
+  nenhum arquivo de server/approvals/ (núcleo #011) alterado; throttle.ts (L2) inalterado;
+  sem merge; PR #52 não tocado; #009/#010 não iniciadas; sem APIs pagas; R$ 0.
+
+CI do PR: registrada no próprio PR (três checks obrigatórios).

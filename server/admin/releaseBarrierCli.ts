@@ -138,6 +138,8 @@ const MESSAGES: Record<ReleaseResult['outcome'], string> = {
   refused: 'RECUSADA: nada foi alterado na barreira.',
   pending: 'NÃO LIBERADA: operação interrompida e registrada no diário. As aprovações ficam indisponíveis no servidor até você executar o comando de novo (reconciliação).',
   audit_pending: 'LIBERAÇÃO REGISTRADA NA #011, AUDITORIA PENDENTE. As aprovações ficam indisponíveis no servidor até você executar o comando de novo (reconciliação).',
+  indeterminate:
+    'RESULTADO INDETERMINADO: não foi possível confirmar se a liberação foi aplicada. Não presuma que a barreira está liberada nem ativa. As aprovações ficam indisponíveis no servidor até você executar o comando de novo (reconciliação).',
 };
 
 export async function main(): Promise<number> {

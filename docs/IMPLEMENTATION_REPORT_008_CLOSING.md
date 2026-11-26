@@ -25,6 +25,8 @@
 
 ### L3 — cruzamento #011 × #006 (`server/admin/consistency.ts`)
 
+> Regras de correlação e retenção atualizadas por C1/C2 (§7): a relação é só pela aprovação, sem relógio, e a retenção da #006 preserva o registro final. A descrição abaixo é a da versão `6bf2a2b`; onde ela divergir, vale a §7.
+
 Módulo **puro**: não importa `node:*` e só recebe o histórico e a auditoria já abertos. Ele decide, nunca grava. É usado pelo **servidor** (na subida, depois de abrir o store e antes de criar o serviço) e pelo **comando** (antes de qualquer reconciliação ou liberação).
 
 **Correlação** de cada `approval.barrier_released` global, humano e aplicado (seqs de `history_unapplied` excluídos):
@@ -92,11 +94,39 @@ Ver `docs/evidence/issue008-closing-validation.txt`.
 1. **L2** (acima).
 2. O cruzamento compara arquivos que quem escreve em `ACC_DATA_DIR` também pode editar. Ele detecta lacuna e inconsistência, mas não protege contra adulteração coordenada da #006 (que não tem MAC).
 3. Contradição (`admin_audit_inconsistent`) não tem correção automática, de propósito. A saída é humana: recuperação da #011 ou backup íntegro (`BARRIER_RELEASE.md` §5.1).
-4. Relógio que voltou muito entre a liberação e a gravação do registro pode fazer o registro parecer "anterior". O efeito é fail-closed: `missing`, e a reconciliação grava um registro novo, consistente.
+4. ~~Relógio que voltou muito…~~ Corrigido em C2: a correlação não usa o relógio. Resta só o registro informativo de interrupção (fora do cruzamento), que pode se repetir ou faltar com o relógio atrasado.
 5. Os riscos de P1 continuam valendo (`IMPLEMENTATION_REPORT_008_P1.md` §7).
 6. **Nada foi executado contra dados reais.** O comportamento do terminal real (PowerShell e Windows Terminal, modo raw) está coberto por testes unitários, não por execução manual.
 
-## 7. Pendências para fechar a #008
+## 7. Correções C1–C4 (validação final do ChatGPT, autorizadas pelo PO)
+
+A validação dirigida (R1–R3) sobre `6bf2a2b` confirmou dois defeitos no cruzamento, nenhum deles capaz de liberar sem aprovação correlacionada:
+
+- **R1:** com o registro final ausente, 45.000 eventos fariam a lacuna ser aceita pela tolerância à retenção.
+- **R2:** o filtro de tempo fazia registros gravados com o relógio atrasado não contarem (reconciliações repetidas gravavam registros ignorados), e um registro de linhagem antiga com o relógio adiantado causava um `inconsistent` indevido.
+
+| Correção | O que mudou |
+|---|---|
+| **C1** | `server/audit/events.ts`: `isPreservedEvent` (registro final de sucesso de `barrier_release_global`); `applyRetention` nunca o descarta, fica acima do limite se só restarem preservados e passa a contar o descarte efetivo. `consistency.ts` sem a tolerância a `droppedEvents`: ausência = sempre `missing`. Impacto no armazenamento em `BARRIER_RELEASE.md` §5.1 (cerca de 0,6 KiB por liberação; limite de bytes → falha explícita, nunca descarte silencioso). |
+| **C2** | `consistency.ts`: sem filtro temporal. Relação só pelo `approvalId` (UUID v4 de uso único, nunca reaproveitado entre linhagens), com **qualquer** resultado; registro relacionado tem de ser exato (seq, ator, dono, projeto, tipo, operação, sucesso). Duplicado → `audit_record_duplicate`; contraditório → `audit_record_mismatch`; outra aprovação ou linhagem → ignorado (não valida, não bloqueia); aprovação em duas liberações → `release_uncorrelated`. `releaseBarrier.ts`: a idempotência da reconciliação com diário também deixa de usar o relógio para o registro final. |
+| **C3** | `docs/evidence/issue008-e2e.md` §0: branch `feature/008-closing`, SHA aprovado, working tree íntegra (arquivos não versionados do PO preservados), `npm ci`; interrupção em qualquer divergência. |
+| **C4** | Checklist: "Ambiente isolado" **pendente da #021**. Execução assistida e externa; o ACC não isola o processo do Claude Code; proteção de branch e verificação posterior não equivalem a isolamento. O exercício comprova só a integração assistida. |
+
+**Testes** (`server/admin/consistency.test.ts`, novo, puro; mais ajustes em `releaseBarrier.test.ts`):
+- retenção com 45.000 eventos (anônimos e atribuídos) mantendo `missing`;
+- preservação do registro legítimo;
+- várias linhagens acima do limite, com contagem exata;
+- retenção anterior inalterada;
+- relógio atrasado e adiantado, nos testes puros e com o comando real;
+- reconciliações sucessivas sem duplicação;
+- linhagens com seq coincidente, antes e depois;
+- duplicado e contraditório da mesma aprovação;
+- aprovação em duas liberações;
+- auditoria malformada;
+- regressões de R3 (dois `ACC_DATA_DIR`, correlação ausente, pedido de outra ação, nenhuma liberação fabricada);
+- servidor real indisponível com registro divergente.
+
+## 8. Pendências para fechar a #008
 
 1. Revisão técnica (ChatGPT) deste PR no SHA final.
 2. Autorização do PO para configurar o ambiente local e liberar a barreira (`docs/evidence/issue008-e2e.md` §1–§3).

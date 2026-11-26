@@ -17,18 +17,24 @@ import { RELEASE_OPERATION } from './journal.ts';
  *   `applyInternal`), que dá `approvalId` (P) e `attemptId`;
  * - o pedido de P (`approval.requested`), se ainda retido, é `killswitch.release` global;
  * - o registro final na #006 é `approval.configuration` com sucesso, do administrador, operação
- *   `barrier_release_global`, `resource = {approval, P}`, `context.seq = R.seq`, gravado DEPOIS de R.
+ *   `barrier_release_global`, `resource = {approval, P}` e `context.seq = R.seq`.
+ *
+ * Identificador primário: `approvalId` (C2). É um UUID v4 aleatório gerado pela #011 para cada
+ * aprovação (`randomUUID`, 122 bits), de uso único (`approval_already_used`), e nunca é reaproveitado
+ * entre linhagens (uma linhagem nova começa com ledger vazio). Por isso a correlação NÃO depende do
+ * relógio: registros de outras aprovações (inclusive de linhagens antigas com `seq` coincidente) são
+ * ignorados e nunca validam esta liberação; registros desta aprovação têm de ser exatos.
  *
  * Resultado:
  * - `consistent`: tudo correlacionado (ou nenhuma liberação);
  * - `missing`: falta o registro de uma ou mais liberações, e nada contradiz os fatos → o comando
  *   pode completar a #006 (reconciliação idempotente; nunca libera nada);
- * - `inconsistent`: duplicado, registro com seq ou aprovação trocados, correlação ausente na #011,
- *   ator inesperado ou qualquer erro de leitura → nada é gravado automaticamente; investigação humana.
+ * - `inconsistent`: registro da MESMA aprovação duplicado ou divergente (seq, ator, dono, escopo,
+ *   resultado), correlação ausente na #011, aprovação usada por mais de uma liberação, ator
+ *   inesperado ou qualquer erro de leitura → nada é gravado automaticamente; investigação humana.
  *
- * Registros anteriores a R (por exemplo, de uma linhagem anterior com `seq` coincidente) não contam.
- * Se a retenção da #006 já descartou eventos posteriores a R, a ausência do registro é aceita
- * (a #011 continua com a prova; histórico legítimo antigo não trava o subsistema).
+ * Retenção (C1): a #006 nunca descarta o registro final (`isPreservedEvent`), então a ausência é
+ * SEMPRE `missing`, por mais eventos que o registro acumule.
  */
 
 export interface ReleaseFact {
@@ -94,8 +100,9 @@ export function checkReleaseAudit(history: { items: readonly HistoryItem[] }, au
     const lost = unappliedSeqs(entries);
     const hasTombstones = history.items.some((i) => i.kind === 'tombstone');
     const releases = appliedGlobalReleases(history.items);
-    const records = audit.events.filter(isReleaseRecord);
-    const oldestAudit = audit.events.reduce((min, e) => Math.min(min, Date.parse(e.at)), Number.POSITIVE_INFINITY);
+    // Qualquer registro desta operação, com QUALQUER resultado: um registro de falha da mesma aprovação contradiz a liberação.
+    const records = audit.events.filter((e) => e.action === 'approval.configuration' && e.context.operation === RELEASE_OPERATION);
+    const seen = new Set<string>();
     const missing: ReleaseFact[] = [];
 
     for (const r of releases) {
@@ -103,20 +110,20 @@ export function checkReleaseAudit(history: { items: readonly HistoryItem[] }, au
       const succeeded = entries.filter((e) => e.event === 'approval.attempt_succeeded' && e.ledgerGeneration === r.ledgerGeneration && !lost.has(e.seq));
       if (succeeded.length !== 1 || succeeded[0].approvalId === null || succeeded[0].attemptId === null) return { state: 'inconsistent', reason: 'release_uncorrelated' };
       const fact: ReleaseFact = { seq: r.seq, at: r.at, approvalId: succeeded[0].approvalId, attemptId: succeeded[0].attemptId };
+      // Uso único: uma aprovação nunca sustenta duas liberações.
+      if (seen.has(fact.approvalId)) return { state: 'inconsistent', reason: 'release_uncorrelated' };
+      seen.add(fact.approvalId);
       const requested = entries.filter((e) => e.event === 'approval.requested' && e.approvalId === fact.approvalId);
       // Pedido descartado pela retenção da #011 (só com tombstones) é aceito; presente, tem de ser o da liberação global.
       if (requested.length === 0 && !hasTombstones) return { state: 'inconsistent', reason: 'release_uncorrelated' };
       if (requested.some((e) => e.action !== 'killswitch.release' || e.projectId !== null)) return { state: 'inconsistent', reason: 'release_approval_unexpected' };
 
-      const since = Date.parse(r.at);
-      const related = records.filter((e) => Date.parse(e.at) >= since && (e.context.seq === fact.seq || e.resource.id === fact.approvalId));
+      // C2: relação SÓ pela aprovação (independe do relógio e de outras linhagens).
+      const related = records.filter((e) => e.resource.id === fact.approvalId);
       const exact = related.filter((e) => matchesRelease(e, fact));
       if (related.length > exact.length) return { state: 'inconsistent', reason: 'audit_record_mismatch' };
       if (exact.length > 1) return { state: 'inconsistent', reason: 'audit_record_duplicate' };
-      if (exact.length === 1) continue;
-      // Retenção da #006: eventos posteriores à liberação já descartados → a ausência é aceita.
-      if (audit.droppedEvents > 0 && oldestAudit > since) continue;
-      missing.push(fact);
+      if (exact.length === 0) missing.push(fact);
     }
     return missing.length > 0 ? { state: 'missing', missing } : { state: 'consistent', releases: releases.length };
   } catch {

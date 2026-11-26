@@ -767,12 +767,13 @@ describe('L3 — cruzamento #011 × #006 (identidade, escopo e correlação)', (
   });
 
   it.each([
-    ['aprovação trocada com seq coincidente', (e: AuditDoc['events'][number]) => void (e.resource.id = randomUUID())],
     ['seq trocado com a mesma aprovação', (e: AuditDoc['events'][number]) => void (e.context.seq = (e.context.seq as number) + 1)],
     ['ator agente', (e: AuditDoc['events'][number]) => void (e.actor = { kind: 'agent', id: 'admin' })],
     ['outro dono', (e: AuditDoc['events'][number]) => void (e.ownerId = 'outro')],
     ['tipo de recurso trocado', (e: AuditDoc['events'][number]) => void (e.resource.type = 'project')],
-  ])('registro adulterado (%s) → inconsistente; o comando recusa sem gravar e sem liberar', async (_name, tamper) => {
+    ['com projeto', (e: AuditDoc['events'][number]) => void (e.projectId = randomUUID())],
+    ['resultado de falha', (e: AuditDoc['events'][number]) => void (e.outcome = 'failure')],
+  ])('registro da MESMA aprovação adulterado (%s) → inconsistente; o comando recusa sem gravar e sem liberar', async (_name, tamper) => {
     const t = await setup();
     await t.run();
     await editAudit(t, (doc) => tamper(finalRecord(doc)));
@@ -784,6 +785,16 @@ describe('L3 — cruzamento #011 × #006 (identidade, escopo e correlação)', (
     expect((await t.inspect()).global).toMatchObject({ reason: 'manual' });
   });
 
+  it('registro de OUTRA aprovação com seq coincidente → ignorado: não valida (missing); o comando grava o correto e o outro continua sem validar', async () => {
+    const t = await setup();
+    await t.run();
+    await editAudit(t, (doc) => void (finalRecord(doc).resource.id = randomUUID()));
+    expect((await facts(t)).check.state).toBe('missing');
+    expect(await t.run()).toEqual({ exitCode: 0, outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    expect((await t.audit()).filter((e) => e.action === 'approval.configuration')).toHaveLength(2);
+  });
+
   it('registro duplicado → inconsistente (nunca gravado pela reconciliação idempotente)', async () => {
     const t = await setup();
     await t.run();
@@ -792,7 +803,10 @@ describe('L3 — cruzamento #011 × #006 (identidade, escopo e correlação)', (
     expect(await t.run()).toMatchObject({ exitCode: 1, reason: 'consistency_audit_record_duplicate' });
   });
 
-  it('registro de outra linhagem com seq coincidente, ANTERIOR à liberação → não conta', async () => {
+  it.each([
+    ['anterior', -86_400_000],
+    ['posterior (relógio adiantado na linhagem antiga)', 3_600_000],
+  ])('registro de outra linhagem com seq coincidente, %s à liberação → não conta e não bloqueia', async (_name, offset) => {
     const t = await setup();
     await t.run({}, t.crashAt('P11'));
     await rm(join(t.dirs.data, JOURNAL_FILE));
@@ -803,7 +817,7 @@ describe('L3 — cruzamento #011 × #006 (identidade, escopo e correlação)', (
         e.action = 'approval.configuration';
         e.resource = { type: 'approval', id: randomUUID() };
         e.context = { operation: OP, seq: releases[0].seq };
-        e.at = new Date(Date.parse(releases[0].at) - 86_400_000).toISOString();
+        e.at = new Date(Date.parse(releases[0].at) + offset).toISOString();
       });
     });
     expect((await facts(t)).check.state).toBe('missing');
@@ -811,17 +825,36 @@ describe('L3 — cruzamento #011 × #006 (identidade, escopo e correlação)', (
     expect((await facts(t)).check.state).toBe('consistent');
   });
 
-  it('retenção da #006 descartou eventos posteriores à liberação → aceito; sem descarte → missing', async () => {
+  it('C1: registro final ausente continua missing mesmo com descarte e só eventos posteriores (sem tolerância à retenção)', async () => {
     const t = await setup();
     await t.run();
     const { releases } = await facts(t);
     await editAudit(t, (doc) => {
       doc.events = doc.events.filter((e) => e.action !== 'approval.configuration');
       for (const e of doc.events) e.at = new Date(Date.parse(releases[0].at) + 60_000).toISOString();
+      doc.droppedEvents = 45_000;
     });
     expect((await facts(t)).check.state).toBe('missing');
-    await editAudit(t, (doc) => void (doc.droppedEvents = 5));
+    expect(await t.run()).toMatchObject({ outcome: 'reconciled', reason: 'reconciled_from_facts' });
     expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+  });
+
+  it('C2: relógio atrasado e depois adiantado → registro conta pela aprovação; reconciliações sucessivas não duplicam', async () => {
+    const t = await setup();
+    await t.run({}, t.crashAt('P11'));
+    await rm(join(t.dirs.data, JOURNAL_FILE));
+    const { releases } = await facts(t);
+    t.clock.wall -= 3_600_000; // relógio volta 1 h: o registro fica "anterior" à liberação
+    expect(await t.run()).toEqual({ exitCode: 0, outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    const finals = () => t.audit().then((events) => events.filter((e) => e.action === 'approval.configuration'));
+    expect(Date.parse((await finals())[0].at)).toBeLessThan(Date.parse(releases[0].at));
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    for (const jump of [0, 7_200_000, 86_400_000]) {
+      t.clock.wall += jump; // relógio corrigido e adiantado
+      expect(await t.run()).toMatchObject({ exitCode: 1, reason: 'no_global_barrier' });
+      expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    }
+    expect(await finals()).toHaveLength(1);
   });
 
   it('falha de leitura (auditoria malformada em memória) → inconsistente; auditoria ilegível no disco → o comando recusa', async () => {
@@ -907,7 +940,7 @@ describe('L3 — servidor real: aprovações indisponíveis enquanto houver lacu
     expect(ok.output).toContain('approvals_opened');
     expect(ok.output).not.toContain('admin_reconcile_pending');
 
-    await editAudit(t, (doc) => void (finalRecord(doc).resource.id = randomUUID()));
+    await editAudit(t, (doc) => void (finalRecord(doc).context.seq = 999_999));
     const bad = await startServer(t);
     expect(bad.output).toContain('admin_audit_inconsistent');
     expect(bad.output).not.toContain('approvals_opened');

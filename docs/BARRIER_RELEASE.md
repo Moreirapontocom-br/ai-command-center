@@ -103,16 +103,18 @@ A reconciliação **não pede senha**: ela não libera nada, só completa a #006
 O diário mora em `ACC_DATA_DIR`. Para que a segurança não dependa dele (diário apagado, ou servidor com outro `ACC_DATA_DIR` sobre as mesmas aprovações), o **servidor** e o **comando** cruzam os fatos a cada abertura (`server/admin/consistency.ts`, puro):
 
 - Para cada `approval.barrier_released` global, humano e aplicado na #011: a mesma geração do ledger tem exatamente uma `approval.attempt_succeeded` (dá a aprovação e a tentativa), e o pedido dessa aprovação, se retido, é `killswitch.release` global.
-- Na #006 tem de existir **exatamente um** `approval.configuration` com sucesso, do administrador (`ownerId` e ator), sem projeto, operação `barrier_release_global`, `resource = {approval, <id da aprovação>}` e `context.seq = <seq da liberação>`, gravado depois da liberação.
+- Na #006 tem de existir **exatamente um** `approval.configuration` com sucesso, do administrador (`ownerId` e ator), sem projeto, operação `barrier_release_global`, `resource = {approval, <id da aprovação>}` e `context.seq = <seq da liberação>`.
+- **Identificador primário: a aprovação** (C2). O `approvalId` é um UUID v4 aleatório da #011, de uso único e nunca reaproveitado entre linhagens. Todo registro desta operação que cite essa aprovação, com qualquer resultado, tem de ser exato. A correlação **não usa o relógio**.
 
 | Veredito | Servidor | Comando |
 |---|---|---|
 | Consistente | Aprovações abertas normalmente | Segue o fluxo |
 | Falta o registro (`missing`) | Aprovações **indisponíveis** (`admin_reconcile_pending`) | Grava o registro que falta (`reason: reconciled_from_facts`), confere de novo e termina com `RECONCILIADA` |
-| Contradição (`inconsistent`): registro duplicado, com seq ou aprovação trocados, ator, dono ou tipo errados, correlação ausente na #011, erro de leitura | Aprovações **indisponíveis** (`admin_audit_inconsistent`) | Recusa (`consistency_<motivo>`) sem gravar nada |
+| Contradição (`inconsistent`): registro da mesma aprovação duplicado ou divergente (seq, ator, dono, projeto, tipo, resultado), aprovação usada por duas liberações, correlação ausente na #011, erro de leitura | Aprovações **indisponíveis** (`admin_audit_inconsistent`) | Recusa (`consistency_<motivo>`) sem gravar nada |
 
-- Registros **anteriores** à liberação (por exemplo, de uma linhagem antiga com o mesmo seq) não contam.
-- Se a retenção da #006 (20.000 eventos) já descartou eventos posteriores à liberação, a ausência é aceita: a #011 continua com a prova, e um histórico legítimo antigo não trava o subsistema.
+- Registros de **outras** aprovações (inclusive de linhagens antigas com o mesmo seq, gravados antes ou depois) são ignorados: nunca validam esta liberação nem a bloqueiam.
+- **Relógio** (C2): atraso ou avanço não muda o veredito. Um registro gravado com o relógio atrasado vale normalmente, e a reconciliação só grava quando não existe nenhum registro da aprovação, então nunca duplica.
+- **Retenção** (C1): a #006 **nunca descarta** o registro final de sucesso desta operação (`isPreservedEvent` em `server/audit/events.ts`). A ausência é sempre `missing`, por mais eventos que se acumulem. Impacto: cerca de 0,6 KiB por liberação aplicada, no máximo um por linhagem e por `ACC_DATA_DIR` (só `initial_install` é liberável, e só uma instalação nova cria outra), o que dá cerca de 0,55 MiB a cada 1.000 reinstalações, diante do limite de 16 MiB do arquivo. Se só restarem eventos preservados, o registro fica acima de 20.000 em vez de perdê-los. Se o arquivo chegar ao limite de bytes, a gravação **falha de forma explícita** (a escrita é recusada); nada é descartado em silêncio.
 - Instalação sem liberação é sempre consistente (compatibilidade com históricos anteriores).
 
 **Contradição (`admin_audit_inconsistent`), procedimento humano:** a auditoria é só de acréscimo, e o ACC nunca apaga nem corrige registros sozinho. Exporte `audit.json` e o histórico de aprovações e compare-os com a tabela acima. Se a adulteração for confirmada, o caminho é a recuperação da #011 (nova linhagem, barreira `recovery`, que este comando não libera) ou a restauração de um backup íntegro de `ACC_DATA_DIR`. Registre a decisão fora do ACC.
@@ -135,3 +137,4 @@ Reacionar a barreira pelos caminhos que já existem: o kill switch de emergênci
 - Relógio adiantado pode encurtar a espera de 15 minutos; a trava dura e o custo do scrypt continuam valendo.
 - **L2 (risco residual aceito):** a trava dura de 20 falhas fica só em `admin-release.throttle.json`. Apagar esse arquivo zera o contador; a conferência cruzada com a #006 cobre apenas a janela de 15 minutos. Isso exige escrita em `ACC_DATA_DIR`, que já está fora do modelo de ameaça. O código do contador não foi alterado.
 - O cruzamento de §5.1 compara arquivos que quem tem escrita em `ACC_DATA_DIR` também pode editar. Ele detecta inconsistência e lacuna, mas não é prova contra adulteração coordenada dos dois lados.
+- O registro informativo de interrupção (`approval.configuration` com falha, `reason: interrupted`) ainda usa o início do diário para não se repetir. Com o relógio atrasado entre duas interrupções, ele pode se repetir ou faltar. Esse registro não participa do cruzamento e não libera nada.

@@ -23,3 +23,23 @@ Restrições
   sem merge; PR #52 não tocado; #009/#010 não iniciadas; sem APIs pagas; R$ 0.
 
 CI do PR: registrada no próprio PR (três checks obrigatórios).
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+Correções C1–C4 (validação final R1–R3; autorizadas pelo PO) · base 6bf2a2b9f6caf1d32832712b1fb0bcf0514c27e9
+  npx vitest run → Tests  1 failed | 1506 passed (1507)
+                   Test Files  1 failed | 71 passed (72)
+                   falha única: scripts/main-audit.test.mjs (CRLF do checkout; idem baseline)
+  comparação: baseline main 1460 → 6bf2a2b 1478 → C1–C4 1507 (+29: 26 em consistency.test.ts, +3 líquidos em releaseBarrier.test.ts)
+  npx eslint . / npx tsc -b / npm run build → ok
+  check:secrets (dist) / check:csp / check-secrets tracked → ok
+  núcleo #011 (server/approvals/) e throttle.ts → inalterados
+
+Sonda R1–R3 (consistency.ts com fatos sintéticos), antes (6bf2a2b) → depois (C1–C2):
+  R1.c sem registro final + 45.000 eventos              consistent            → missing
+  R2.a registro final gravado com relógio atrasado     missing               → consistent
+  R2.b/c reconciliações repetidas (2–3 registros)       missing/consistent    → não ocorrem (R2.a já é consistente);
+                                                                                se existirem por adulteração: audit_record_duplicate
+  R2.d linhagem antiga, seq igual, relógio adiantado    inconsistent          → consistent (ignorada)
+  R3.a outra aprovação com seq igual                    inconsistent          → missing (ignorada; não valida)
+  R3.b seq errado / R3.c falha da mesma aprovação       mismatch / missing    → mismatch / mismatch
+  R3.d sem attempt_succeeded / R3.e outra ação          uncorrelated / unexpected (inalterados)

@@ -6,6 +6,24 @@
 
 Instruções conferidas contra o código desta branch: `server/config.ts` (variáveis e validações), `server/storage/paths.ts` (pastas fora do Git e de pastas sincronizadas), `server/approvals/keyProvider.ts` (formato da chave), `server/auth/hashPasswordCli.ts`, `server/admin/releaseBarrierCli.ts` (recusas de terminal) e `shared/approvalPresentation.ts` (nome da branch de trabalho).
 
+## 0. Código exato (obrigatório antes de qualquer passo)
+
+O roteiro depende do código do PR #53 (códigos 1/3/4, `reconciled_from_facts`, `admin_audit_inconsistent`). A main anterior ao merge **não** tem esse comportamento. Execute sempre o SHA aprovado na revisão técnica:
+
+```powershell
+git fetch origin
+git switch feature/008-closing
+git status --short                       # só podem aparecer os arquivos NÃO versionados do PO (??); nada modificado
+git rev-parse HEAD                       # tem de ser IGUAL ao SHA aprovado pelo ChatGPT
+git rev-parse origin/feature/008-closing # idem (a branch local não está à frente nem atrás)
+git diff --quiet HEAD; $LASTEXITCODE     # 0 = working tree igual ao commit
+npm ci
+```
+
+- **Interrompa o exercício** se o SHA for diferente do aprovado, se houver arquivo versionado modificado (`M`, `A`, `D`) ou se `git diff` não der 0. Não "corrija" nada: registre a divergência e peça nova revisão.
+- `git switch` preserva os arquivos não versionados do PO (`??`). Não use `git clean`, `git stash -u` nem `git checkout -- .`.
+- Anote o SHA no registro (§7). Depois do merge do PR, o mesmo roteiro vale para a main resultante, com a mesma conferência.
+
 ## 1. Configuração local no Windows
 
 Use **Windows PowerShell ou Windows Terminal, fora do Claude Code e de qualquer agente**. O comando de liberação recusa o Git Bash (mintty, sem modo raw) e sessões com variáveis de agente (`CLAUDECODE`, `CI` e outras). Edite o `.env.local` com o **Bloco de Notas**: `Set-Content` e `Out-File` do PowerShell 5.1 podem gravar em outra codificação.
@@ -173,7 +191,7 @@ Repositório: `Moreirapontocom-br/ai-command-center` (o único da allowlist). O 
 | Item | Valor |
 |---|---|
 | Data e hora | — |
-| SHA da main / do PR de fechamento usado | — |
+| SHA executado (§0) = SHA aprovado | — |
 | Primeira subida: `approvals_opened` (state, globalBarrier) | — |
 | Liberação: mensagem e código de saída | — |
 | Depois: `globalBarrier`, diário, registros na #006 (seq) | — |
@@ -189,7 +207,7 @@ Repositório: `Moreirapontocom-br/ai-command-center` (o único da allowlist). O 
 | Critério da issue | Onde está atendido | Estado |
 |---|---|---|
 | Cada execução exige autorização explícita | Duas aprovações humanas por ordem (#011), step-up no pacote, PR e cancelamento; habilitação por projeto (`IMPLEMENTATION_REPORT_008_PR2.md` §5) | Implementado e testado; exercício real pendente (§4) |
-| Ambiente isolado | Claude Code roda fora do ACC (fluxo assistido); o ACC não executa agentes (`REAL_EXECUTION_ENABLED = false`; sem `child_process` no caminho da #008) | Implementado e testado |
+| Ambiente isolado | **Não cumprido nesta etapa; depende da Issue #021.** A execução é **assistida e externa** ao ACC: o PO roda o Claude Code na própria máquina, com a própria assinatura. O ACC **não isola** o processo do Claude Code (sistema de arquivos, rede, credenciais), não o inicia e não o supervisiona; ele só não executa agentes (`REAL_EXECUTION_ENABLED = false`, sem `child_process` no caminho da #008). A proteção de branch, a branch designada e a verificação posterior do PR (V1–V13) restringem e conferem o **resultado**, mas **não equivalem a isolamento de execução**. | **Pendente de #021** (aplicabilidade registrada; não declarado como cumprido) |
 | Operações restritas à branch designada | Branch fixa por ordem; V3/V4/V5/V6 na verificação | Implementado e testado; exercício real pendente (§4.3) |
 | Status rastreável | Estados projetados da ordem, histórico assinado do gateway, verificações só de acréscimo, auditoria #006 | Implementado e testado; exercício real pendente |
 | Erros e interrupção tratados | Verificação sem gravação em erro; `head_changed`; liberação com diário, cruzamento e códigos 1/3/4 (`BARRIER_RELEASE.md`) | Implementado e testado; caso B pendente (§4.4) |
@@ -198,4 +216,4 @@ Repositório: `Moreirapontocom-br/ai-command-center` (o único da allowlist). O 
 | Relatório do Claude Code, revisão do ChatGPT, documentação | `IMPLEMENTATION_REPORT_008_CLOSING.md`; revisão do ChatGPT no PR | Relatório pronto; revisão pendente |
 | PO aprova decisões; branch própria; sem push na main; sem merge automático | Governança do repositório (ruleset `main-protection`, hook pre-push) | Em vigor |
 | Barreira inicial liberada de forma supervisionada | Comando local (P1, PR #51) | Implementado; liberação real pendente (§3) |
-| Exercício ponta a ponta real | Este documento | **Pendente (não executado)** |
+| Exercício ponta a ponta real | Este documento. Ele comprova a **integração assistida** (ordem, aprovações, pacote, PR na branch designada, verificação somente leitura), não isolamento nem execução pelo ACC | **Pendente (não executado)** |

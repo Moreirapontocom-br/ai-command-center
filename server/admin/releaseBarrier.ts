@@ -472,8 +472,9 @@ async function reconcile(input: {
       e.resource.type === 'approval' &&
       e.resource.id === journal.approvalId &&
       e.context.operation === RELEASE_OPERATION &&
-      Date.parse(e.at) >= since &&
-      (interrupted ? e.outcome === 'failure' && e.context.reason === 'interrupted' : matchesRelease(e, { seq: released[0].seq, approvalId: journal.approvalId! })),
+      // C2: o registro final é achado pela aprovação (sem relógio). Só o registro informativo de
+      // interrupção (aprovação possivelmente nula, no estado `intent`) usa o início do diário.
+      (interrupted ? Date.parse(e.at) >= since && e.outcome === 'failure' && e.context.reason === 'interrupted' : matchesRelease(e, { seq: released[0].seq, approvalId: journal.approvalId! })),
   );
   try {
     if (!recorded && interrupted) await input.mirror({ ...base, action: 'approval.configuration', outcome: 'failure', context: { operation: RELEASE_OPERATION, reason: 'interrupted' } });

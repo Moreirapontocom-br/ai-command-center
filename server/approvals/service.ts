@@ -227,13 +227,14 @@ export function createApprovalService(options: ApprovalServiceOptions) {
   function buildArtifacts(approval: LedgerApproval): { grant: ApprovalGrant | null; humanApproval: HumanApproval | null } {
     const b = approval.binding;
     const approvedBy = { kind: 'human' as const, id: approval.decidedBy!.id };
-    if (b.action === 'limits.change' || b.action === 'killswitch.release' || b.action === 'gateway.claude_project_enable') {
+    if (b.action === 'limits.change' || b.action === 'killswitch.release' || b.action === 'gateway.claude_project_enable' || b.action === 'gateway.claude_bridge_credential') {
       return {
         grant: null,
         humanApproval: {
           id: approval.id,
           operation: b.action,
           // Issue #008: a habilitação prende o recibo aos parâmetros exatos (projeto + repositório).
+          // Issue #055: a credencial da ponte, idem (projeto, credencial, agente, validade e resumo do token).
           target: b.action === 'killswitch.release' ? b.resource.id : b.paramsDigest,
           approvedBy,
           approvedAt: approval.decidedAt!,

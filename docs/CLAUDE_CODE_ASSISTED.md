@@ -6,6 +6,7 @@
 > - `agent.invoke` e `data.send_external` continuam `available: false` em `POLICY_ACTIONS`; só a exceção fechada de §10.7 as torna aprováveis, e só o perfil `claude-code/subscription_assisted` ficou `available` no catálogo.
 > - Orçamento adicional: **R$ 0**. Assinatura Claude Pro **não** equivale a acesso à API.
 > - Merge do PR 2: só com revisão independente e autorização explícita do PO.
+> - **Issue #055:** a ponte MCP local (`docs/MCP_BRIDGE.md`) substitui a cópia manual do pacote e da referência do PR. O agente recebe e PROPÕE; o PO confirma com step-up. O fluxo manual deste documento continua como contingência.
 >
 > Base: `main` `5ac983abaeb80418da6113a98f6346c75f118ffc` (merge do PR #48, conclusão da #028). Fontes oficiais consultadas em **2026-11-19** (registro em `docs/evidence/issue008-pr1-sources.txt`).
 

@@ -87,6 +87,7 @@ export const ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   github_unavailable: 'O GitHub não pôde ser consultado agora; nada foi gravado. Tente mais tarde.',
   github_unauthorized: 'A credencial somente leitura do servidor não conseguiu ler este PR; nada foi gravado.',
   gateway_unavailable: 'O Agent Gateway não está configurado ou está indisponível neste servidor.',
+  bridge_unavailable: 'A ponte MCP local está desligada neste servidor ou o projeto não tem credencial ativa.',
   internal: 'Erro interno do servidor.',
 };
 
@@ -140,5 +141,6 @@ export const ERROR_HTTP_STATUS: Record<ApiErrorCode, number> = {
   github_unavailable: 503,
   github_unauthorized: 502,
   gateway_unavailable: 503,
+  bridge_unavailable: 409,
   internal: 500,
 };

@@ -240,6 +240,27 @@ function PresentationView({ presentation }: { presentation: ApprovalPresentation
         </dl>
       );
     }
+    case 'gateway.claude_bridge_credential': {
+      const p = presentation.params;
+      return (
+        <dl className="space-y-2" aria-label="Parâmetros exatos">
+          <Field label="Operação">Criar a credencial LOCAL da ponte MCP (Claude Code) SÓ neste projeto</Field>
+          <Field label="Projeto">
+            <code>{p.projectId}</code>
+          </Field>
+          <Field label="Credencial">
+            <code>{p.credentialId}</code>
+          </Field>
+          <Field label="Agente">
+            <code>{p.agentId}</code>
+          </Field>
+          <Field label="Válida até">{p.expiresAt}</Field>
+          <Field label="Resumo do token (SHA-256)">
+            <code>{p.tokenDigest}</code>
+          </Field>
+        </dl>
+      );
+    }
     case 'sandbox': {
       const p = presentation.params;
       return (

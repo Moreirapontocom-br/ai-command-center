@@ -1,0 +1,56 @@
+Issue #055 — ponte MCP local: verificações locais (2026-11-27, Windows 11, Node v24.18.1, npm 11.16.0)
+Base: main 6d21973338984fc360731f40100b20c2d5969d33. Branch feature/055-mcp-bridge.
+Nenhum token, senha ou pacote aparece neste arquivo.
+
+== Dependências (D-B3) ==
+npm view @modelcontextprotocol/server@2.4.0 → dependencies: zod ^4.2.0, @modelcontextprotocol/core 2.4.0; engines node >=20; Apache-2.0
+npm view @modelcontextprotocol/core@2.4.0   → dependencies: zod ^4.2.0; Apache-2.0
+zod 4.6.7 (MIT) — já presente no lockfile como transitiva de desenvolvimento (eslint-plugin-react-hooks)
+Scripts de instalação (install/preinstall/postinstall/prepare): nenhum nos três pacotes
+npm install --save-exact --ignore-scripts @modelcontextprotocol/server@2.4.0 zod@4.6.7
+npm audit --omit=dev → found 0 vulnerabilities
+npm audit (inclui desenvolvimento) → 9 moderate, todas pré-existentes (cadeia minimatch/eslint; risco aceito em docs/RISK_ACCEPTANCE.md)
+Descartado: @modelcontextprotocol/sdk 1.32.2 (express, hono, @hono/node-server, cors, jose, cross-spawn, eventsource, express-rate-limit, pkce-challenge, ajv… — 17 dependências diretas)
+
+== Testes (npx vitest run) ==
+Test Files  1 failed | 74 passed (75)
+Tests       1 failed | 1553 passed (1554)      (antes: 1507 na main 6d21973)
+Única falha: scripts/main-audit.test.mjs › "a auditoria roda em push na main…" — conhecida e só local
+(core.autocrlf=true faz checkout dos workflows com CRLF; passa com LF e na CI Linux).
+Arquivos novos de teste: server/gateway/bridge.test.ts (20), server/gateway/bridgeContracts.test.ts (6),
+server/http/mcpBridge.test.ts (10); src/features/tasks/ClaudeOrderPanel.test.tsx (+5); server/security.test.ts
+(+5 no bloco "Issue #055"); scripts/secret-scan.test.mjs (+1 regra). Regressões da #008: orders.test.ts,
+claudeOrders.test.ts, claudeContracts.test.ts, prVerification.test.ts e security.test.ts — todos verdes.
+
+== Lint / build / varreduras ==
+npm run lint                → sem problemas
+npm run build               → tsc -b + vite build ok
+npm run check:secrets       → Nenhuma credencial encontrada em 4 arquivo(s) de dist/.
+npm run check:csp           → Build compatível com a CSP de produção
+npm run check:secrets:repo  → Nenhuma credencial encontrada (arquivos versionados)
+grep -rnE "accb_[A-Za-z0-9_-]{43}" server src shared docs scripts .env.example → nenhum resultado
+
+== Compatibilidade com o cliente real (instância DESCARTÁVEL, sem dados do ACC, sem acionar modelo) ==
+claude --version → 2.1.332 (Claude Code)
+claude mcp add --help → "-H, --header <header...>", "-s, --scope <scope> (local, user, or project) (default: local)",
+                        "-t, --transport <transport> (stdio, sse, http)"
+Pasta temporária fora do repositório; coordenador falso; porta efêmera em 127.0.0.1; token de teste gerado na hora.
+claude mcp add --transport http --scope local acc http://127.0.0.1:<porta>/mcp --header "Authorization: Bearer <token>"
+  → Added HTTP MCP server acc … to local config; Headers: { "Authorization": "[REDACTED]" }
+claude mcp get acc  → Scope: Local config (private to you in this project) · Status: ✔ Connected · Type: http
+                      (observação: "get" exibe o cabeçalho com o token em claro no terminal)
+claude mcp list     → acc: http://127.0.0.1:<porta>/mcp (HTTP) - ✔ Connected
+Requisições observadas no servidor descartável (método → status, MCP-Protocol-Version):
+  POST → 400 (2026-07-28: revisão ainda não suportada pelo SDK 2.4.0; o cliente refaz)
+  POST → 200 (initialize, sem cabeçalho; negociado 2025-11-25)
+  POST → 202 (notifications/initialized, 2025-11-25)
+  GET  → 405 (stream SSE recusado; o cliente aceita)
+  POST → 200 (2025-11-25)
+  Nenhum cabeçalho Origin; Accept: application/json, text/event-stream
+claude mcp remove acc -s local → Removed; grep -c "accb_" ~/.claude.json → 0
+Servidor descartável encerrado pela porta (Stop-Process).
+
+== Especificação MCP conferida (2025-11-25) ==
+Origin presente e inválido → 403 (aqui: QUALQUER Origin → 403); bind em loopback; autenticação exigida;
+notificação → 202 sem corpo; GET sem SSE → 405; MCP-Protocol-Version inválido/não suportado → 400;
+sessão não é autenticação (endpoint sem estado); sem token passthrough (o token só vale para este servidor).

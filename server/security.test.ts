@@ -17,6 +17,8 @@ import { ASSISTED_AVAILABILITY } from './policy/engine.ts';
 import { defaultProviderCatalog } from './limits/providers.ts';
 import { REAL_EXECUTION_ENABLED } from './sandbox/contracts.ts';
 import { RELEASABLE_REASONS } from './admin/releaseBarrier.ts';
+import { BRIDGE_ROUTE } from './http/mcpBridge.ts';
+import { BRIDGE_LIMITS } from './gateway/contracts.ts';
 import * as queries from './github/queries.ts';
 
 function sources(dir: string): Array<{ path: string; code: string }> {
@@ -142,6 +144,11 @@ describe('superfície de escrita do servidor', () => {
       '/api/claude-orders/:orderId/pr',
       '/api/claude-orders/:orderId/verify',
       '/api/claude-orders/:orderId/cancel',
+      // Issue #055: ponte MCP local — disponibilizar, confirmar o PR proposto e a credencial da ponte.
+      '/api/claude-orders/:orderId/offer',
+      '/api/claude-orders/:orderId/confirm-pr',
+      '/api/projects/:id/claude-bridge/credentials',
+      '/api/projects/:id/claude-bridge/credentials/:credentialId/revoke',
     ]);
     // Nenhuma rota executa, admite, inicia sandbox, faz merge/deploy, mexe em limites ou no kill switch (N9).
     expect(POST_ROUTES.some((route) => /exec|run|sandbox|admission|admit|kill|barrier|release|limit|budget|quota|spend|merge|deploy|publish|secret|permission/.test(route))).toBe(false);
@@ -168,6 +175,11 @@ describe('superfície de escrita do servidor', () => {
       expect([...allowedMethods(path)]).toEqual(['POST']);
     }
     expect([...allowedMethods(`/api/claude-orders/${id}/release`)]).toEqual(['GET', 'HEAD']);
+    // Issue #055: rotas administrativas da ponte só POST; o endpoint MCP fica FORA de `/api` e de POST_ROUTES.
+    for (const path of [`/api/claude-orders/${id}/offer`, `/api/claude-orders/${id}/confirm-pr`, `/api/projects/${id}/claude-bridge/credentials`, `/api/projects/${id}/claude-bridge/credentials/${id}/revoke`]) {
+      expect([...allowedMethods(path)]).toEqual(['POST']);
+    }
+    expect(POST_ROUTES).not.toContain(BRIDGE_ROUTE);
     // Nenhum PUT/PATCH/DELETE em nenhuma rota; POST aparece uma única vez (constante WRITE_METHOD).
     const app = server.find((f) => f.path === 'server/http/app.ts')!.code;
     expect(app).not.toMatch(/['"](?:PUT|PATCH|DELETE)['"]/);
@@ -391,6 +403,8 @@ describe('superfície de escrita do servidor', () => {
     const files = server.filter((f) => f.path.startsWith('server/gateway/'));
     expect(files.map((f) => f.path).sort()).toEqual([
       'server/gateway/adapters.ts',
+      // Issue #055: coordenador da ponte MCP (lado do agente), sem rede, ambiente nem log.
+      'server/gateway/bridge.ts',
       'server/gateway/content.ts',
       'server/gateway/contracts.ts',
       'server/gateway/documents.ts',
@@ -426,6 +440,8 @@ describe('superfície de escrita do servidor', () => {
     expect(filesMatching(stripComments(server.filter((f) => !f.path.startsWith('server/gateway/'))), /gateway\/|createGateway|createRoutingExecutor|openGatewayStore/).sort()).toEqual([
       'server/http/app.ts',
       'server/http/claudeOrderRoutes.ts',
+      // Issue #055: endpoint MCP local (só o coordenador da ponte e as constantes do gateway).
+      'server/http/mcpBridge.ts',
       'server/index.ts',
     ]);
     expect(server.find((f) => f.path === 'server/http/app.ts')!.code).toMatch(/^import type \{ ClaudeOrders \} from '\.\.\/gateway\/orders\.ts';$/m);
@@ -508,6 +524,64 @@ describe('Issue #008 — garantias estruturais do fluxo assistido', () => {
     for (const file of workflows) expect(readFileSync(join('.github/workflows', file), 'utf8')).not.toMatch(/claude-code-action|anthropics\/|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY/);
     // Nenhum documento GraphQL novo além dos dois de leitura da #008.
     expect(APPROVED_DOCUMENTS.size).toBe(3);
+  });
+});
+
+describe('Issue #055 — ponte MCP local', () => {
+  const bridgeHttp = stripComments(server).find((f) => f.path === 'server/http/mcpBridge.ts')!.code;
+  const bridgeCore = stripComments(server).find((f) => f.path === 'server/gateway/bridge.ts')!.code;
+
+  it('endpoint único `/mcp`, fora de `/api` e de POST_ROUTES; tratado ANTES do pipeline administrativo', () => {
+    expect(BRIDGE_ROUTE).toBe('/mcp');
+    expect(POST_ROUTES.some((route) => route.includes('mcp'))).toBe(false);
+    const app = stripComments(server).find((f) => f.path === 'server/http/app.ts')!.code;
+    const dispatch = app.indexOf('if (pathname === BRIDGE_ROUTE)');
+    expect(dispatch).toBeGreaterThan(0);
+    // Antes da lista de métodos, do CSRF e da sessão do administrador.
+    expect(dispatch).toBeLessThan(app.indexOf('const methods = allowedMethods(pathname)'));
+    expect(dispatch).toBeLessThan(app.indexOf('auth.authenticate(cookieHeader)'));
+  });
+
+  it('pipeline próprio: nunca lê cookie nem a sessão do administrador; o token nunca vai para log nem auditoria', () => {
+    expect(bridgeHttp).not.toMatch(/cookie|adminAuth|auth\.authenticate|sessions\.ts|readCookie/i);
+    expect(bridgeHttp).not.toMatch(/node:fs|node:child_process|node:net|node:dns|node:tls|\bfetch\(|process\.env|\beval\(|new Function\(/);
+    // Só o SDK oficial do servidor MCP, o zod, tipos/constantes do gateway e da auditoria.
+    const imports = [...bridgeHttp.matchAll(/^import [^;]+ from '([^']+)';$/gm)].map((m) => m[1]).sort();
+    expect(imports).toEqual(['../../shared/contracts.ts', '../../shared/securityHeaders.ts', '../audit/auditLog.ts', '../gateway/bridge.ts', '../gateway/contracts.ts', '../logger.ts', '@modelcontextprotocol/server', 'node:crypto', 'node:http', 'zod'].sort());
+    // Nenhum log recebe o token, o corpo, os cabeçalhos ou o pacote.
+    for (const call of bridgeHttp.match(/logger\.log\([^)]*\)/g) ?? []) expect(call).not.toMatch(/token|digest|raw|body|headers|authorization|package|text/i);
+    // As rotas administrativas nunca leem o cabeçalho Authorization (o token da ponte não autentica lá).
+    for (const path of ['server/http/app.ts', 'server/http/claudeOrderRoutes.ts', 'server/http/approvalRoutes.ts']) {
+      expect(stripComments(server).find((f) => f.path === path)!.code).not.toMatch(/headers\.authorization|headers\[['"]authorization/i);
+    }
+  });
+
+  it('o lado do agente não vincula PR, não aprova, não cancela, não libera pacote manual nem toca em credenciais da pessoa', () => {
+    expect(bridgeCore).not.toMatch(/linkPullRequest|confirmProposal|releaseOrder|cancelOrder|createBridgeCredential|revokeBridgeCredential|enableProject|disableProject|activateScope|offerOrder|appendVerification|\.verify\(/);
+    expect(bridgeHttp).not.toMatch(/linkPullRequest|confirmProposal|releaseOrder|cancelOrder|createBridgeCredential|revokeBridgeCredential|offerOrder/);
+    expect(bridgeCore).not.toMatch(/console\.|logger\.|\.log\(/);
+  });
+
+  it('SDK oficial fixado (versão exata, sem faixa) e nenhum `.mcp.json` versionado', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { dependencies?: Record<string, string> };
+    expect(pkg.dependencies?.['@modelcontextprotocol/server']).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pkg.dependencies?.zod).toMatch(/^\d+\.\d+\.\d+$/);
+    const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as { packages: Record<string, { version: string }> };
+    expect(lock.packages['node_modules/@modelcontextprotocol/server'].version).toBe(pkg.dependencies?.['@modelcontextprotocol/server']);
+    expect(readdirSync('.').filter((f) => f === '.mcp.json')).toEqual([]);
+  });
+
+  it('limites fechados da ponte', () => {
+    expect({ ...BRIDGE_LIMITS }).toEqual({
+      credentialMaxDays: 30,
+      claimReplayMs: 15 * 60 * 1000,
+      maxProposals: 5,
+      maxRequestBytes: 16 * 1024,
+      maxResponseBytes: 512 * 1024,
+      requestsPerMinute: 60,
+      authFailuresBeforeLock: 10,
+      authFailureWindowMs: 5 * 60 * 1000,
+    });
   });
 });
 
@@ -676,7 +750,8 @@ describe('frontend', () => {
           .replace('${encodeURIComponent(approvalId)}', ':id')
           .replace('${encodeURIComponent(attemptId)}', ':id')
           .replace('${encodeURIComponent(holdId)}', ':id')
-          .replace('${encodeURIComponent(orderId)}', ':orderId'),
+          .replace('${encodeURIComponent(orderId)}', ':orderId')
+          .replace('${encodeURIComponent(credentialId)}', ':credentialId'),
       );
     });
     expect(posted.sort()).toEqual([...POST_ROUTES].sort());

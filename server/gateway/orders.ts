@@ -1,6 +1,6 @@
-import type { ClaudeOrderState, ClaudeOrderVerificationView, ClaudeOrderVerifyResponse, ClaudeOrderView } from '../../shared/contracts.ts';
+import type { ApiErrorCode, ClaudeBridgeCredentialView, ClaudeOrderBridgeView, ClaudeOrderConfirmResponse, ClaudeOrderState, ClaudeOrderVerificationView, ClaudeOrderVerifyResponse, ClaudeOrderView } from '../../shared/contracts.ts';
 import type { CompareRead, PullRequestReaderPort } from '../github/prTypes.ts';
-import { GatewayError, ORDER_LIMITS, type OrderMark, type OrderVerification } from './contracts.ts';
+import { BRIDGE_LIMITS, GatewayError, ORDER_LIMITS, type OrderMark, type OrderVerification } from './contracts.ts';
 import { evaluatePullRequest } from './prVerification.ts';
 import type { Gateway, HumanConfirm } from './service.ts';
 
@@ -29,6 +29,11 @@ export interface ClaudeOrdersDeps {
   reader: PullRequestReaderPort | null;
   /** Situação dos pedidos de aprovação de um escopo (leitura do núcleo #011; nunca decide). */
   approvalsFor?: (ownerId: string, scopeId: string) => ApprovalStatusView[];
+  /**
+   * Issue #055: código público de uma falha da verificação feita na confirmação do PR proposto (o
+   * vínculo já foi gravado). Ausente → `internal`.
+   */
+  publicCode?: (code: string) => ApiErrorCode;
   now?: () => number;
 }
 
@@ -62,7 +67,7 @@ export function createClaudeOrders(deps: ClaudeOrdersDeps) {
 
   /** Estado projetado (§5.1) a partir do que está persistido + da última leitura desta execução. */
   function project(record: OrderRecord): ClaudeOrderView {
-    const { scope, handoff, marks, verifications } = record;
+    const { scope, handoff, marks, verifications, deliveries, proposals } = record;
     const code = scope.code;
     const mark = (kind: OrderMark['kind']) => marks.find((m) => m.kind === kind) ?? null;
     const latest = verifications[verifications.length - 1] ?? null;
@@ -163,6 +168,31 @@ export function createClaudeOrders(deps: ClaudeOrdersDeps) {
       },
       history: verifications.map(entryView),
       closed,
+      bridge: bridgeView(code.repository, handoff?.state ?? null, deliveries, proposals, prMark?.prNumber ?? null),
+    };
+  }
+
+  /** Issue #055: situação da ordem na ponte (nada de pacote, chave ou credencial além do id). */
+  function bridgeView(repository: string, handoffState: string | null, deliveries: OrderRecord['deliveries'], proposals: OrderRecord['proposals'], linkedPr: number | null): ClaudeOrderBridgeView | null {
+    const offered = deliveries.find((d) => d.kind === 'offered');
+    if (!offered) return null;
+    const claim = deliveries.find((d) => d.kind === 'claimed') ?? null;
+    const latest = proposals[proposals.length - 1] ?? null;
+    return {
+      offeredAt: offered.at,
+      claim: claim ? { id: claim.id, at: claim.at, credentialId: claim.credentialId } : null,
+      proposal: latest
+        ? {
+            id: latest.id,
+            number: latest.prNumber,
+            reference: `${repository}#${latest.prNumber}`,
+            url: `https://github.com/${repository}/pull/${latest.prNumber}`,
+            proposedAt: latest.at,
+            status: linkedPr === latest.prNumber ? 'confirmed' : handoffState === 'awaiting_relay' ? 'pending' : 'closed',
+          }
+        : null,
+      proposals: proposals.length,
+      maxProposals: BRIDGE_LIMITS.maxProposals,
     };
   }
 
@@ -273,6 +303,45 @@ export function createClaudeOrders(deps: ClaudeOrdersDeps) {
       } finally {
         done();
       }
+    },
+
+    // ---------- Issue #055: ponte MCP local ----------
+
+    /** Disponibiliza a ordem ao Claude Code pela ponte (step-up). O pacote não volta ao navegador. */
+    async offer(ownerId: string, projectId: string, orderId: string, confirm: HumanConfirm): Promise<ClaudeOrderView> {
+      await gateway.offerOrder(ownerId, projectId, orderId, confirm);
+      return viewOf(ownerId, projectId, orderId);
+    },
+
+    /**
+     * Confirma o PR PROPOSTO (step-up) e, na MESMA ação, faz a verificação somente leitura. O vínculo
+     * é gravado antes; se a verificação falhar (GitHub indisponível, intervalo mínimo…), o código
+     * público vem em `verificationError` e a pessoa pode verificar de novo depois.
+     */
+    async confirmProposal(ownerId: string, projectId: string, orderId: string, proposalId: unknown, confirm: HumanConfirm, actor: { kind: 'human'; id: string }): Promise<ClaudeOrderConfirmResponse> {
+      await gateway.confirmProposal(ownerId, projectId, orderId, proposalId, confirm);
+      try {
+        const result = await this.verify(ownerId, projectId, orderId, actor);
+        return { order: result.order, outcome: result.outcome, verificationError: null };
+      } catch (error) {
+        const raw = (error as { code?: unknown })?.code;
+        const code = typeof raw === 'string' && /^[a-z0-9_]{1,64}$/.test(raw) ? raw : 'internal';
+        return { order: viewOf(ownerId, projectId, orderId), outcome: null, verificationError: deps.publicCode ? deps.publicCode(code) : 'internal' };
+      }
+    },
+
+    /** Credencial vigente da ponte no projeto (a mais recente; `null` se nunca houve). */
+    bridgeCredential(ownerId: string, projectId: string): ClaudeBridgeCredentialView | null {
+      const list = gateway.bridgeCredentials(ownerId, projectId);
+      return list.filter((c) => c.state === 'active').pop() ?? list.pop() ?? null;
+    },
+
+    createBridgeCredential(ownerId: string, projectId: string, validityDays: unknown, confirm: HumanConfirm) {
+      return gateway.createBridgeCredential(ownerId, projectId, { validityDays, confirm });
+    },
+
+    revokeBridgeCredential(ownerId: string, projectId: string, credentialId: string, confirm: HumanConfirm) {
+      return gateway.revokeBridgeCredential(ownerId, projectId, credentialId, confirm);
     },
 
     enablement(ownerId: string, projectId: string) {

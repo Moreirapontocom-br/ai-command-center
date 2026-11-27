@@ -319,6 +319,68 @@ export interface ProjectSetting {
   reason: string;
 }
 
+/**
+ * Issue #055 — credencial LOCAL da ponte MCP (nunca uma chave de provedor). Só o resumo SHA-256 do
+ * token é gravado; o token aparece uma única vez, na resposta da criação. Registro imutável: a
+ * revogação é uma entrada própria (`BridgeRevocation`), e a validade nunca é estendida.
+ */
+export interface BridgeCredential {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  agentId: 'claude-code';
+  tokenDigest: string;
+  createdAt: string;
+  createdBy: string;
+  expiresAt: string;
+  /** Aprovação de configuração (#011) consumida na criação. */
+  approvalId: string;
+}
+
+/** Revogação de uma credencial da ponte (uma por credencial; somente de acréscimo). */
+export interface BridgeRevocation {
+  id: string;
+  ownerId: string;
+  credentialId: string;
+  at: string;
+  by: string;
+  reason: string;
+}
+
+/**
+ * Entrega da ordem pela ponte (Issue #055), somente de acréscimo:
+ * - `offered`: o PO disponibilizou a ordem ao Claude Code (step-up). O pacote foi liberado ao canal
+ *   da ponte e NUNCA é devolvido pelo canal manual;
+ * - `claimed`: recebimento atômico pelo agente, preso à credencial e à chave de idempotência
+ *   (`keyDigest`) e ao conteúdo do pedido (`requestDigest`). Um por ordem.
+ */
+export interface OrderDelivery {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  orderId: string;
+  kind: 'offered' | 'claimed';
+  at: string;
+  by: string;
+  credentialId: string | null;
+  keyDigest: string | null;
+  requestDigest: string | null;
+}
+
+/** PR PROPOSTO pelo agente (Issue #055). Nunca é vínculo: só a confirmação do PO (step-up) vincula. */
+export interface PrProposal {
+  id: string;
+  ownerId: string;
+  projectId: string;
+  orderId: string;
+  credentialId: string;
+  claimId: string;
+  prNumber: number;
+  keyDigest: string;
+  requestDigest: string;
+  at: string;
+}
+
 export interface GatewayBody {
   scopes: GatewayScope[];
   invocations: GatewayInvocation[];
@@ -328,7 +390,33 @@ export interface GatewayBody {
   verifications?: OrderVerification[];
   orderMarks?: OrderMark[];
   projectSettings?: ProjectSetting[];
+  /** Issue #055 — ponte MCP (aditivos; ausentes em ledgers anteriores = vazios). */
+  bridgeCredentials?: BridgeCredential[];
+  bridgeRevocations?: BridgeRevocation[];
+  orderDeliveries?: OrderDelivery[];
+  prProposals?: PrProposal[];
 }
+
+/** Limites da ponte MCP (Issue #055). Ampliar qualquer um exige PR revisado. */
+export const BRIDGE_LIMITS = {
+  /** Validade máxima de uma credencial (a pessoa escolhe de 1 a 30 dias). */
+  credentialMaxDays: 30,
+  /** Repetição do recebimento (perda da resposta): mesma credencial, mesma chave, mesmo pedido. */
+  claimReplayMs: 15 * 60 * 1000,
+  maxProposals: 5,
+  /** Corpo de uma requisição MCP e resposta máxima (o pacote tem no máximo 128 KiB). */
+  maxRequestBytes: 16 * 1024,
+  maxResponseBytes: 512 * 1024,
+  /** Requisições por minuto por credencial. */
+  requestsPerMinute: 60,
+  /** Falhas de autenticação antes do bloqueio temporário da ponte (todas as credenciais). */
+  authFailuresBeforeLock: 10,
+  authFailureWindowMs: 5 * 60 * 1000,
+} as const;
+
+export const BRIDGE_TOKEN_PREFIX = 'accb_';
+/** Token da ponte: prefixo fixo + 32 bytes aleatórios em base64url (43 caracteres). */
+export const BRIDGE_TOKEN = /^accb_[A-Za-z0-9_-]{43}$/;
 
 /** Limites do fluxo assistido do Claude Code (Issue #008). Ampliar qualquer um exige PR revisado. */
 export const ORDER_LIMITS = {
@@ -371,6 +459,12 @@ export const GATEWAY_EVENTS = [
   'gateway.pr_verification_superseded',
   'gateway.order_closed',
   'gateway.project_enablement',
+  // Issue #055 — ponte MCP local.
+  'gateway.bridge_credential_created',
+  'gateway.bridge_credential_revoked',
+  'gateway.order_offered',
+  'gateway.order_claimed',
+  'gateway.pr_proposed',
 ] as const;
 export type GatewayEvent = (typeof GATEWAY_EVENTS)[number];
 
@@ -444,3 +538,5 @@ export class GatewayError extends Error {
 }
 
 export const GATEWAY_SYSTEM_ACTOR = { kind: 'system' as const, id: 'acc-gateway' };
+/** Ator do histórico para operações pedidas pelo agente pela ponte (o histórico só tem `human`/`system`). */
+export const BRIDGE_ACTOR = { kind: 'system' as const, id: 'acc-bridge' };

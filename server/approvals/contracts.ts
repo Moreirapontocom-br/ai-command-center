@@ -56,6 +56,8 @@ export const CONFIGURATION_OPERATIONS = [
   'approvals.history_purge',
   // Issue #008 (D-08.11): habilitar o fluxo assistido do Claude Code em UM projeto.
   'gateway.claude_project_enable',
+  // Issue #055: criar a credencial LOCAL da ponte MCP de UM projeto (configuração autorizada).
+  'gateway.claude_bridge_credential',
 ] as const;
 export type ConfigurationOperation = (typeof CONFIGURATION_OPERATIONS)[number];
 

@@ -22,7 +22,7 @@ import { AGENT_IDS, POLICY_ACTIONS, type ApprovalBindingView } from './contracts
  * Arquivo sem dependências do servidor: roda no navegador e no servidor (mesmo cálculo).
  */
 
-export const PRESENTATION_KINDS = ['sandbox', 'admission', 'approvals.retention_change', 'approvals.history_purge', 'gateway.scope', 'gateway.claude_project_enable'] as const;
+export const PRESENTATION_KINDS = ['sandbox', 'admission', 'approvals.retention_change', 'approvals.history_purge', 'gateway.scope', 'gateway.claude_project_enable', 'gateway.claude_bridge_credential'] as const;
 export type ApprovalPresentationKind = (typeof PRESENTATION_KINDS)[number];
 
 /** Espelhos das listas do servidor (um teste garante que são iguais às de `server/`). */
@@ -122,8 +122,21 @@ export interface ClaudeProjectEnablementParams {
   repository: string;
 }
 
+/**
+ * Issue #055: credencial LOCAL da ponte MCP de UM projeto. A aprovação prende a credencial, o agente,
+ * a validade e o RESUMO SHA-256 do token (o token nunca é apresentado nem gravado).
+ */
+export interface ClaudeBridgeCredentialParams {
+  projectId: string;
+  credentialId: string;
+  agentId: 'claude-code';
+  expiresAt: string;
+  tokenDigest: string;
+}
+
 export type ApprovalPresentation =
   | { kind: 'gateway.scope'; params: GatewayScopePresentationParams }
+  | { kind: 'gateway.claude_bridge_credential'; params: ClaudeBridgeCredentialParams }
   | { kind: 'gateway.claude_project_enable'; params: ClaudeProjectEnablementParams }
   | { kind: 'sandbox'; params: SandboxPresentationParams }
   | { kind: 'admission'; params: AdmissionPresentationParams }
@@ -360,6 +373,15 @@ export function parsePresentation(raw: unknown): ApprovalPresentation {
       presentation = { kind, params: { projectId: str(params.projectId, UUID), repository: str(params.repository, REPOSITORY) } };
       break;
     }
+    case 'gateway.claude_bridge_credential': {
+      const params = exact(p.params, ['projectId', 'credentialId', 'agentId', 'expiresAt', 'tokenDigest']);
+      if (params.agentId !== 'claude-code') fail();
+      const expiresAt = typeof params.expiresAt === 'string' ? params.expiresAt : fail();
+      const ms = Date.parse(expiresAt);
+      if (!Number.isFinite(ms) || new Date(ms).toISOString() !== expiresAt) fail();
+      presentation = { kind, params: { projectId: str(params.projectId, UUID), credentialId: str(params.credentialId, UUID), agentId: 'claude-code', expiresAt, tokenDigest: str(params.tokenDigest, HEX64) } };
+      break;
+    }
     case 'approvals.retention_change': {
       const params = exact(p.params, ['days']);
       presentation = { kind, params: { days: int(params.days, 1, 100 * 365) } };
@@ -392,7 +414,7 @@ export function expectedPresentationKind(binding: Pick<ApprovalBindingView, 'act
   if (requestedBy.kind === 'system' && requestedBy.id === 'sandbox') return binding.action === 'sandbox.execute' ? 'sandbox' : null;
   if (requestedBy.kind === 'system' && requestedBy.id === 'limits') return Object.hasOwn(POLICY_ACTIONS, binding.action) ? 'admission' : null;
   if (requestedBy.kind === 'system' && requestedBy.id === 'gateway') return binding.action === 'agent.invoke' || binding.action === 'data.send_external' ? 'gateway.scope' : null;
-  if (requestedBy.kind === 'human' && (binding.action === 'approvals.retention_change' || binding.action === 'approvals.history_purge' || binding.action === 'gateway.claude_project_enable')) return binding.action;
+  if (requestedBy.kind === 'human' && (binding.action === 'approvals.retention_change' || binding.action === 'approvals.history_purge' || binding.action === 'gateway.claude_project_enable' || binding.action === 'gateway.claude_bridge_credential')) return binding.action;
   return null;
 }
 
@@ -457,6 +479,17 @@ function consistent(binding: ApprovalBindingView, p: ApprovalPresentation): bool
         binding.projectId === p.params.projectId &&
         binding.resource.type === 'project' &&
         binding.resource.id === p.params.projectId &&
+        binding.target.sha === null &&
+        binding.target.ref === null
+      );
+    case 'gateway.claude_bridge_credential':
+      // Credencial de UM projeto, pedida pela própria pessoa; o recurso é a própria credencial.
+      return (
+        binding.action === p.kind &&
+        binding.subject.kind === 'human' &&
+        binding.projectId === p.params.projectId &&
+        binding.resource.type === 'bridge_credential' &&
+        binding.resource.id === p.params.credentialId &&
         binding.target.sha === null &&
         binding.target.ref === null
       );

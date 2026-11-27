@@ -5,7 +5,9 @@ import type {
   AuditAction,
   AuditContextValue,
   AuditOutcome,
+  ClaudeBridgeCredentialResponse,
   ClaudeEnablementResponse,
+  ClaudeOrderConfirmResponse,
   ClaudeOrderListResponse,
   ClaudeOrderPackageResponse,
   ClaudeOrderResponse,
@@ -35,6 +37,10 @@ import type { TaskStore } from '../tasks/taskStore.ts';
  * - O pacote só aparece na resposta da liberação; a listagem nunca o devolve.
  * - A liberação usa `/package` (não `/release`): o teste estrutural do servidor proíbe rotas POST
  *   com `release` (N9, liberação de kill switch) e a recusa é mantida, não contornada.
+ * - Issue #055 (ponte MCP local): disponibilizar a ordem ao Claude Code (`/offer`), confirmar o PR
+ *   PROPOSTO (`/confirm-pr`, que vincula e verifica) e criar/revogar a credencial da ponte exigem a
+ *   mesma confirmação de identidade. O token da ponte só aparece na resposta da criação (nunca em
+ *   log, auditoria ou listagem) e nunca autentica nestas rotas (só a sessão do administrador).
  */
 
 export const CLAUDE_ORDER_POST_ROUTES: readonly string[] = Object.freeze([
@@ -45,12 +51,19 @@ export const CLAUDE_ORDER_POST_ROUTES: readonly string[] = Object.freeze([
   '/api/claude-orders/:orderId/pr',
   '/api/claude-orders/:orderId/verify',
   '/api/claude-orders/:orderId/cancel',
+  // Issue #055: ponte MCP local (nenhuma rota executa, chama provedor ou escreve no GitHub).
+  '/api/claude-orders/:orderId/offer',
+  '/api/claude-orders/:orderId/confirm-pr',
+  '/api/projects/:id/claude-bridge/credentials',
+  '/api/projects/:id/claude-bridge/credentials/:credentialId/revoke',
 ]);
 
 const PROJECT_ORDERS = /^\/api\/projects\/([^/]+)\/claude-orders$/;
 const TASK_ORDERS = /^\/api\/projects\/([^/]+)\/tasks\/([^/]+)\/claude-orders$/;
 const ENABLEMENT = /^\/api\/projects\/([^/]+)\/claude-enablement$/;
-const ORDER_ACTION = /^\/api\/claude-orders\/([^/]+)\/(package|forwarded|pr|verify|cancel)$/;
+const ORDER_ACTION = /^\/api\/claude-orders\/([^/]+)\/(package|forwarded|pr|verify|cancel|offer|confirm-pr)$/;
+const BRIDGE_CREDENTIALS = /^\/api\/projects\/([^/]+)\/claude-bridge\/credentials$/;
+const BRIDGE_REVOKE = /^\/api\/projects\/([^/]+)\/claude-bridge\/credentials\/([^/]+)\/revoke$/;
 const ORDERS_PREFIX = '/api/claude-orders/';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -60,12 +73,13 @@ const TOKEN = /^[a-z0-9_]{1,64}$/;
 const MAX_CREATE_BYTES = 16 * 1024;
 const MAX_SMALL_BYTES = 4096;
 
-export const isClaudeOrderPath = (pathname: string) => PROJECT_ORDERS.test(pathname) || TASK_ORDERS.test(pathname) || ENABLEMENT.test(pathname) || pathname.startsWith(ORDERS_PREFIX);
+export const isClaudeOrderPath = (pathname: string) =>
+  PROJECT_ORDERS.test(pathname) || TASK_ORDERS.test(pathname) || ENABLEMENT.test(pathname) || BRIDGE_CREDENTIALS.test(pathname) || BRIDGE_REVOKE.test(pathname) || pathname.startsWith(ORDERS_PREFIX);
 
 /** Métodos aceitos (`null` se o caminho não for destas rotas). */
 export function claudeOrderMethods(pathname: string): readonly string[] | null {
   if (PROJECT_ORDERS.test(pathname)) return ['GET', 'HEAD'];
-  if (TASK_ORDERS.test(pathname) || ENABLEMENT.test(pathname) || ORDER_ACTION.test(pathname)) return ['POST'];
+  if (TASK_ORDERS.test(pathname) || ENABLEMENT.test(pathname) || ORDER_ACTION.test(pathname) || BRIDGE_CREDENTIALS.test(pathname) || BRIDGE_REVOKE.test(pathname)) return ['POST'];
   if (pathname.startsWith(ORDERS_PREFIX)) return ['GET', 'HEAD'];
   return null;
 }
@@ -74,6 +88,8 @@ export function claudeOrderRouteName(pathname: string): string {
   if (PROJECT_ORDERS.test(pathname)) return 'claude_orders';
   if (TASK_ORDERS.test(pathname)) return 'claude_orders.create';
   if (ENABLEMENT.test(pathname)) return 'claude_orders.enablement';
+  if (BRIDGE_CREDENTIALS.test(pathname)) return 'claude_bridge.credentials';
+  if (BRIDGE_REVOKE.test(pathname)) return 'claude_bridge.revoke';
   const action = ORDER_ACTION.exec(pathname);
   return action ? `claude_orders.${action[2]}` : 'claude_orders';
 }
@@ -139,6 +155,13 @@ export function publicOrderCode(code: string): ApiErrorCode {
     store_full: 'gateway_unavailable',
     store_write_failed: 'gateway_unavailable',
     change_rejected: 'gateway_unavailable',
+    // Issue #055 — ponte MCP local.
+    bridge_disabled: 'bridge_unavailable',
+    bridge_credential_missing: 'bridge_unavailable',
+    delivery_channel_bridge: 'order_conflict',
+    delivery_channel_manual: 'order_conflict',
+    proposal_superseded: 'order_conflict',
+    already_claimed: 'order_conflict',
   };
   if (Object.hasOwn(map, code)) return map[code];
   // Confirmação de identidade (#011): os mesmos códigos públicos das rotas de aprovação.
@@ -167,6 +190,8 @@ export function createClaudeOrderRoutes(deps: {
   audit?: AuditLog | null;
   allowedRepositories: readonly string[];
   logger: Logger;
+  /** Issue #055: endereço local do endpoint MCP quando a ponte está ligada (`null`: desligada). */
+  bridgeEndpoint?: string | null;
 }) {
   const fail = (code: ApiErrorCode, extra?: { retryAfterSeconds?: number }): never => {
     throw new IntegrationError(code, extra);
@@ -182,10 +207,10 @@ export function createClaudeOrderRoutes(deps: {
   const proofOf = (record: Record<string, unknown>) => (typeof record.proofId === 'string' && record.proofId.length > 0 && record.proofId.length <= 64 ? record.proofId : fail('bad_request'));
 
   /** Espelho na auditoria da #006 (melhor esforço: o histórico oficial é o ledger do gateway). */
-  async function mirror(action: AuditAction, session: Session, projectId: string | null, orderId: string | null, outcome: AuditOutcome, context: Record<string, AuditContextValue>) {
+  async function mirror(action: AuditAction, session: Session, projectId: string | null, orderId: string | null, outcome: AuditOutcome, context: Record<string, AuditContextValue>, resourceType: 'claude_order' | 'bridge_credential' = 'claude_order') {
     if (!deps.audit) return;
     try {
-      await deps.audit.append({ action, actor: { kind: 'human', id: session.userId }, ownerId: session.userId, projectId, resource: { type: 'claude_order', id: orderId }, outcome, context });
+      await deps.audit.append({ action, actor: { kind: 'human', id: session.userId }, ownerId: session.userId, projectId, resource: { type: resourceType, id: orderId }, outcome, context });
     } catch {
       deps.logger.log('error', 'Falha ao gravar evento de auditoria', { event: 'audit_write_failed', action });
     }
@@ -231,6 +256,11 @@ export function createClaudeOrderRoutes(deps: {
           enablement: orders ? orders.enablement(ownerId, project.id) : { enabled: false, repository: null, at: null },
           linkableRepositories: linkable,
           orders: orders && status.state !== 'unavailable' ? orders.list(ownerId, project.id) : [],
+          bridge: {
+            enabled: Boolean(orders && deps.bridgeEndpoint),
+            endpoint: orders && deps.bridgeEndpoint ? deps.bridgeEndpoint : null,
+            credential: orders && status.state !== 'unavailable' ? orders.bridgeCredential(ownerId, project.id) : null,
+          },
         };
         io.sendJson(res, 200, body);
         return;
@@ -295,6 +325,40 @@ export function createClaudeOrderRoutes(deps: {
         return;
       }
 
+      // Issue #055: credencial LOCAL da ponte (criação com aprovação de configuração + step-up; revogação com step-up).
+      const credentials = BRIDGE_CREDENTIALS.exec(pathname);
+      const revoke = BRIDGE_REVOKE.exec(pathname);
+      if (credentials || revoke) {
+        const project = ownedProject(session, (credentials ?? revoke)![1]);
+        io.enforce(session, ['project.update'], project.id);
+        const credentialId = revoke ? revoke[2] : null;
+        if (credentialId !== null && !UUID.test(credentialId)) fail('not_found');
+        const body = object(await io.readJsonBody(req, MAX_SMALL_BYTES), credentials ? ['validityDays', 'proofId'] : ['proofId']);
+        const proofId = proofOf(body);
+        try {
+          if (credentials) {
+            const created = await orders.createBridgeCredential(ownerId, project.id, body.validityDays, { proofId, identity });
+            await mirror('claude_bridge.credential', session, project.id, created.credential.id, 'success', { to: 'created' }, 'bridge_credential');
+            deps.logger.log('info', 'Credencial da ponte MCP criada', { event: 'bridge_credential_created', projectId: project.id, credentialId: created.credential.id });
+            // O token sai SÓ nesta resposta (o servidor guarda apenas o resumo).
+            // Escopo `local` do Claude Code: fica no perfil do PO, nunca num `.mcp.json` versionado.
+            const command = `claude mcp add --transport http --scope local acc ${deps.bridgeEndpoint ?? ''} --header "Authorization: Bearer ${created.token}"`;
+            const response: ClaudeBridgeCredentialResponse = { credential: created.credential, token: created.token, command };
+            io.sendJson(res, 201, response);
+          } else {
+            const credential = await orders.revokeBridgeCredential(ownerId, project.id, credentialId!, { proofId, identity });
+            await mirror('claude_bridge.credential', session, project.id, credential.id, 'success', { to: 'revoked' }, 'bridge_credential');
+            deps.logger.log('info', 'Credencial da ponte MCP revogada', { event: 'bridge_credential_revoked', projectId: project.id, credentialId: credential.id });
+            io.sendJson(res, 200, { credential });
+          }
+        } catch (caught) {
+          const error = translate(caught);
+          await mirror('claude_bridge.credential', session, project.id, credentialId, outcomeFor(error), { reason: error.code, to: credentials ? 'created' : 'revoked' }, 'bridge_credential');
+          throw error;
+        }
+        return;
+      }
+
       const action = ORDER_ACTION.exec(pathname);
       if (!action) fail('not_found');
       const [, orderId, verb] = action!;
@@ -312,15 +376,27 @@ export function createClaudeOrderRoutes(deps: {
         pr: 'claude_order.pr_linked',
         verify: 'claude_order.verified',
         cancel: 'claude_order.cancelled',
+        offer: 'claude_order.offered',
+        'confirm-pr': 'claude_order.pr_confirmed',
       };
-      io.enforce(session, verb === 'verify' ? ['github.read', 'task.read'] : ['task.update'], projectId);
+      io.enforce(session, verb === 'verify' ? ['github.read', 'task.read'] : verb === 'confirm-pr' ? ['task.update', 'github.read'] : ['task.update'], projectId);
       const body =
         verb === 'pr'
           ? object(await io.readJsonBody(req, MAX_SMALL_BYTES), ['pullRequest', 'proofId'])
-          : verb === 'package' || verb === 'cancel'
-            ? object(await io.readJsonBody(req, MAX_SMALL_BYTES), ['proofId'])
-            : object(await io.readJsonBody(req, MAX_SMALL_BYTES), []);
+          : verb === 'confirm-pr'
+            ? object(await io.readJsonBody(req, MAX_SMALL_BYTES), ['proposalId', 'proofId'])
+            : verb === 'package' || verb === 'cancel' || verb === 'offer'
+              ? object(await io.readJsonBody(req, MAX_SMALL_BYTES), ['proofId'])
+              : object(await io.readJsonBody(req, MAX_SMALL_BYTES), []);
       try {
+        if (verb === 'confirm-pr') {
+          if (typeof body.proposalId !== 'string' || !UUID.test(body.proposalId)) fail('bad_request');
+          const result = await orders.confirmProposal(ownerId, projectId, orderId, body.proposalId, { proofId: proofOf(body), identity }, { kind: 'human', id: session.userId });
+          await mirror(audits[verb], session, projectId, orderId, 'success', { to: result.order.state, verdict: result.outcome?.verdict ?? null, head: result.outcome?.headSha ?? null, reason: result.verificationError });
+          const response: ClaudeOrderConfirmResponse = result;
+          io.sendJson(res, 200, response);
+          return;
+        }
         if (verb === 'package') {
           const result = await orders.release(ownerId, projectId, orderId, { proofId: proofOf(body), identity });
           await mirror(audits[verb], session, projectId, orderId, 'success', { to: result.order.state });
@@ -340,7 +416,9 @@ export function createClaudeOrderRoutes(deps: {
         const order =
           verb === 'forwarded'
             ? await orders.forwarded(ownerId, projectId, orderId, session.userId)
-            : verb === 'pr'
+            : verb === 'offer'
+              ? await orders.offer(ownerId, projectId, orderId, { proofId: proofOf(body), identity })
+              : verb === 'pr'
               ? await orders.linkPullRequest(ownerId, projectId, orderId, body.pullRequest, { proofId: proofOf(body), identity })
               : await orders.cancel(ownerId, projectId, orderId, { proofId: proofOf(body), identity });
         await mirror(audits[verb], session, projectId, orderId, 'success', { to: order.state });

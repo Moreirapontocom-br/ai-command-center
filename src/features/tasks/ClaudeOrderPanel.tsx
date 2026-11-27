@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import type { ClaudeOrderListResponse, ClaudeOrderState, ClaudeOrderVerifyResponse, ClaudeOrderView } from '../../../shared/contracts.ts';
+import type { ClaudeBridgeStatusView, ClaudeOrderListResponse, ClaudeOrderState, ClaudeOrderVerifyResponse, ClaudeOrderView } from '../../../shared/contracts.ts';
 import { Badge, type BadgeTone } from '../../components/ui/Badge';
 import { ApiClientError } from '../../services/apiClient';
 import { confirmIdentity } from '../../services/approvalsApi';
 import {
   cancelClaudeOrder,
+  confirmClaudeProposal,
+  createBridgeCredential,
   createClaudeOrder,
   linkClaudePullRequest,
   listClaudeOrders,
   markClaudeForwarded,
+  offerClaudeOrder,
   releaseClaudePackage,
+  revokeBridgeCredential,
   setClaudeEnablement,
   verifyClaudePullRequest,
 } from '../../services/claudeOrdersApi';
@@ -113,17 +117,109 @@ function Confirm({ label, submitLabel, onConfirmed, children }: { label: string;
   );
 }
 
-function OrderCard({ order, onChange }: { order: ClaudeOrderView; onChange: () => void }) {
+const PROPOSAL_LABELS: Record<string, string> = { pending: 'aguardando sua confirmação', confirmed: 'confirmado e vinculado', closed: 'encerrado sem vínculo' };
+
+/**
+ * Ponte MCP local (Issue #055): credencial LOCAL do projeto (criação com aprovação de configuração e
+ * step-up; revogação com step-up). O token aparece uma única vez, só nesta tela, e nunca é guardado
+ * pelo navegador; o servidor guarda apenas o resumo dele.
+ */
+function BridgeSection({ projectId, bridge, onChange }: { projectId: string; bridge: ClaudeBridgeStatusView; onChange: () => void }) {
+  const [command, setCommand] = useState<string | null>(null);
+  const [days, setDays] = useState(30);
+  const [copied, setCopied] = useState(false);
+  if (!bridge.enabled) {
+    return <p className="text-xs text-slate-600">Ponte MCP local desligada neste servidor. O fluxo manual (copiar e colar) continua disponível como contingência.</p>;
+  }
+  const credential = bridge.credential;
+  const active = credential?.state === 'active';
+  return (
+    <section aria-label="Ponte MCP local" className="space-y-2 rounded-md border border-emerald-200 bg-emerald-50/40 p-2 text-xs text-slate-700">
+      <p>
+        Ponte MCP local em <code>{bridge.endpoint}</code>. O Claude Code, aberto por você com a sua assinatura, recebe só as ordens que você disponibilizar; o PR proposto só é vinculado com a sua
+        confirmação.
+      </p>
+      <p>
+        Credencial da ponte:{' '}
+        <strong>{active ? `ativa até ${formatDateTime(credential.expiresAt)}` : credential ? (credential.state === 'revoked' ? 'revogada' : 'vencida') : 'nenhuma'}</strong>
+      </p>
+      <Confirm
+        label={active ? 'Gerar nova credencial da ponte (revoga a atual)' : 'Criar a credencial da ponte'}
+        submitLabel="Criar credencial"
+        onConfirmed={async (proofId) => {
+          const created = await createBridgeCredential(projectId, days, proofId);
+          setCopied(false);
+          setCommand(created.command);
+          onChange();
+        }}
+      >
+        <label className="flex flex-col gap-1 text-xs text-slate-700">
+          Validade da credencial
+          <select className={inputClass} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            {[1, 7, 30].map((d) => (
+              <option key={d} value={d}>
+                {d} dia(s)
+              </option>
+            ))}
+          </select>
+        </label>
+      </Confirm>
+      {command && (
+        <div className="space-y-1">
+          <p className="font-medium text-amber-900">Copie agora: o token não será mostrado de novo (o ACC guarda só o resumo dele). Rode o comando no terminal, na pasta do repositório.</p>
+          <textarea aria-label="Comando do Claude Code" readOnly className="h-20 w-full rounded-md border border-slate-300 p-2 font-mono text-xs" value={command} />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={buttonClass}
+              onClick={() => {
+                void globalThis.navigator.clipboard?.writeText(command).then(() => setCopied(true));
+              }}
+            >
+              {copied ? 'Copiado' : 'Copiar comando'}
+            </button>
+            <button type="button" className={buttonClass} onClick={() => setCommand(null)}>
+              Ocultar
+            </button>
+          </div>
+        </div>
+      )}
+      {active && (
+        <Confirm
+          label="Revogar a credencial da ponte"
+          submitLabel="Revogar credencial"
+          onConfirmed={async (proofId) => {
+            await revokeBridgeCredential(projectId, credential.id, proofId);
+            setCommand(null);
+            onChange();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function OrderCard({ order, bridge, onChange }: { order: ClaudeOrderView; bridge: ClaudeBridgeStatusView; onChange: () => void }) {
   const [pkg, setPkg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [reference, setReference] = useState(`${order.repository}#`);
   const [outcome, setOutcome] = useState<ClaudeOrderVerifyResponse['outcome'] | null>(null);
   const [error, setError] = useState<ApiClientError | null>(null);
+  const [verificationError, setVerificationError] = useState<ApiClientError | null>(null);
   const [busy, setBusy] = useState(false);
   const approved = order.approvals.every((a) => a.state === 'approved' || a.state === 'consumed');
-  const canRelease = (order.state === 'awaiting_approval' && approved) || order.state === 'prepared' || order.state === 'delivered' || order.state === 'awaiting_pr';
+  // Issue #055: ordem disponibilizada à ponte nunca é liberada pelo canal manual (e vice-versa).
+  const viaBridge = order.bridge !== null;
+  const bridgeReady = bridge.enabled && bridge.credential?.state === 'active';
+  const releasedManually = !viaBridge && (order.state === 'delivered' || order.state === 'awaiting_pr');
+  const canOffer = bridgeReady && !viaBridge && !order.closed && ((order.state === 'awaiting_approval' && approved) || order.state === 'prepared');
+  const canRelease = !viaBridge && ((order.state === 'awaiting_approval' && approved) || order.state === 'prepared' || order.state === 'delivered' || order.state === 'awaiting_pr');
   const canLink = order.state === 'delivered' || order.state === 'awaiting_pr';
   const canVerify = order.state === 'pr_linked' || order.state === 'verified';
+  const proposal = order.bridge?.proposal ?? null;
+  const canConfirm = proposal !== null && proposal.status === 'pending' && canLink;
+  // Fluxo manual = CONTINGÊNCIA quando a ponte está pronta ou a ordem já está nela.
+  const manualAsContingency = (bridgeReady || viaBridge) && !releasedManually;
 
   async function run(work: () => Promise<void>) {
     setBusy(true);
@@ -200,8 +296,72 @@ function OrderCard({ order, onChange }: { order: ClaudeOrderView; onChange: () =
       </dl>
       {order.state === 'awaiting_approval' && !approved && <p className="text-xs text-amber-800">Aprove ou rejeite as duas solicitações na página Aprovações (agent.invoke e data.send_external).</p>}
 
-      {canRelease && !order.closed && (
-        <Confirm label="Liberar e copiar o pacote" submitLabel="Liberar pacote" onConfirmed={(proofId) => run(async () => setPkg((await releaseClaudePackage(order.orderId, proofId)).package))} />
+      {order.bridge && (
+        <div aria-label="Ponte MCP da ordem" className="space-y-1 rounded-md border border-emerald-200 bg-emerald-50/40 p-2 text-xs text-slate-700">
+          <p>
+            Disponibilizada ao Claude Code em {formatDateTime(order.bridge.offeredAt)} ·{' '}
+            {order.bridge.claim ? `recebida em ${formatDateTime(order.bridge.claim.at)}` : 'aguardando o recebimento pelo Claude Code (/mcp__acc__next)'}
+          </p>
+          {proposal && (
+            <p>
+              PR proposto:{' '}
+              <a href={proposal.url} target="_blank" rel="noopener noreferrer" className="text-indigo-700 hover:underline">
+                {proposal.reference}
+              </a>{' '}
+              ({PROPOSAL_LABELS[proposal.status]}, {formatDateTime(proposal.proposedAt)}; {order.bridge.proposals}/{order.bridge.maxProposals} propostas)
+            </p>
+          )}
+        </div>
+      )}
+      {canOffer && (
+        <Confirm label="Disponibilizar ao Claude Code (ponte MCP)" submitLabel="Disponibilizar ao Claude Code" onConfirmed={(proofId) => run(async () => void (await offerClaudeOrder(order.orderId, proofId)))} />
+      )}
+      {canConfirm && (
+        <Confirm
+          label="Confirmar o PR proposto e verificar"
+          submitLabel={busy ? 'Verificando…' : 'Confirmar PR e verificar'}
+          onConfirmed={(proofId) =>
+            run(async () => {
+              const result = await confirmClaudeProposal(order.orderId, proposal.id, proofId);
+              setOutcome(result.outcome);
+              setVerificationError(result.verificationError ? new ApiClientError(result.verificationError) : null);
+            })
+          }
+        >
+          <p className="text-xs text-slate-700">
+            O PR <strong>{proposal.reference}</strong> foi proposto pelo Claude Code. Confirmar o vincula à ordem e inicia a verificação somente leitura. {MERGE_NOTICE}
+          </p>
+        </Confirm>
+      )}
+      {verificationError && (
+        <div className="space-y-1">
+          <p className="text-xs text-slate-700">PR vinculado; a verificação não foi concluída agora. Verifique de novo em seguida.</p>
+          <ErrorText error={verificationError} />
+        </div>
+      )}
+
+      {manualAsContingency ? (
+        canRelease || (canLink && !order.closed) ? (
+          <details className="rounded-md border border-slate-200 p-2 text-xs">
+            <summary className="cursor-pointer text-slate-600">Contingência: fluxo manual</summary>
+            <div className="mt-2 space-y-2">
+              {canRelease && !order.closed && (
+                <Confirm label="Liberar e copiar o pacote" submitLabel="Liberar pacote" onConfirmed={(proofId) => run(async () => setPkg((await releaseClaudePackage(order.orderId, proofId)).package))} />
+              )}
+              {canLink && (
+                <Confirm label="Informar o PR" submitLabel="Vincular PR" onConfirmed={(proofId) => run(async () => void (await linkClaudePullRequest(order.orderId, reference.trim(), proofId)))}>
+                  <label className="flex flex-col gap-1 text-xs text-slate-700">
+                    PR gerado (owner/repo#N)
+                    <input className={inputClass} value={reference} maxLength={200} onChange={(e) => setReference(e.target.value)} />
+                  </label>
+                </Confirm>
+              )}
+            </div>
+          </details>
+        ) : null
+      ) : (
+        canRelease &&
+        !order.closed && <Confirm label="Liberar e copiar o pacote" submitLabel="Liberar pacote" onConfirmed={(proofId) => run(async () => setPkg((await releaseClaudePackage(order.orderId, proofId)).package))} />
       )}
       {pkg !== null && (
         <div className="space-y-1">
@@ -222,12 +382,12 @@ function OrderCard({ order, onChange }: { order: ClaudeOrderView; onChange: () =
           </div>
         </div>
       )}
-      {order.state === 'delivered' && (
+      {order.state === 'delivered' && !viaBridge && (
         <button type="button" className={buttonClass} disabled={busy} onClick={() => void run(async () => void (await markClaudeForwarded(order.orderId)))}>
           Marcar como encaminhado ao Claude Code
         </button>
       )}
-      {canLink && (
+      {canLink && !manualAsContingency && (
         <Confirm label="Informar o PR" submitLabel="Vincular PR" onConfirmed={(proofId) => run(async () => void (await linkClaudePullRequest(order.orderId, reference.trim(), proofId)))}>
           <label className="flex flex-col gap-1 text-xs text-slate-700">
             PR gerado (owner/repo#N)
@@ -399,6 +559,7 @@ export function ClaudeOrderPanel({ projectId, taskId }: { projectId: string; tas
             <p className="text-xs text-slate-700">
               Habilitado neste projeto para <code>{data.enablement.repository}</code>.
             </p>
+            <BridgeSection projectId={projectId} bridge={data.bridge} onChange={load} />
             <form aria-label="Preparar ordem para Claude Code" onSubmit={create} className="space-y-2">
               <label className="flex flex-col gap-1 text-xs text-slate-700">
                 Objetivo (tratado como dado, não como instrução)
@@ -425,7 +586,7 @@ export function ClaudeOrderPanel({ projectId, taskId }: { projectId: string; tas
         {orders.length > 0 && (
           <ul className="space-y-2" aria-label="Ordens da tarefa">
             {orders.map((order) => (
-              <OrderCard key={order.orderId} order={order} onChange={load} />
+              <OrderCard key={order.orderId} order={order} bridge={data!.bridge} onChange={load} />
             ))}
           </ul>
         )}

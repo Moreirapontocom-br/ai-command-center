@@ -40,6 +40,12 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   'claude_order.verified': 'Verificação do PR (somente leitura)',
   'claude_order.cancelled': 'Ordem cancelada',
   'claude_project.enablement': 'Habilitação do Claude Code no projeto',
+  'claude_order.offered': 'Ordem disponibilizada ao Claude Code (ponte MCP)',
+  'claude_order.claimed': 'Ordem recebida pelo Claude Code (ponte MCP)',
+  'claude_order.pr_proposed': 'PR proposto pelo Claude Code (ponte MCP)',
+  'claude_order.pr_confirmed': 'PR proposto confirmado pelo PO e verificado',
+  'claude_bridge.credential': 'Credencial da ponte MCP (criação/revogação)',
+  'claude_bridge.access': 'Acesso recusado à ponte MCP',
 };
 
 const OUTCOME_LABELS: Record<AuditOutcome, string> = { success: 'Sucesso', failure: 'Falha', blocked: 'Bloqueado' };

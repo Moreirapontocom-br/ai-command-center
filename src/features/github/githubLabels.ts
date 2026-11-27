@@ -143,6 +143,7 @@ export const ERROR_COPY: Record<ClientErrorCode, { title: string; description: s
   github_unavailable: { title: 'GitHub indisponível', description: 'Não foi possível consultar o GitHub agora. Nada foi gravado.' },
   github_unauthorized: { title: 'Leitura recusada pelo GitHub', description: 'A credencial somente leitura do servidor não conseguiu ler este PR. Nada foi gravado.' },
   gateway_unavailable: { title: 'Gateway indisponível', description: 'O Agent Gateway não está configurado ou está indisponível neste servidor.' },
+  bridge_unavailable: { title: 'Ponte MCP indisponível', description: 'A ponte MCP local está desligada neste servidor ou o projeto não tem credencial ativa.' },
   internal: { title: 'Erro inesperado', description: 'Ocorreu um erro interno no servidor.' },
 };
 

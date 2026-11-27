@@ -66,6 +66,13 @@ Os dados fictícios são identificados de três formas:
 - **Fila** (`server/queue/`): registros persistidos com transições impostas na gravação; reinício marca `dispatching`/`running` como `interrupted` (sem retomada) e `admitted` como `expired`; toda linhagem nova nasce bloqueada. O portão (`barrierGate`) só bloqueia: a barreira durável da #011, injetada por interface estreita, é a única autoridade que libera.
 - **Limites intencionais:** sem admissão, agendamento, despacho, rota, interface ou temporizador (PR 2); execução real desligada. Detalhes em `docs/IMPLEMENTATION_REPORT_012_PR1.md`.
 
+## Issue #055 — ponte MCP local (Claude Code)
+
+- **Endpoint** `POST /mcp` (Streamable HTTP sem estado, só JSON) no MESMO listener loopback do servidor, com o SDK oficial `@modelcontextprotocol/server` (versão fixada). Desligado por padrão (`ACC_BRIDGE_ENABLED`, só com `ACC_DEPLOYMENT=local`). Pipeline e autenticação próprios (`server/http/mcpBridge.ts`), separados do administrativo.
+- **Lado do agente** (`server/gateway/bridge.ts` + métodos da ponte em `server/gateway/service.ts`): listar as ordens disponibilizadas, receber o pacote (uma vez, atômico, idempotente) e PROPOR o PR. O vínculo continua sendo do PO, com step-up, e a verificação somente leitura roda nessa confirmação.
+- **Ledger do gateway**: conjuntos somente de acréscimo `bridgeCredentials`, `bridgeRevocations`, `orderDeliveries` e `prProposals`; a credencial guarda só o resumo SHA-256 do token.
+- **Limites intencionais:** o ACC continua sem executar nada (`REAL_EXECUTION_ENABLED = false`) e sem credencial de provedor; a sessão do Claude Code é aberta pelo PO, com a própria assinatura. Detalhes em `docs/MCP_BRIDGE.md` e `docs/IMPLEMENTATION_REPORT_055.md`.
+
 ## Fora do escopo (não implementado)
 
 Integrações com provedores de IA, escrita no GitHub, webhooks, banco de dados, autenticação de usuários, execução automática de agentes e deploy público.

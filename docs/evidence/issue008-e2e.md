@@ -1,6 +1,6 @@
 # Issue #008 — exercício ponta a ponta do fluxo assistido (roteiro e registro)
 
-> **Estado: NÃO EXECUTADO.** Este documento traz o roteiro e um modelo de registro em branco. Nenhuma configuração real foi feita, nenhuma barreira foi liberada e nenhum exercício foi realizado. As seções "Registro" só podem ser preenchidas com o que de fato acontecer, pelo PO ou com ele presente.
+> **Estado: EXECUTADO em 2026-11-26/27** (UTC), na máquina do PO, com autorização expressa do PO e no SHA `99d5fe5` (§0). O registro (§7) traz só o que de fato aconteceu. Ações humanas (chave, senha e hash, `.env.local`, liberação da barreira, login, habilitação, aprovações, pacote, vínculo e verificações) foram feitas pelo PO. O Claude Code (sessão do PO, com a assinatura do PO, fora do ACC) fez a alteração na branch designada, o PR de teste e as conferências não sensíveis.
 >
 > **Autorização.** Configurar, liberar a barreira e exercitar o fluxo exigem autorização do PO **depois** da aprovação técnica do PR de fechamento. Tudo acontece na máquina do PO, com a assinatura do próprio PO para o Claude Code. Custo: R$ 0 (sem API paga; runners padrão do GitHub são gratuitos em repositório público).
 
@@ -186,34 +186,41 @@ Repositório: `Moreirapontocom-br/ai-command-center` (o único da allowlist). O 
 | Verificação com erro de rede, limite ou autorização | Nada é gravado; confira `gh auth status` e tente depois de 30 s. |
 | Reverter a liberação | Reacione a barreira pelos caminhos existentes (`BARRIER_RELEASE.md` §7). |
 
-## 7. Registro (preencher só com o que acontecer)
+## 7. Registro (valores reais)
 
 | Item | Valor |
 |---|---|
-| Data e hora | — |
-| SHA executado (§0) = SHA aprovado | — |
-| Primeira subida: `approvals_opened` (state, globalBarrier) | — |
-| Liberação: mensagem e código de saída | — |
-| Depois: `globalBarrier`, diário, registros na #006 (seq) | — |
-| Projeto habilitado (id) / ordem (id) / branch / SHA base | — |
-| PR de teste (número) | — |
-| Caso A: veredito e HEAD verificado | — |
-| Caso B: novo HEAD, veredito, `supersedes` | — |
-| Encerramento: PR fechado sem merge, branch apagada, ordem cancelada | — |
-| Incidentes e recuperação | — |
+| Data e hora (UTC) | 2026-11-26 23:53 (primeira subida) → 2026-11-27 00:21 (PR de teste fechado) |
+| SHA executado (§0) = SHA aprovado | `99d5fe5112ad7fde5814fd4865f68952c5780f0e` = `origin/feature/008-closing` = SHA aprovado; `git diff --quiet HEAD` = 0; só os três arquivos não versionados do PO (`??`); `npm ci` ok |
+| Configuração (§1) | Pastas `C:\ACC\{approvals,anchor,keys,gateway,gateway-content}` (ACL só do usuário); chave em arquivo (32 bytes, criada pelo PO); hash do administrador (PO); `.env.local` editado pelo PO. Validação sem valores: `deployment: local`, admin configurado, aprovações `configured` (chave `file`), fila `disabled`, gateway `configured`, credencial `gh-cli`, `GITHUB_TOKEN` ausente. Duas correções durante a configuração: faltavam linhas no `.env.local`, e depois `ACC_ADMIN_EMAIL` não era um e-mail (detectado pelo `loadConfig`) |
+| Primeira subida (§2) | `approvals_opened` `state: available`, `globalBarrier: true`; `gateway_opened` `available`, `githubReader: configured`; `adminConfigured: true`; sem `admin_reconcile_pending`/`admin_audit_inconsistent`. Parada forçada (Windows) → locks órfãos, retomados na execução seguinte, como previsto (§6) |
+| Liberação (§3), pelo PO | `LIBERADA: a barreira global inicial foi liberada, gravada, relida e auditada. [released]`; código de saída **0** |
+| Depois (§3.3) | Linhas `*_INITIALIZE` removidas (`initialize: never`); diário ausente; lock liberado; #006: seq 1 `approval.confirmation` success (`password`, `barrier_release_global`), seq 2 `approval.configuration` success, `resource` = aprovação `886484d8-fc3c-4b1d-9850-73c9534bf261`, `context.seq = 9`. Nova subida: `approvals_opened` `globalBarrier: false`, cruzamento #011 × #006 consistente nos dados reais (sem `admin_reconcile_pending`/`admin_audit_inconsistent`) |
+| Projeto / tarefa / ordem | Projeto `b9b244e1-22c8-406c-be10-42d414af5ff2` (repositório `Moreirapontocom-br/ai-command-center`), tarefa `d449169b-0371-4b2d-94b9-e49d74ee4bee`, habilitação `claude_project.enablement` → `enabled`; ordem `749cb7e0-b90e-406c-937c-5a8f6b5d364c`, branch `agent/claude-code/d449169b-749cb7e0`, SHA base `3718703580a073ac099e2aced94ed51338acad36` |
+| Aprovações (PO) | `agent.invoke` `be7bb560-fe94-4469-b58d-2ad88b1f7c0f` → `approved`; `data.send_external` `a21faaa8-a314-40e2-ac31-caf2560a08be` → `approved` (antes, uma confirmação de senha recusada, `confirmation_failed`, registrada como `blocked` e repetida com sucesso). Pacote liberado com step-up → `delivered`; escopo válido até 2026-11-27T00:24:26Z |
+| Execução fora do ACC | Claude Code (sessão do PO) com o pacote colado pelo PO: worktree temporário em `3718703`, branch exata, só `docs/evidence/e2e-scratch-008.md` (arquivo descartável), push da branch, PR **#54** em draft contra `main` |
+| PR de teste | #54, commits `3444a8e` (caso A) e `b1148ef` (caso B); CI dos dois HEADs com os três checks em SUCCESS (runs 45915350033 e 45915674680) |
+| Caso A | PR vinculado (`pr_linked`, step-up). Verificação: **`conforming`**, HEAD `3444a8e4505caa8f27a005df625dd0008f99fa3f`, regras obrigatórias aprovadas, V9 e V13 informativas, histórico = 1. #006 seq 19 `claude_order.verified` (`verdict: conforming`, `head: 3444a8e…`, `seq: 1`) |
+| Caso B | Novo commit `b1148ef` (mesmo arquivo). Antes de reverificar, a interface mostrava a conformidade só para `3444a8e`, com aviso de que novos commits exigem nova verificação. Reverificação: **`conforming`**, HEAD `b1148ef995eb065e95a5f3cd676da3bc1dc71d56`, 2 commits, histórico = 2. Ledger do gateway: verificação 2 `f3d87a78-9958-4099-94cd-bd182afc2227` tem `supersedes = 54452bb0-d22e-49ac-abea-516adf38e616` (= verificação 1, HEAD `3444a8e`), `closes: false`. #006 seq 20 `claude_order.verified` (`head: b1148ef…`, `seq: 2`) |
+| V12 (HEAD muda durante a leitura) | Não ocorreu (não provocado), como previsto em §4.4 |
+| Encerramento | PR #54 **fechado sem merge** (`state: CLOSED`, `mergedAt: null`, 2026-11-27T00:21:51Z), branch remota e local apagadas, worktree removido; main inalterada (`3718703`). Ordem não cancelada (passo opcional; o escopo expirou às 00:24:26Z). Servidor e interface parados |
+| Incidentes e recuperação | Nenhum incidente de segurança. Correções de configuração (linhas faltando, e-mail inválido) detectadas antes da subida. Uma senha digitada errada (recusada e auditada). Locks órfãos por parada forçada, retomados automaticamente |
+| Segredos nas evidências | Nenhum: só ids, SHAs, estados e mensagens. Chave, senha, hash, e-mail e pacote não foram registrados |
 
 ## 8. Checklist de encerramento da Issue #008
 
 | Critério da issue | Onde está atendido | Estado |
 |---|---|---|
-| Cada execução exige autorização explícita | Duas aprovações humanas por ordem (#011), step-up no pacote, PR e cancelamento; habilitação por projeto (`IMPLEMENTATION_REPORT_008_PR2.md` §5) | Implementado e testado; exercício real pendente (§4) |
+| Cada execução exige autorização explícita | Duas aprovações humanas por ordem (#011), step-up no pacote, PR e cancelamento; habilitação por projeto (`IMPLEMENTATION_REPORT_008_PR2.md` §5) | **Comprovado no exercício real** (§7: habilitação, duas aprovações, pacote e vínculo com step-up) |
 | Ambiente isolado | **Não cumprido nesta etapa; depende da Issue #021.** A execução é **assistida e externa** ao ACC: o PO roda o Claude Code na própria máquina, com a própria assinatura. O ACC **não isola** o processo do Claude Code (sistema de arquivos, rede, credenciais), não o inicia e não o supervisiona; ele só não executa agentes (`REAL_EXECUTION_ENABLED = false`, sem `child_process` no caminho da #008). A proteção de branch, a branch designada e a verificação posterior do PR (V1–V13) restringem e conferem o **resultado**, mas **não equivalem a isolamento de execução**. | **Pendente de #021** (aplicabilidade registrada; não declarado como cumprido) |
-| Operações restritas à branch designada | Branch fixa por ordem; V3/V4/V5/V6 na verificação | Implementado e testado; exercício real pendente (§4.3) |
-| Status rastreável | Estados projetados da ordem, histórico assinado do gateway, verificações só de acréscimo, auditoria #006 | Implementado e testado; exercício real pendente |
-| Erros e interrupção tratados | Verificação sem gravação em erro; `head_changed`; liberação com diário, cruzamento e códigos 1/3/4 (`BARRIER_RELEASE.md`) | Implementado e testado; caso B pendente (§4.4) |
-| Sem merge automático | Nenhuma mutation no GitHub; V7 alerta merge fora do fluxo | Implementado e testado |
-| Testes, lint e build passam; evidências anexadas | CI do PR de fechamento; `docs/evidence/issue008-closing-validation.txt` | Pendente da CI e do exercício |
-| Relatório do Claude Code, revisão do ChatGPT, documentação | `IMPLEMENTATION_REPORT_008_CLOSING.md`; revisão do ChatGPT no PR | Relatório pronto; revisão pendente |
+| Operações restritas à branch designada | Branch fixa por ordem; V3/V4/V5/V6 na verificação | **Comprovado** como verificação posterior do resultado (casos A e B `conforming`). O ACC confere, mas não impede, o que o executor externo faz |
+| Status rastreável | Estados projetados da ordem, histórico assinado do gateway, verificações só de acréscimo, auditoria #006 | **Comprovado** (#006 seq 1–20; histórico de verificações com `supersedes`) |
+| Erros e interrupção tratados | Verificação sem gravação em erro; `head_changed`; liberação com diário, cruzamento e códigos 1/3/4 (`BARRIER_RELEASE.md`) | **Comprovado** no caso B (novo HEAD exige nova verificação; `supersedes`), na senha recusada e nos locks órfãos retomados. Falhas de gravação, interrupções e V12 comprovados por testes (não provocados no exercício real) |
+| Sem merge automático | Nenhuma mutation no GitHub; V7 alerta merge fora do fluxo | **Comprovado** (PR #54 fechado sem merge; o ACC só leu) |
+| Testes, lint e build passam; evidências anexadas | CI do PR de fechamento; `docs/evidence/issue008-closing-validation.txt`; este registro | **Comprovado** (CI do PR #53; evidências do exercício neste documento) |
+| Relatório do Claude Code, revisão do ChatGPT, documentação | `IMPLEMENTATION_REPORT_008_CLOSING.md`; revisão do ChatGPT no PR | Relatório pronto; pareceres favoráveis até `99d5fe5`; **revisão do registro do exercício pendente** |
 | PO aprova decisões; branch própria; sem push na main; sem merge automático | Governança do repositório (ruleset `main-protection`, hook pre-push) | Em vigor |
-| Barreira inicial liberada de forma supervisionada | Comando local (P1, PR #51) | Implementado; liberação real pendente (§3) |
-| Exercício ponta a ponta real | Este documento. Ele comprova a **integração assistida** (ordem, aprovações, pacote, PR na branch designada, verificação somente leitura), não isolamento nem execução pelo ACC | **Pendente (não executado)** |
+| Barreira inicial liberada de forma supervisionada | Comando local (P1, PR #51) | **Comprovado** (liberação real pelo PO, código 0, auditada e cruzada) |
+| Exercício ponta a ponta real | Este documento. Ele comprova a **integração assistida** (ordem, aprovações, pacote, PR na branch designada, verificação somente leitura), não isolamento nem execução pelo ACC | **Comprovado** (casos A e B, §7) |
+
+**Resumo para o encerramento:** os critérios da integração **assistida** estão comprovados. O critério **"ambiente isolado" não está cumprido** e depende da Issue #021 (e das #020/#022 para qualquer execução pelo ACC). Se o PO considerar o isolamento obrigatório para fechar a #008, a issue deve continuar aberta, ou ser fechada com esse critério explicitamente transferido para a #021: **decisão do PO**.

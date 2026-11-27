@@ -126,9 +126,19 @@ A validação dirigida (R1–R3) sobre `6bf2a2b` confirmou dois defeitos no cruz
 - regressões de R3 (dois `ACC_DATA_DIR`, correlação ausente, pedido de outra ação, nenhuma liberação fabricada);
 - servidor real indisponível com registro divergente.
 
-## 8. Pendências para fechar a #008
+## 8. Exercício ponta a ponta real (executado)
 
-1. Revisão técnica (ChatGPT) deste PR no SHA final.
-2. Autorização do PO para configurar o ambiente local e liberar a barreira (`docs/evidence/issue008-e2e.md` §1–§3).
-3. Exercício ponta a ponta, casos A e B (§4), com o registro preenchido (§7) e commitado neste PR.
-4. Checklist de encerramento (§8 do roteiro) atualizado, merge autorizado pelo PO e fechamento da Issue #8.
+Executado em 2026-11-26/27 no SHA `99d5fe5`, com autorização expressa do PO. Registro completo em `docs/evidence/issue008-e2e.md` §7.
+
+- **Liberação** pelo PO: `LIBERADA [released]`, código 0. A #006 tem a confirmação e o registro final (`seq 9`), e a nova subida mostra `globalBarrier: false` com o cruzamento consistente nos dados reais.
+- **Caso A:** PR #54, HEAD `3444a8e`, `conforming`.
+- **Caso B:** novo HEAD `b1148ef`, `conforming`. A verificação 2 aponta `supersedes` para a 1, e a interface exigiu nova verificação antes.
+- **Encerramento:** PR #54 fechado **sem merge**, branch apagada, main inalterada.
+- **Isolamento:** não comprovado nem atribuído ao ACC (pendente da #021).
+
+## 9. Pendências para fechar a #008
+
+1. ~~Configuração, liberação e exercício~~: feitos (§8).
+2. Revisão do ChatGPT do registro do exercício (SHA deste commit).
+3. Decisão do PO sobre o critério "ambiente isolado" (manter a #008 aberta ou transferir o critério para a #021).
+4. Merge autorizado pelo PO e fechamento da Issue #8.

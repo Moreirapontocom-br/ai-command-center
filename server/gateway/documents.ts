@@ -1,5 +1,6 @@
 import { isIsoDate } from '../storage/jsonFile.ts';
 import {
+  BRIDGE_LIMITS,
   CONTENT_KINDS,
   GATEWAY_AGENTS,
   GATEWAY_CAPABILITIES,
@@ -279,6 +280,117 @@ function checkContent(raw: unknown) {
 
 const BASE_BODY = ['scopes', 'invocations', 'handoffs', 'contents'] as const;
 const ORDER_BODY = ['verifications', 'orderMarks', 'projectSettings'] as const;
+/** Issue #055 — ponte MCP: conjuntos SOMENTE DE ACRÉSCIMO (nada é reescrito nem removido). */
+const BRIDGE_BODY = ['bridgeCredentials', 'bridgeRevocations', 'orderDeliveries', 'prProposals'] as const;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function checkCredential(raw: unknown) {
+  const c = exact(raw, ['id', 'ownerId', 'projectId', 'agentId', 'tokenDigest', 'createdAt', 'createdBy', 'expiresAt', 'approvalId']);
+  uuid(c.id);
+  ownerId(c.ownerId);
+  uuid(c.projectId);
+  if (c.agentId !== 'claude-code') fail();
+  hex(c.tokenDigest);
+  const created = Date.parse(iso(c.createdAt) as string);
+  ownerId(c.createdBy);
+  const expires = Date.parse(iso(c.expiresAt) as string);
+  uuid(c.approvalId);
+  // Validade de 1 a 30 dias, fixada na criação (nunca estendida).
+  if (expires <= created || expires - created > BRIDGE_LIMITS.credentialMaxDays * DAY_MS) fail();
+}
+
+function checkRevocation(raw: unknown) {
+  const r = exact(raw, ['id', 'ownerId', 'credentialId', 'at', 'by', 'reason']);
+  uuid(r.id);
+  ownerId(r.ownerId);
+  uuid(r.credentialId);
+  iso(r.at);
+  ownerId(r.by);
+  if (typeof r.reason !== 'string' || !REASON.test(r.reason)) fail();
+}
+
+function checkDelivery(raw: unknown) {
+  const d = exact(raw, ['id', 'ownerId', 'projectId', 'orderId', 'kind', 'at', 'by', 'credentialId', 'keyDigest', 'requestDigest']);
+  uuid(d.id);
+  ownerId(d.ownerId);
+  uuid(d.projectId);
+  uuid(d.orderId);
+  const kind = oneOf(['offered', 'claimed'] as const, d.kind);
+  iso(d.at);
+  ownerId(d.by);
+  if (kind === 'offered') {
+    // Disponibilizar é da pessoa e não é preso a uma credencial.
+    if (d.credentialId !== null || d.keyDigest !== null || d.requestDigest !== null) fail();
+  } else {
+    uuid(d.credentialId);
+    hex(d.keyDigest);
+    hex(d.requestDigest);
+  }
+}
+
+function checkProposal(raw: unknown) {
+  const p = exact(raw, ['id', 'ownerId', 'projectId', 'orderId', 'credentialId', 'claimId', 'prNumber', 'keyDigest', 'requestDigest', 'at']);
+  uuid(p.id);
+  ownerId(p.ownerId);
+  uuid(p.projectId);
+  uuid(p.orderId);
+  uuid(p.credentialId);
+  uuid(p.claimId);
+  int(p.prNumber, 1, ORDER_LIMITS.maxPrNumber);
+  hex(p.keyDigest);
+  hex(p.requestDigest);
+  iso(p.at);
+}
+
+/** Coerência da ponte (Issue #055): credenciais, revogações, entregas e propostas entre si e com as ordens. */
+function checkBridge(b: GatewayBody, orders: Map<string, { ownerId: string; projectId: string; baseSha: string; scopeId: string }>) {
+  const credentials = new Map<string, { ownerId: string; projectId: string }>();
+  const digests = new Set<string>();
+  for (const c of b.bridgeCredentials ?? []) {
+    if (digests.has(c.tokenDigest)) fail();
+    digests.add(c.tokenDigest);
+    credentials.set(c.id, { ownerId: c.ownerId, projectId: c.projectId });
+  }
+  const revoked = new Set<string>();
+  for (const r of b.bridgeRevocations ?? []) {
+    const c = credentials.get(r.credentialId);
+    if (!c || c.ownerId !== r.ownerId || revoked.has(r.credentialId)) fail();
+    revoked.add(r.credentialId);
+  }
+  const handoffs = new Set(b.handoffs.filter((h) => h.capability === PRESENTATION_CODE_CHANGE.capability).map((h) => h.id));
+  const seen = new Set<string>();
+  const claims = new Map<string, { orderId: string; credentialId: string }>();
+  const keys = new Set<string>();
+  for (const d of b.orderDeliveries ?? []) {
+    const o = orders.get(d.orderId);
+    if (!o || o.ownerId !== d.ownerId || o.projectId !== d.projectId || !handoffs.has(d.orderId)) fail();
+    const key = `${d.orderId}|${d.kind}`;
+    if (seen.has(key)) fail();
+    // Recebimento só depois da disponibilização (ordem do histórico).
+    if (d.kind === 'claimed') {
+      if (!seen.has(`${d.orderId}|offered`)) fail();
+      const c = credentials.get(d.credentialId!);
+      if (!c || c.ownerId !== d.ownerId || c.projectId !== d.projectId) fail();
+      if (keys.has(d.keyDigest!)) fail();
+      keys.add(d.keyDigest!);
+      claims.set(d.id, { orderId: d.orderId, credentialId: d.credentialId! });
+    }
+    seen.add(key);
+  }
+  const perOrder = new Map<string, number>();
+  const proposalKeys = new Set<string>();
+  for (const p of b.prProposals ?? []) {
+    const o = orders.get(p.orderId);
+    if (!o || o.ownerId !== p.ownerId || o.projectId !== p.projectId) fail();
+    const claim = claims.get(p.claimId);
+    if (!claim || claim.orderId !== p.orderId || claim.credentialId !== p.credentialId) fail();
+    if (proposalKeys.has(p.keyDigest)) fail();
+    proposalKeys.add(p.keyDigest);
+    const count = (perOrder.get(p.orderId) ?? 0) + 1;
+    if (count > BRIDGE_LIMITS.maxProposals) fail();
+    perOrder.set(p.orderId, count);
+  }
+}
 
 function checkVerification(raw: unknown) {
   const v = exact(raw, ['id', 'ownerId', 'projectId', 'orderId', 'seq', 'headSha', 'baseSha', 'verdict', 'rules', 'evidence', 'supersedes', 'checkedAt', 'checkedBy', 'closes', 'reason']);
@@ -394,11 +506,16 @@ function checkOrders(b: GatewayBody) {
     if (v.verdict !== 'cancelled' && !marks.has(`${v.orderId}|pr_linked`)) fail();
     last.set(v.orderId, v);
   }
+  checkBridge(b, orders);
 }
 
 export function checkGatewayBody(raw: unknown): GatewayBody {
   // Ledgers da #028 (sem os conjuntos da #008) continuam válidos: os conjuntos novos são aditivos.
-  const b = exact(raw, isPlain(raw) && Object.hasOwn(raw, 'verifications') ? [...BASE_BODY, ...ORDER_BODY] : BASE_BODY);
+  // Issue #055: os conjuntos da ponte só existem junto com os da #008.
+  const hasOrders = isPlain(raw) && Object.hasOwn(raw, 'verifications');
+  const hasBridge = isPlain(raw) && Object.hasOwn(raw, 'bridgeCredentials');
+  if (hasBridge && !hasOrders) fail();
+  const b = exact(raw, [...BASE_BODY, ...(hasOrders ? ORDER_BODY : []), ...(hasBridge ? BRIDGE_BODY : [])]);
   const max = GATEWAY_LIMITS.maxRecords;
   for (const [name, check] of [
     ['scopes', checkScope],
@@ -420,6 +537,18 @@ export function checkGatewayBody(raw: unknown): GatewayBody {
       ['verifications', checkVerification],
       ['orderMarks', checkMark],
       ['projectSettings', checkSetting],
+    ] as const) {
+      const items = list(b[name], max, (x) => x as Record<string, unknown>);
+      items.forEach(check);
+      if (new Set(items.map((x) => x.id)).size !== items.length) fail();
+    }
+  }
+  if (hasBridge) {
+    for (const [name, check] of [
+      ['bridgeCredentials', checkCredential],
+      ['bridgeRevocations', checkRevocation],
+      ['orderDeliveries', checkDelivery],
+      ['prProposals', checkProposal],
     ] as const) {
       const items = list(b[name], max, (x) => x as Record<string, unknown>);
       items.forEach(check);
@@ -462,7 +591,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 export function checkGatewayChange(before: Readonly<GatewayBody>, after: Readonly<GatewayBody>): void {
   // Issue #008: histórico de verificações, marcas e habilitações são SOMENTE DE ACRÉSCIMO — o que
   // existia continua idêntico e na mesma posição (nada é apagado, reescrito nem reordenado).
-  for (const name of ORDER_BODY) {
+  for (const name of [...ORDER_BODY, ...BRIDGE_BODY]) {
     const old = (before[name] ?? []) as readonly unknown[];
     const now = (after[name] ?? []) as readonly unknown[];
     if (now.length < old.length || old.some((entry, i) => !same(entry, now[i]))) throw new GatewayDocumentError('histórico somente de acréscimo alterado');

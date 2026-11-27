@@ -15,12 +15,14 @@ import { GH_CLI_ERROR_MESSAGE } from './auth/ghCli.ts';
 import { createGraphQLClient, createRestCompareClient } from './github/client.ts';
 import { createPullRequestReader } from './github/prReader.ts';
 import { createContentManager } from './gateway/content.ts';
+import { createBridgeOrders, type BridgeOrders } from './gateway/bridge.ts';
 import { createClaudeOrders, type ClaudeOrders } from './gateway/orders.ts';
 import { createGateway } from './gateway/service.ts';
 import { GATEWAY_CONTENT_KEY_DOMAIN, GATEWAY_KEY_DOMAIN, openGatewayStore, type GatewayStore } from './gateway/store.ts';
 import { assistedProfileAvailable } from './limits/providers.ts';
 import { openSealedBlobStore } from './storage/sealedBlobs.ts';
 import { createRequestHandler } from './http/app.ts';
+import { publicOrderCode } from './http/claudeOrderRoutes.ts';
 import { createConsoleLogger } from './logger.ts';
 import { openProjectStore } from './projects/projectStore.ts';
 import { DataFileError } from './storage/jsonFile.ts';
@@ -229,6 +231,8 @@ if (config.queue.state === 'invalid') {
 // invocação, e `REAL_EXECUTION_ENABLED` continua `false`. O ACC prepara a ordem, a pessoa usa o
 // Claude Code FORA do ACC e o ACC só LÊ o PR no GitHub (somente leitura, credencial da #002).
 let claudeOrders: { orders: ClaudeOrders; status: () => { state: string; reason: string | null } } | null = null;
+/** Ponte MCP local (Issue #055): só com `ACC_BRIDGE_ENABLED=true` (local) e o gateway aberto. */
+let bridgeOrders: BridgeOrders | null = null;
 let gatewayStore: GatewayStore | null = null;
 if (config.gateway.state === 'invalid') {
   logger.log('warn', 'Agent Gateway indisponível: configuração inválida.', { event: 'gateway_config_invalid', reason: config.gateway.reason });
@@ -292,6 +296,8 @@ if (config.gateway.state === 'invalid') {
       },
       // Catálogo da #022: só `claude-code/subscription_assisted` disponível (D-08.3).
       assistedProfileAvailable: () => assistedProfileAvailable(),
+      // Issue #055: a ponte só funciona com a configuração local explícita (padrão: desligada).
+      bridgeEnabled: () => config.bridge.enabled,
     });
     // Leitura do GitHub com a MESMA credencial somente leitura da #002 (sem credencial → verificação indisponível).
     const reader = config.credentials
@@ -311,8 +317,13 @@ if (config.gateway.state === 'invalid') {
               .list(ownerId)
               .filter((a) => a.binding.resource.type === 'gateway_scope' && a.binding.resource.id === scopeId)
               .map((a) => ({ id: a.id, action: a.binding.action, state: a.state })),
+      publicCode: (code) => publicOrderCode(code),
     });
     claudeOrders = { orders, status: () => store.status() };
+    if (config.bridge.enabled) {
+      bridgeOrders = createBridgeOrders({ gateway, orders });
+      logger.log('warn', 'Ponte MCP local LIGADA (somente loopback; exige credencial criada pelo PO).', { event: 'bridge_enabled', endpoint: `http://127.0.0.1:${config.port}/mcp` });
+    }
     createMaintenanceScheduler({
       run: async () => {
         if (store.status().state === 'available') await gateway.sweep();
@@ -333,7 +344,9 @@ if (config.gateway.state === 'invalid') {
   logger.log('warn', 'Agent Gateway indisponível: exige aprovações configuradas.', { event: 'gateway_requires_approvals' });
 }
 
-const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, approvals, claudeOrders, logger });
+if (config.bridge.enabled && !bridgeOrders) logger.log('warn', 'Ponte MCP local indisponível: exige o Agent Gateway aberto.', { event: 'bridge_requires_gateway' });
+
+const handler = createRequestHandler({ config, snapshots, auth, projects, tasks, audit, approvals, claudeOrders, bridge: bridgeOrders, logger });
 const server = createServer((req, res) => {
   void handler(req, res);
 });

@@ -169,6 +169,8 @@ export type ApiErrorCode =
   | 'github_unavailable'
   | 'github_unauthorized'
   | 'gateway_unavailable'
+  // Issue #055 — ponte MCP local desligada nesta instância ou sem credencial ativa no projeto.
+  | 'bridge_unavailable'
   | 'internal';
 
 export interface ApiErrorBody {
@@ -416,6 +418,13 @@ export const AUDIT_ACTIONS = [
   'claude_order.verified',
   'claude_order.cancelled',
   'claude_project.enablement',
+  // Issue #055: ponte MCP local (o agente age pela credencial da ponte; o PO confirma com step-up).
+  'claude_order.offered',
+  'claude_order.claimed',
+  'claude_order.pr_proposed',
+  'claude_order.pr_confirmed',
+  'claude_bridge.credential',
+  'claude_bridge.access',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -439,7 +448,7 @@ export interface AuditEvent {
   action: AuditAction;
   actor: AuditActor;
   projectId: string | null;
-  resource: { type: 'project' | 'task' | 'session' | 'route' | 'approval' | 'claude_order'; id: string | null };
+  resource: { type: 'project' | 'task' | 'session' | 'route' | 'approval' | 'claude_order' | 'bridge_credential'; id: string | null };
   outcome: AuditOutcome;
   context: Record<string, AuditContextValue>;
 }
@@ -777,6 +786,54 @@ export interface ClaudeOrderView {
   };
   history: ClaudeOrderVerificationView[];
   closed: boolean;
+  /** Issue #055: entrega pela ponte MCP (`null`: a ordem não foi disponibilizada à ponte). */
+  bridge: ClaudeOrderBridgeView | null;
+}
+
+/** Issue #055 — situação da ordem na ponte MCP. O pacote e a credencial nunca aparecem aqui. */
+export interface ClaudeOrderBridgeView {
+  offeredAt: string;
+  /** Recebimento atômico pelo agente (uma vez por ordem). */
+  claim: { id: string; at: string; credentialId: string | null } | null;
+  /** PR PROPOSTO mais recente (nunca é vínculo: só a confirmação do PO, com step-up, vincula). */
+  proposal: { id: string; number: number; reference: string; url: string; proposedAt: string; status: 'pending' | 'confirmed' | 'closed' } | null;
+  proposals: number;
+  maxProposals: number;
+}
+
+/** Issue #055 — credencial LOCAL da ponte (nunca o token nem o resumo dele). */
+export interface ClaudeBridgeCredentialView {
+  id: string;
+  projectId: string;
+  agentId: 'claude-code';
+  createdAt: string;
+  expiresAt: string;
+  state: 'active' | 'revoked' | 'expired';
+  revokedAt: string | null;
+  revokedReason: string | null;
+}
+
+/** Issue #055 — ponte no projeto: ligada nesta instância? Endereço local e credencial vigente. */
+export interface ClaudeBridgeStatusView {
+  enabled: boolean;
+  endpoint: string | null;
+  credential: ClaudeBridgeCredentialView | null;
+}
+
+/** Criação da credencial: o token aparece SÓ nesta resposta (o servidor guarda apenas o resumo). */
+export interface ClaudeBridgeCredentialResponse {
+  credential: ClaudeBridgeCredentialView;
+  token: string;
+  /** Comando do Claude Code (montado pelo SERVIDOR) que registra a ponte no escopo local do PO. */
+  command: string;
+}
+
+/** Confirmação do PR proposto: o vínculo e, na mesma ação, a verificação somente leitura. */
+export interface ClaudeOrderConfirmResponse {
+  order: ClaudeOrderView;
+  outcome: ClaudeOrderVerifyResponse['outcome'] | null;
+  /** Código público da falha da verificação (o vínculo já foi gravado; verifique de novo depois). */
+  verificationError: ApiErrorCode | null;
 }
 
 export interface ClaudeOrderListResponse {
@@ -785,6 +842,8 @@ export interface ClaudeOrderListResponse {
   /** Repositórios vinculados ao projeto que podem ser habilitados. */
   linkableRepositories: string[];
   orders: ClaudeOrderView[];
+  /** Issue #055: ponte MCP local. */
+  bridge: ClaudeBridgeStatusView;
 }
 
 export interface ClaudeOrderResponse {

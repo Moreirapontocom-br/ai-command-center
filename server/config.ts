@@ -53,6 +53,20 @@ export interface ServerConfig {
   queue: QueueConfig;
   /** Agent Gateway (Issue #008, PR 2): só o canal assistido do Claude Code. */
   gateway: GatewayConfig;
+  /**
+   * Ponte MCP local (Issue #055). DESLIGADA por padrão; `ACC_BRIDGE_ENABLED=true` só é aceito com
+   * `ACC_DEPLOYMENT=local` (o host já é sempre loopback). Ligada, ela ainda exige o gateway e uma
+   * credencial criada pelo PO com aprovação de configuração (#011) e step-up.
+   */
+  bridge: { enabled: boolean };
+}
+
+function resolveBridgeConfig(env: Record<string, string | undefined>, deployment: DeploymentMode | null): { enabled: boolean } {
+  const raw = env.ACC_BRIDGE_ENABLED?.trim() ?? '';
+  if (raw === '' || raw === 'false') return { enabled: false };
+  if (raw !== 'true') throw new ConfigError('ACC_BRIDGE_ENABLED inválido. Valores aceitos: true, false.');
+  if (deployment !== 'local') throw new ConfigError('ACC_BRIDGE_ENABLED=true exige ACC_DEPLOYMENT=local (a ponte MCP é exclusivamente local).');
+  return { enabled: true };
 }
 
 /**
@@ -336,5 +350,6 @@ export function loadConfig(
     approvals,
     queue,
     gateway: resolveGatewayConfig(env, approvals, queue),
+    bridge: resolveBridgeConfig(env, deployment),
   };
 }

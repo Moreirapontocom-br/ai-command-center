@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { AGENT_IDS, POLICY_ACTIONS, type AgentRef, type ApprovalGrant, type PolicyAction, type PolicyActionInfo } from '../../shared/contracts.ts';
+import { AGENT_IDS, POLICY_ACTIONS, type AgentRef, type ApprovalGrant, type ClaudeBridgeCredentialView as BridgeCredentialView, type PolicyAction, type PolicyActionInfo } from '../../shared/contracts.ts';
 import { claudeWorkBranchFor, PRESENTATION_CODE_CHANGE, presentationParamsDigest, type GatewayScopePresentationParams } from '../../shared/approvalPresentation.ts';
 import { approvalBindingDigest } from '../../shared/approvalDigest.ts';
 import type { ApprovalCoordinator } from '../approvals/service.ts';
@@ -12,6 +12,12 @@ import { canonicalJson, sha256Hex } from '../storage/canonical.ts';
 import type { TaskStore } from '../tasks/taskStore.ts';
 import { digestOf, type ContentManager } from './content.ts';
 import {
+  BRIDGE_ACTOR,
+  BRIDGE_LIMITS,
+  BRIDGE_TOKEN_PREFIX,
+  type BridgeCredential,
+  type OrderDelivery,
+  type PrProposal,
   GATEWAY_AGENTS,
   GATEWAY_CAPABILITIES,
   GATEWAY_CHANNELS,
@@ -115,6 +121,11 @@ export interface GatewayServiceOptions {
    * (#022)? Ausente ou com falha → ordens do Claude Code indisponíveis (falha fechada).
    */
   assistedProfileAvailable?: () => boolean;
+  /**
+   * Issue #055: a ponte MCP local está habilitada nesta instância (`ACC_BRIDGE_ENABLED=true`, só em
+   * `ACC_DEPLOYMENT=local`)? Ausente ou com falha → toda operação da ponte é recusada (falha fechada).
+   */
+  bridgeEnabled?: () => boolean;
   /** Apenas para testes: catálogo em que `agent.invoke`/`data.send_external` estão disponíveis. */
   catalog?: Record<PolicyAction, PolicyActionInfo>;
   now?: () => number;
@@ -982,6 +993,86 @@ export function createGateway(options: GatewayServiceOptions) {
     return tx.body as Required<GatewayBody>;
   }
 
+  // ---------- Issue #055: ponte MCP local (conjuntos somente de acréscimo) ----------
+
+  const bext = (body: Readonly<GatewayBody>) => ({
+    credentials: body.bridgeCredentials ?? [],
+    revocations: body.bridgeRevocations ?? [],
+    deliveries: body.orderDeliveries ?? [],
+    proposals: body.prProposals ?? [],
+  });
+  function bridgeIn(tx: GatewayTransaction) {
+    extIn(tx);
+    tx.body.bridgeCredentials ??= [];
+    tx.body.bridgeRevocations ??= [];
+    tx.body.orderDeliveries ??= [];
+    tx.body.prProposals ??= [];
+    return tx.body as Required<GatewayBody>;
+  }
+  const deliveryOf = (body: Readonly<GatewayBody>, orderId: string, kind: OrderDelivery['kind']) => bext(body).deliveries.find((d) => d.orderId === orderId && d.kind === kind) ?? null;
+  const proposalsOf = (body: Readonly<GatewayBody>, orderId: string) => bext(body).proposals.filter((p) => p.orderId === orderId);
+
+  /** Ponte desligada (padrão) ou consulta com falha → recusa (falha fechada). */
+  function bridgeOn() {
+    let on: boolean;
+    try {
+      on = options.bridgeEnabled?.() === true;
+    } catch {
+      on = false;
+    }
+    if (!on) throw new GatewayError('bridge_disabled');
+  }
+
+  function credentialState(body: Readonly<GatewayBody>, c: BridgeCredential): 'active' | 'revoked' | 'expired' {
+    if (bext(body).revocations.some((r) => r.credentialId === c.id)) return 'revoked';
+    const at = now();
+    // Relógio voltou para antes da criação: falha fechada (nunca estende a validade).
+    if (at >= Date.parse(c.expiresAt) || at < Date.parse(c.createdAt) - 60_000) return 'expired';
+    return 'active';
+  }
+
+  /** Credencial ativa mais recente do projeto (ou `null`). */
+  function activeCredentialOf(body: Readonly<GatewayBody>, ownerId: string, projectId: string): BridgeCredential | null {
+    const list = bext(body).credentials.filter((c) => c.ownerId === ownerId && c.projectId === projectId && credentialState(body, c) === 'active');
+    return list[list.length - 1] ?? null;
+  }
+
+  /** Visão da credencial para a pessoa: nunca o token nem o resumo dele. */
+  function credentialView(body: Readonly<GatewayBody>, c: BridgeCredential): BridgeCredentialView {
+    const revocation = bext(body).revocations.find((r) => r.credentialId === c.id) ?? null;
+    return { id: c.id, projectId: c.projectId, agentId: c.agentId, createdAt: c.createdAt, expiresAt: c.expiresAt, state: credentialState(body, c), revokedAt: revocation?.at ?? null, revokedReason: revocation?.reason ?? null };
+  }
+
+  /**
+   * Credencial ATIVA pelo resumo SHA-256 do token (o token nunca chega ao gateway). Desconhecida,
+   * revogada ou vencida → `bridge_unauthorized`, sem distinguir o motivo para quem chama.
+   */
+  function credentialFor(body: Readonly<GatewayBody>, tokenDigest: unknown): BridgeCredential {
+    if (typeof tokenDigest !== 'string' || !/^[0-9a-f]{64}$/.test(tokenDigest)) throw new GatewayError('bridge_unauthorized');
+    const c = bext(body).credentials.find((x) => x.tokenDigest === tokenDigest);
+    if (!c || credentialState(body, c) !== 'active') throw new GatewayError('bridge_unauthorized');
+    return c;
+  }
+
+  /** Idempotência presa à operação, à credencial e à chave; o pedido em si entra no `requestDigest`. */
+  const bridgeKey = (op: 'claim' | 'report', credentialId: string, idempotencyKey: string) => sha256Hex(`acc-bridge:${op}\n${credentialId}\n${idempotencyKey}`);
+  const bridgeRequest = (value: unknown) => sha256Hex(canonicalJson(value));
+
+  /**
+   * Gates VIVOS para o agente, avaliados em toda operação da ponte (inclusive repetições): escopo não
+   * revogado, barreira/kill switch (#011), perfil e habilitação do projeto (#022/D-08.11), tarefa ativa
+   * e atribuída ao agente e política (#020). Devolve o motivo-token da recusa ou `null`.
+   */
+  function agentGate(c: BridgeCredential, scope: GatewayScope & { code: NonNullable<GatewayScope['code']> }): string | null {
+    if (scope.state === 'revoked') return 'scope_revoked';
+    const blocked = blockedReason(scope.projectId);
+    if (blocked) return blocked;
+    if (!profileAvailable() || !projectEnabledFor(c.ownerId, scope.projectId, scope.code.repository)) return 'project_not_enabled';
+    const task = lookupTask(c.ownerId, scope.projectId, scope.taskId, c.agentId);
+    if (task !== 'ok') return task;
+    return precheck(c.ownerId, scope, c.agentId, ORDER_ACTIONS, assistedFactsOf(c.ownerId, scope));
+  }
+
   function orderScope(body: Readonly<GatewayBody>, ownerId: string, projectId: string, orderId: string): (GatewayScope & { code: NonNullable<GatewayScope['code']> }) | null {
     const scope = body.scopes.find((s) => s.code?.orderId === orderId);
     if (!scope || scope.ownerId !== ownerId || scope.projectId !== projectId) return null;
@@ -990,6 +1081,20 @@ export function createGateway(options: GatewayServiceOptions) {
   const orderHandoff = (body: Readonly<GatewayBody>, orderId: string) => body.handoffs.find((h) => h.id === orderId && h.capability === 'code.change') ?? null;
   const markOf = (body: Readonly<GatewayBody>, orderId: string, kind: OrderMark['kind']) => ext(body).orderMarks.find((m) => m.orderId === orderId && m.kind === kind) ?? null;
   const entriesOf = (body: Readonly<GatewayBody>, orderId: string) => ext(body).verifications.filter((v) => v.orderId === orderId);
+
+  /**
+   * Ordem visível para a credencial (Issue #055): do MESMO dono e projeto, do mesmo agente, com
+   * handoff e DISPONIBILIZADA à ponte. Qualquer outra (outro projeto, outro agente, não oferecida)
+   * → `not_found`, sem revelar se existe.
+   */
+  function bridgeOrder(body: Readonly<GatewayBody>, c: BridgeCredential, orderId: unknown) {
+    if (typeof orderId !== 'string' || !UUID.test(orderId)) throw new GatewayError('not_found');
+    const scope = orderScope(body, c.ownerId, c.projectId, orderId);
+    const h = scope ? orderHandoff(body, orderId) : null;
+    const offered = h ? deliveryOf(body, orderId, 'offered') : null;
+    if (!scope || !h || !offered || !scope.agentIds.includes(c.agentId)) throw new GatewayError('not_found');
+    return { scope, h, offered };
+  }
 
   /** Objetivo e critérios: texto curto da pessoa, tratado como DADO (sem controle, sem segredo). */
   function orderText(v: unknown, maxBytes: number): string {
@@ -1188,6 +1293,8 @@ export function createGateway(options: GatewayServiceOptions) {
 
   /** Libera o pacote JÁ preparado à pessoa confirmada (dentro da validade do escopo). */
   async function releaseOrderPackage(ownerId: string, scope: GatewayScope, h: GatewayHandoff, actorId: string): Promise<{ handoff: HandoffView; package: string }> {
+    // Issue #055: ordem disponibilizada à ponte nunca é liberada pelo canal manual (exclusividade).
+    if (deliveryOf(store.body(), h.id, 'offered')) throw new GatewayError('delivery_channel_bridge');
     const problem = scopeProblem(ownerId, scope, { projectId: scope.projectId, taskId: h.taskId, agentId: h.agentId, channel: 'assisted', count: false, actions: ORDER_ACTIONS });
     if (problem) throw new GatewayError(problem);
     const text = await content.read(ownerId, scope.projectId, h.packageContentId);
@@ -1202,6 +1309,97 @@ export function createGateway(options: GatewayServiceOptions) {
       });
     }
     return { handoff: view(orderHandoff(store.body(), h.id)!), package: text };
+  }
+
+  /**
+   * Núcleo do vínculo do PR (dentro da fila de operações, com a pessoa JÁ confirmada por step-up):
+   * usado pelo vínculo manual e pela confirmação de uma proposta da ponte (Issue #055).
+   */
+  async function linkCore(ownerId: string, projectId: string, orderId: string, reference: unknown, actorId: string): Promise<HandoffView> {
+    const scope = orderScope(store.body(), ownerId, projectId, orderId);
+    const h = scope ? orderHandoff(store.body(), orderId) : null;
+    if (!scope || !h) throw new GatewayError('not_found');
+    const ref = typeof reference === 'string' ? reference.trim() : '';
+    if (Buffer.byteLength(ref, 'utf8') > ORDER_LIMITS.referenceBytes || containsSecret(ref)) throw new GatewayError(containsSecret(ref) ? 'secret_detected' : 'pr_reference_invalid');
+    const match = REFERENCE.exec(ref);
+    if (!match || Number(match[3]) > ORDER_LIMITS.maxPrNumber) throw new GatewayError('pr_reference_invalid');
+    const number = Number(match[3]);
+    const sameRepository = `${match[1]}/${match[2]}`.toLowerCase() === scope.code.repository.toLowerCase();
+    const linked = markOf(store.body(), orderId, 'pr_linked');
+    if (linked) {
+      if (!sameRepository || linked.prNumber !== number) throw new GatewayError('pr_already_linked');
+      if (h.state === 'relayed') await finalizeLink(h.id, projectId);
+      return view(orderHandoff(store.body(), orderId)!);
+    }
+    if (h.state !== 'awaiting_relay') throw new GatewayError('invalid_transition');
+    if (now() > Date.parse(h.relayDeadline!)) {
+      await store.commit((tx) => {
+        const current = tx.body.handoffs.find((x) => x.id === orderId)!;
+        Object.assign(current, { state: 'expired', reason: 'relay_window_elapsed', updatedAt: iso() });
+        tx.append(history('gateway.handoff_closed', 'relay_window_elapsed', { projectId, ref: orderId }));
+      });
+      throw new GatewayError('handoff_expired');
+    }
+    if (scope.state === 'revoked') throw new GatewayError('scope_revoked');
+    const blocked = blockedReason(projectId);
+    if (blocked) throw new GatewayError(blocked);
+    if (!projectEnabledFor(ownerId, projectId, scope.code.repository)) throw new GatewayError('project_not_enabled');
+    if (!sameRepository) {
+      await store.commit((tx) => {
+        const current = tx.body.handoffs.find((x) => x.id === orderId)!;
+        if (current.state !== 'awaiting_relay') throw new GatewayError('invalid_transition');
+        Object.assign(current, { state: 'rejected', reason: 'repository_not_allowed', updatedAt: iso() });
+        tx.append(history('gateway.handoff_closed', 'repository_not_allowed', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId }));
+      });
+      throw new GatewayError('repository_not_allowed');
+    }
+    const text = `${scope.code.repository}#${number}`;
+    const result = await content.seal({ id: generateId(), ownerId, projectId, kind: 'relayed_result', sourceId: orderId, text, maxBytes: h.maxOutputBytes });
+    const at = iso();
+    try {
+      await store.commit((tx) => {
+        const body = extIn(tx);
+        const current = body.handoffs.find((x) => x.id === orderId)!;
+        if (current.state !== 'awaiting_relay') throw new GatewayError('invalid_transition');
+        const provenance: GatewayProvenance = {
+          provider: current.agentId,
+          mode: scope.mode,
+          channel: 'assisted',
+          adapter: { ...ASSISTED_ADAPTER },
+          modelReported: null,
+          requestDigest: current.packageDigest,
+          responseDigest: result.digest,
+          startedAt: current.releasedAt!,
+          finishedAt: at,
+          relayedBy: { kind: 'human', id: actorId },
+        };
+        Object.assign(current, { state: 'relayed', reason: 'pr_reference', updatedAt: at, resultContentId: result.id, resultDigest: result.digest, provenance });
+        body.contents.push(result);
+        body.orderMarks.push({ id: generateId(), ownerId, projectId, orderId, kind: 'pr_linked', at, by: actorId, prNumber: number });
+        tx.append(history('gateway.handoff_relayed', 'pr_reference', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId }));
+        tx.append(history('gateway.content_stored', 'relayed_result', { projectId, ref: result.id, detail: `bytes ${result.bytes}` }));
+        tx.append(history('gateway.pr_linked', 'pr_linked', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId, detail: `pr ${number}` }));
+      });
+    } catch (error) {
+      await content.discard(result.id);
+      throw error;
+    }
+    await finalizeLink(orderId, projectId);
+    return view(orderHandoff(store.body(), orderId)!);
+  }
+
+  /**
+   * Ativa o escopo da ordem (consome as aprovações). Duas liberações concorrentes (manual e ponte,
+   * Issue #055) podem tentar ativar o MESMO escopo: se a outra já ativou, segue (a exclusividade de
+   * canal é decidida depois, dentro da fila de operações); qualquer outra falha é repassada.
+   */
+  async function activateOrderScope(ownerId: string, projectId: string, scopeId: string, orderId: string) {
+    try {
+      await service.activateScope(ownerId, projectId, scopeId);
+    } catch (error) {
+      const now = orderScope(store.body(), ownerId, projectId, orderId);
+      if (!now || (now.state !== 'active' && now.state !== 'exhausted')) throw error;
+    }
   }
 
   const VERIFY_IN_FLIGHT = new Set<string>();
@@ -1895,7 +2093,7 @@ export function createGateway(options: GatewayServiceOptions) {
       const actorId = confirmHuman(ownerId, confirm);
       const initial = orderScope(store.body(), ownerId, projectId, orderId);
       if (!initial) throw new GatewayError('not_found');
-      if (initial.state === 'awaiting_approval') await service.activateScope(ownerId, projectId, initial.id);
+      if (initial.state === 'awaiting_approval') await activateOrderScope(ownerId, projectId, initial.id, orderId);
       return serial(async () => {
         assertStore();
         const scope = orderScope(store.body(), ownerId, projectId, orderId)!;
@@ -1939,76 +2137,7 @@ export function createGateway(options: GatewayServiceOptions) {
       return serial(async () => {
         assertStore();
         const actorId = confirmHuman(ownerId, input.confirm);
-        const scope = orderScope(store.body(), ownerId, projectId, orderId);
-        const h = scope ? orderHandoff(store.body(), orderId) : null;
-        if (!scope || !h) throw new GatewayError('not_found');
-        const ref = typeof input.reference === 'string' ? input.reference.trim() : '';
-        if (Buffer.byteLength(ref, 'utf8') > ORDER_LIMITS.referenceBytes || containsSecret(ref)) throw new GatewayError(containsSecret(ref) ? 'secret_detected' : 'pr_reference_invalid');
-        const match = REFERENCE.exec(ref);
-        if (!match || Number(match[3]) > ORDER_LIMITS.maxPrNumber) throw new GatewayError('pr_reference_invalid');
-        const number = Number(match[3]);
-        const sameRepository = `${match[1]}/${match[2]}`.toLowerCase() === scope.code.repository.toLowerCase();
-        const linked = markOf(store.body(), orderId, 'pr_linked');
-        if (linked) {
-          if (!sameRepository || linked.prNumber !== number) throw new GatewayError('pr_already_linked');
-          if (h.state === 'relayed') await finalizeLink(h.id, projectId);
-          return view(orderHandoff(store.body(), orderId)!);
-        }
-        if (h.state !== 'awaiting_relay') throw new GatewayError('invalid_transition');
-        if (now() > Date.parse(h.relayDeadline!)) {
-          await store.commit((tx) => {
-            const current = tx.body.handoffs.find((x) => x.id === orderId)!;
-            Object.assign(current, { state: 'expired', reason: 'relay_window_elapsed', updatedAt: iso() });
-            tx.append(history('gateway.handoff_closed', 'relay_window_elapsed', { projectId, ref: orderId }));
-          });
-          throw new GatewayError('handoff_expired');
-        }
-        if (scope.state === 'revoked') throw new GatewayError('scope_revoked');
-        const blocked = blockedReason(projectId);
-        if (blocked) throw new GatewayError(blocked);
-        if (!projectEnabledFor(ownerId, projectId, scope.code.repository)) throw new GatewayError('project_not_enabled');
-        if (!sameRepository) {
-          await store.commit((tx) => {
-            const current = tx.body.handoffs.find((x) => x.id === orderId)!;
-            if (current.state !== 'awaiting_relay') throw new GatewayError('invalid_transition');
-            Object.assign(current, { state: 'rejected', reason: 'repository_not_allowed', updatedAt: iso() });
-            tx.append(history('gateway.handoff_closed', 'repository_not_allowed', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId }));
-          });
-          throw new GatewayError('repository_not_allowed');
-        }
-        const text = `${scope.code.repository}#${number}`;
-        const result = await content.seal({ id: generateId(), ownerId, projectId, kind: 'relayed_result', sourceId: orderId, text, maxBytes: h.maxOutputBytes });
-        const at = iso();
-        try {
-          await store.commit((tx) => {
-            const body = extIn(tx);
-            const current = body.handoffs.find((x) => x.id === orderId)!;
-            if (current.state !== 'awaiting_relay') throw new GatewayError('invalid_transition');
-            const provenance: GatewayProvenance = {
-              provider: current.agentId,
-              mode: scope.mode,
-              channel: 'assisted',
-              adapter: { ...ASSISTED_ADAPTER },
-              modelReported: null,
-              requestDigest: current.packageDigest,
-              responseDigest: result.digest,
-              startedAt: current.releasedAt!,
-              finishedAt: at,
-              relayedBy: { kind: 'human', id: actorId },
-            };
-            Object.assign(current, { state: 'relayed', reason: 'pr_reference', updatedAt: at, resultContentId: result.id, resultDigest: result.digest, provenance });
-            body.contents.push(result);
-            body.orderMarks.push({ id: generateId(), ownerId, projectId, orderId, kind: 'pr_linked', at, by: actorId, prNumber: number });
-            tx.append(history('gateway.handoff_relayed', 'pr_reference', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId }));
-            tx.append(history('gateway.content_stored', 'relayed_result', { projectId, ref: result.id, detail: `bytes ${result.bytes}` }));
-            tx.append(history('gateway.pr_linked', 'pr_linked', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId, detail: `pr ${number}` }));
-          });
-        } catch (error) {
-          await content.discard(result.id);
-          throw error;
-        }
-        await finalizeLink(orderId, projectId);
-        return view(orderHandoff(store.body(), orderId)!);
+        return linkCore(ownerId, projectId, orderId, input.reference, actorId);
       });
     },
 
@@ -2024,6 +2153,326 @@ export function createGateway(options: GatewayServiceOptions) {
         if (!changed) throw new GatewayError('order_closed');
         return view(orderScope(store.body(), ownerId, projectId, orderId)! as GatewayScope);
       }).finally(() => applyEffects(effects));
+    },
+
+    // ---------- Issue #055: ponte MCP local ----------
+
+    /** Credenciais da ponte do projeto (visões sem o resumo do token), mais recentes por último. */
+    bridgeCredentials(ownerId: string, projectId: string): BridgeCredentialView[] {
+      const body = store.body();
+      return bext(body)
+        .credentials.filter((c) => c.ownerId === ownerId && c.projectId === projectId)
+        .map((c) => credentialView(body, c));
+    },
+
+    /**
+     * Cria a credencial LOCAL da ponte (configuração autorizada): confirmação de configuração do PO
+     * (#011, classe `configuration`, step-up, uso único) presa ao projeto, à credencial, ao agente, à
+     * validade e ao RESUMO do token; reservada para o componente `gateway` e conferida pelo
+     * verificador confiável. Só o resumo é gravado; o token sai uma única vez, nesta resposta. Uma
+     * credencial nova revoga a anterior do mesmo projeto (rotação).
+     */
+    createBridgeCredential(ownerId: string, projectId: string, input: { validityDays: unknown; confirm: HumanConfirm }): Promise<{ credential: BridgeCredentialView; token: string }> {
+      return serial(async () => {
+        assertStore();
+        bridgeOn();
+        const approvals = options.approvals;
+        const verifier = options.approvalVerifier;
+        if (!approvals || typeof approvals.confirmOwner !== 'function') throw new GatewayError('approvals_unavailable');
+        if (!verifier || typeof verifier.verify !== 'function') throw new GatewayError('approval_verifier_unavailable');
+        const ctx = input.confirm?.identity;
+        if (!isPlain(ctx) || typeof ctx.userId !== 'string' || ctx.userId !== ownerId || (AGENT_IDS as readonly string[]).includes(ctx.userId)) throw new GatewayError('identity_mismatch');
+        const days = typeof input.validityDays === 'number' && Number.isSafeInteger(input.validityDays) && input.validityDays >= 1 && input.validityDays <= BRIDGE_LIMITS.credentialMaxDays ? input.validityDays : bad();
+        if (!options.projects.get(ownerId, projectId)) throw new GatewayError('not_found');
+        const setting = settingOf(ownerId, projectId);
+        if (!profileAvailable() || !setting?.enabled || !setting.repository || !projectEnabledFor(ownerId, projectId, setting.repository)) throw new GatewayError('project_not_enabled');
+        const blocked = blockedReason(projectId);
+        if (blocked) throw new GatewayError(blocked);
+        const token = `${BRIDGE_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
+        const tokenDigest = sha256Hex(token);
+        const credentialId = generateId();
+        const at = now();
+        const expiresAt = iso(at + days * 24 * 60 * 60 * 1000);
+        const params = { projectId, credentialId, agentId: 'claude-code' as const, expiresAt, tokenDigest };
+        const presentation = { kind: 'gateway.claude_bridge_credential' as const, params };
+        const binding = {
+          action: 'gateway.claude_bridge_credential' as const,
+          projectId,
+          resource: { type: 'bridge_credential', id: credentialId },
+          target: { sha: null, ref: null },
+          subject: { kind: 'human' as const, id: ctx.userId },
+          paramsDigest: presentationParamsDigest(presentation, sha256Hex),
+          policyVersion: policy.version,
+        };
+        const approval = await approvals.confirmOwner({ ownerId, binding, bindingDigest: approvalBindingDigest(binding), proofId: String(input.confirm.proofId), identity: { userId: ctx.userId, sessionKey: String(ctx.sessionKey) }, presentation });
+        const reservation = await approvals.reserve({ ownerId, approvalId: approval.id, component: 'gateway', binding });
+        const fail = async (code: string): Promise<never> => {
+          await approvals.recordOutcome({ attemptId: reservation.attemptId, outcome: 'failed', reason: code }).catch(() => undefined);
+          throw new GatewayError(code);
+        };
+        const human = reservation.humanApproval;
+        if (!human || human.operation !== binding.action || human.target !== binding.paramsDigest || human.approvedBy.id !== ctx.userId) return fail('approval_invalid');
+        let verification: ReturnType<NonNullable<typeof verifier.verify>>;
+        try {
+          verification = verifier.verify(structuredClone(human));
+        } catch {
+          verification = { authentic: false, reason: 'approval_verification_failed' };
+        }
+        if (!verification.authentic || verification.approverId !== ctx.userId) return fail('approval_not_authentic');
+        const credential: BridgeCredential = { id: credentialId, ownerId, projectId, agentId: 'claude-code', tokenDigest, createdAt: iso(at), createdBy: ctx.userId, expiresAt, approvalId: approval.id };
+        try {
+          await store.commit((tx) => {
+            const b = bridgeIn(tx);
+            if (b.bridgeCredentials.length >= GATEWAY_LIMITS.maxRecords) throw new GatewayError('store_full');
+            for (const old of b.bridgeCredentials) {
+              if (old.ownerId !== ownerId || old.projectId !== projectId || credentialState(tx.body, old) === 'revoked') continue;
+              b.bridgeRevocations.push({ id: generateId(), ownerId, credentialId: old.id, at: iso(), by: ctx.userId, reason: 'rotated' });
+              tx.append(history('gateway.bridge_credential_revoked', 'rotated', { actor: { kind: 'human', id: ctx.userId }, projectId, ref: old.id }));
+            }
+            b.bridgeCredentials.push(credential);
+            tx.append(history('gateway.bridge_credential_created', 'owner_confirmed', { actor: { kind: 'human', id: ctx.userId }, projectId, ref: credentialId, detail: `days ${days}` }));
+          });
+        } catch (error) {
+          return fail(codeOf(error, 'store_write_failed'));
+        }
+        await approvals.recordOutcome({ attemptId: reservation.attemptId, outcome: 'succeeded' }).catch(() => undefined);
+        return { credential: credentialView(store.body(), credential), token };
+      });
+    },
+
+    /** Revogação IMEDIATA (step-up). Revogar uma já revogada não muda nada. Funciona com a ponte desligada. */
+    revokeBridgeCredential(ownerId: string, projectId: string, credentialId: string, confirm: HumanConfirm): Promise<BridgeCredentialView> {
+      return serial(async () => {
+        assertStore();
+        const actorId = confirmHuman(ownerId, confirm);
+        const found = bext(store.body()).credentials.find((c) => c.id === credentialId && c.ownerId === ownerId && c.projectId === projectId);
+        if (!found) throw new GatewayError('not_found');
+        if (credentialState(store.body(), found) !== 'revoked') {
+          await store.commit((tx) => {
+            const b = bridgeIn(tx);
+            if (b.bridgeRevocations.some((r) => r.credentialId === credentialId)) return;
+            b.bridgeRevocations.push({ id: generateId(), ownerId, credentialId, at: iso(), by: actorId, reason: 'revoked_by_owner' });
+            tx.append(history('gateway.bridge_credential_revoked', 'revoked_by_owner', { actor: { kind: 'human', id: actorId }, projectId, ref: credentialId }));
+          });
+        }
+        return credentialView(store.body(), found);
+      });
+    },
+
+    /**
+     * Disponibiliza a ordem ao Claude Code pela ponte (step-up). Consome as aprovações se ainda não,
+     * prepara o pacote e o libera SÓ para o canal da ponte: o pacote não volta nesta resposta e a
+     * ordem deixa de poder ser liberada pelo canal manual (e vice-versa). Repetir não muda nada.
+     */
+    async offerOrder(ownerId: string, projectId: string, orderId: string, confirm: HumanConfirm): Promise<HandoffView> {
+      assertStore();
+      bridgeOn();
+      const actorId = confirmHuman(ownerId, confirm);
+      const initial = orderScope(store.body(), ownerId, projectId, orderId);
+      if (!initial) throw new GatewayError('not_found');
+      if (initial.state === 'awaiting_approval') await activateOrderScope(ownerId, projectId, initial.id, orderId);
+      return serial(async () => {
+        assertStore();
+        bridgeOn();
+        const body = store.body();
+        const scope = orderScope(body, ownerId, projectId, orderId)!;
+        let h = orderHandoff(body, orderId);
+        if (h && deliveryOf(body, orderId, 'offered')) return view(h);
+        if (!activeCredentialOf(body, ownerId, projectId)) throw new GatewayError('bridge_credential_missing');
+        if (h && h.state === 'awaiting_relay') throw new GatewayError('delivery_channel_manual');
+        if (h && h.state !== 'prepared') throw new GatewayError('invalid_transition');
+        if (!h) {
+          if (scope.state !== 'active') throw new GatewayError(scope.state === 'expired' ? 'scope_expired' : scope.state === 'revoked' ? 'scope_revoked' : 'scope_not_active');
+          h = await prepareOrder(ownerId, scope);
+        }
+        const fresh = orderScope(store.body(), ownerId, projectId, orderId)!;
+        const problem = scopeProblem(ownerId, fresh, { projectId, taskId: h.taskId, agentId: h.agentId, channel: 'assisted', count: false, actions: ORDER_ACTIONS });
+        if (problem) throw new GatewayError(problem);
+        const text = await content.read(ownerId, projectId, h.packageContentId);
+        if (digestOf(text) !== h.packageDigest) throw new GatewayError('content_corrupted');
+        const at = now();
+        await store.commit((tx) => {
+          const b = bridgeIn(tx);
+          const current = b.handoffs.find((x) => x.id === orderId)!;
+          if (current.state !== 'prepared' || b.orderDeliveries.some((d) => d.orderId === orderId)) throw new GatewayError('invalid_transition');
+          Object.assign(current, { state: 'awaiting_relay', reason: 'offered_to_bridge', updatedAt: iso(at), releasedAt: iso(at), releasedBy: actorId, relayDeadline: iso(at + GATEWAY_LIMITS.relayWindowMs) });
+          b.orderDeliveries.push({ id: generateId(), ownerId, projectId, orderId, kind: 'offered', at: iso(at), by: actorId, credentialId: null, keyDigest: null, requestDigest: null });
+          tx.append(history('gateway.handoff_released', 'offered_to_bridge', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId }));
+          tx.append(history('gateway.order_offered', 'offered', { actor: { kind: 'human', id: actorId }, projectId, ref: orderId }));
+        });
+        return view(orderHandoff(store.body(), orderId)!);
+      });
+    },
+
+    /** Autenticação da ponte pelo RESUMO do token: dono, projeto e agente vêm SÓ da credencial. */
+    bridgeAuthenticate(tokenDigest: unknown): { credentialId: string; ownerId: string; projectId: string; agentId: 'claude-code'; expiresAt: string } {
+      bridgeOn();
+      assertStore();
+      const c = credentialFor(store.body(), tokenDigest);
+      return { credentialId: c.id, ownerId: c.ownerId, projectId: c.projectId, agentId: c.agentId, expiresAt: c.expiresAt };
+    },
+
+    /**
+     * Ordens que a credencial pode ver: disponibilizadas no projeto dela, ainda aguardando o PR e
+     * não recebidas por OUTRA credencial. Nunca o pacote. `blocked`: motivo-token de um gate vivo.
+     */
+    bridgeOrders(tokenDigest: unknown): Array<{ ownerId: string; projectId: string; orderId: string; repository: string; baseSha: string; workBranch: string; availableUntil: string | null; relayDeadline: string | null; claimId: string | null; blocked: string | null }> {
+      bridgeOn();
+      assertStore();
+      const body = store.body();
+      const c = credentialFor(body, tokenDigest);
+      const out = [];
+      for (const s of body.scopes) {
+        if (!s.code || s.ownerId !== c.ownerId || s.projectId !== c.projectId || !s.agentIds.includes(c.agentId)) continue;
+        const scope = s as GatewayScope & { code: NonNullable<GatewayScope['code']> };
+        const h = orderHandoff(body, scope.code.orderId);
+        if (!h || h.state !== 'awaiting_relay' || !deliveryOf(body, h.id, 'offered')) continue;
+        const claim = deliveryOf(body, h.id, 'claimed');
+        if (claim && claim.credentialId !== c.id) continue;
+        const blocked = agentGate(c, scope) ?? (claim ? null : scopeProblem(c.ownerId, scope, { projectId: scope.projectId, taskId: scope.taskId, agentId: c.agentId, channel: 'assisted', count: false, actions: ORDER_ACTIONS }));
+        out.push({ ownerId: c.ownerId, projectId: c.projectId, orderId: h.id, repository: scope.code.repository, baseSha: scope.code.baseSha, workBranch: scope.code.workBranch, availableUntil: scope.validUntil, relayDeadline: h.relayDeadline, claimId: claim?.id ?? null, blocked });
+      }
+      return out;
+    },
+
+    /**
+     * Recebimento ATÔMICO e persistente da ordem pelo agente. Todos os gates são avaliados a cada
+     * chamada, inclusive na repetição. O pacote só é devolvido DEPOIS de gravado o recebimento, e
+     * uma repetição (mesma credencial, mesma chave, mesmo pedido, até 15 min) devolve o mesmo
+     * recebimento. Outra chave ou outra credencial → `already_claimed`.
+     */
+    bridgeClaim(tokenDigest: unknown, raw: unknown): Promise<{ ownerId: string; projectId: string; orderId: string; claimId: string; replay: boolean; package: string; repository: string; baseSha: string; workBranch: string; relayDeadline: string | null }> {
+      return serial(async () => {
+        assertStore();
+        bridgeOn();
+        const input = exact(raw, ['orderId', 'idempotencyKey']);
+        const idempotencyKey = key(input.idempotencyKey);
+        const body = store.body();
+        const c = credentialFor(body, tokenDigest);
+        const { scope, h } = bridgeOrder(body, c, input.orderId);
+        const orderId = scope.code.orderId;
+        const keyDigest = bridgeKey('claim', c.id, idempotencyKey);
+        const requestDigest = bridgeRequest({ op: 'claim', orderId });
+        const sameKey = bext(body).deliveries.find((d) => d.kind === 'claimed' && d.keyDigest === keyDigest);
+        if (sameKey && sameKey.requestDigest !== requestDigest) throw new GatewayError('idempotency_conflict');
+        const existing = deliveryOf(body, orderId, 'claimed');
+        if (existing && (existing.credentialId !== c.id || existing.keyDigest !== keyDigest)) throw new GatewayError('already_claimed');
+        if (existing && now() - Date.parse(existing.at) > BRIDGE_LIMITS.claimReplayMs) throw new GatewayError('claim_replay_expired');
+        if (h.state !== 'awaiting_relay') throw new GatewayError('order_closed');
+        if (h.relayDeadline === null || now() > Date.parse(h.relayDeadline)) throw new GatewayError('handoff_expired');
+        const problem = agentGate(c, scope) ?? scopeProblem(c.ownerId, scope, { projectId: scope.projectId, taskId: scope.taskId, agentId: c.agentId, channel: 'assisted', count: false, actions: ORDER_ACTIONS });
+        if (problem) {
+          await refusal(scope.projectId, orderId, problem, 'bridge claim');
+          throw new GatewayError(problem);
+        }
+        const text = await content.read(c.ownerId, scope.projectId, h.packageContentId);
+        if (digestOf(text) !== h.packageDigest) throw new GatewayError('content_corrupted');
+        let claimId = existing?.id ?? null;
+        if (!existing) {
+          const id = generateId();
+          const at = iso();
+          await store.commit((tx) => {
+            const b = bridgeIn(tx);
+            // Revalidação dentro da transação (nada muda entre a leitura e a gravação).
+            credentialFor(tx.body, tokenDigest);
+            if (b.orderDeliveries.some((d) => d.orderId === orderId && d.kind === 'claimed')) throw new GatewayError('already_claimed');
+            if (b.handoffs.find((x) => x.id === orderId)!.state !== 'awaiting_relay') throw new GatewayError('order_closed');
+            b.orderDeliveries.push({ id, ownerId: c.ownerId, projectId: scope.projectId, orderId, kind: 'claimed', at, by: c.agentId, credentialId: c.id, keyDigest, requestDigest });
+            if (!b.orderMarks.some((m) => m.orderId === orderId && m.kind === 'forwarded')) {
+              b.orderMarks.push({ id: generateId(), ownerId: c.ownerId, projectId: scope.projectId, orderId, kind: 'forwarded', at, by: c.agentId, prNumber: null });
+            }
+            tx.append(history('gateway.order_claimed', 'claimed', { actor: BRIDGE_ACTOR, projectId: scope.projectId, ref: orderId, detail: `credential ${c.id}` }));
+          });
+          claimId = id;
+        }
+        return { ownerId: c.ownerId, projectId: scope.projectId, orderId, claimId: claimId!, replay: existing !== null, package: text, repository: scope.code.repository, baseSha: scope.code.baseSha, workBranch: scope.code.workBranch, relayDeadline: h.relayDeadline };
+      });
+    },
+
+    /**
+     * PR PROPOSTO pelo agente (nunca vínculo). Exige o recebimento desta credencial, a referência do
+     * repositório da ordem e todos os gates vivos. Referência de outro repositório é só recusada (não
+     * encerra a ordem: o agente não decide o destino dela). Mesma chave e mesmo pedido → a mesma proposta.
+     */
+    bridgeReportPr(tokenDigest: unknown, raw: unknown): Promise<{ ownerId: string; projectId: string; orderId: string; proposal: PrProposal; replay: boolean; repository: string }> {
+      return serial(async () => {
+        assertStore();
+        bridgeOn();
+        const input = exact(raw, ['orderId', 'claimId', 'pullRequest', 'idempotencyKey']);
+        const idempotencyKey = key(input.idempotencyKey);
+        const body = store.body();
+        const c = credentialFor(body, tokenDigest);
+        const { scope, h } = bridgeOrder(body, c, input.orderId);
+        const orderId = scope.code.orderId;
+        const claim = deliveryOf(body, orderId, 'claimed');
+        if (!claim || claim.id !== input.claimId || claim.credentialId !== c.id) throw new GatewayError('claim_invalid');
+        const ref = typeof input.pullRequest === 'string' ? input.pullRequest.trim() : '';
+        if (Buffer.byteLength(ref, 'utf8') > ORDER_LIMITS.referenceBytes) throw new GatewayError('pr_reference_invalid');
+        if (containsSecret(ref)) throw new GatewayError('secret_detected');
+        const match = REFERENCE.exec(ref);
+        if (!match || Number(match[3]) > ORDER_LIMITS.maxPrNumber) throw new GatewayError('pr_reference_invalid');
+        if (`${match[1]}/${match[2]}`.toLowerCase() !== scope.code.repository.toLowerCase()) throw new GatewayError('repository_not_allowed');
+        const prNumber = Number(match[3]);
+        if (h.state !== 'awaiting_relay') throw new GatewayError(markOf(body, orderId, 'pr_linked') ? 'pr_already_linked' : 'order_closed');
+        if (h.relayDeadline === null || now() > Date.parse(h.relayDeadline)) throw new GatewayError('handoff_expired');
+        const problem = agentGate(c, scope);
+        if (problem) {
+          await refusal(scope.projectId, orderId, problem, 'bridge report');
+          throw new GatewayError(problem);
+        }
+        const keyDigest = bridgeKey('report', c.id, idempotencyKey);
+        const requestDigest = bridgeRequest({ op: 'report', orderId, claimId: claim.id, prNumber });
+        const proposals = proposalsOf(body, orderId);
+        const sameKey = bext(body).proposals.find((p) => p.keyDigest === keyDigest);
+        if (sameKey) {
+          if (sameKey.requestDigest !== requestDigest) throw new GatewayError('idempotency_conflict');
+          return { ownerId: c.ownerId, projectId: scope.projectId, orderId, proposal: view(sameKey), replay: true, repository: scope.code.repository };
+        }
+        const latest = proposals[proposals.length - 1];
+        if (latest && latest.prNumber === prNumber) return { ownerId: c.ownerId, projectId: scope.projectId, orderId, proposal: view(latest), replay: true, repository: scope.code.repository };
+        if (proposals.length >= BRIDGE_LIMITS.maxProposals) throw new GatewayError('proposal_limit');
+        const proposal: PrProposal = { id: generateId(), ownerId: c.ownerId, projectId: scope.projectId, orderId, credentialId: c.id, claimId: claim.id, prNumber, keyDigest, requestDigest, at: iso() };
+        await store.commit((tx) => {
+          const b = bridgeIn(tx);
+          credentialFor(tx.body, tokenDigest);
+          if (b.handoffs.find((x) => x.id === orderId)!.state !== 'awaiting_relay') throw new GatewayError('order_closed');
+          if (b.prProposals.filter((p) => p.orderId === orderId).length >= BRIDGE_LIMITS.maxProposals) throw new GatewayError('proposal_limit');
+          b.prProposals.push(proposal);
+          tx.append(history('gateway.pr_proposed', 'awaiting_owner_confirmation', { actor: BRIDGE_ACTOR, projectId: scope.projectId, ref: orderId, detail: `pr ${prNumber}` }));
+        });
+        return { ownerId: c.ownerId, projectId: scope.projectId, orderId, proposal: view(proposal), replay: false, repository: scope.code.repository };
+      });
+    },
+
+    /** Ordem vista pela credencial (para a consulta de situação). Recebida por OUTRA credencial → `not_found`. */
+    bridgeOrderRef(tokenDigest: unknown, orderId: unknown): { ownerId: string; projectId: string; orderId: string; claimId: string | null; blocked: string | null } {
+      bridgeOn();
+      assertStore();
+      const body = store.body();
+      const c = credentialFor(body, tokenDigest);
+      const { scope } = bridgeOrder(body, c, orderId);
+      const claim = deliveryOf(body, scope.code.orderId, 'claimed');
+      if (claim && claim.credentialId !== c.id) throw new GatewayError('not_found');
+      return { ownerId: c.ownerId, projectId: c.projectId, orderId: scope.code.orderId, claimId: claim?.id ?? null, blocked: agentGate(c, scope) };
+    },
+
+    /**
+     * Confirmação do PR PROPOSTO pelo PO (step-up): só a proposta MAIS RECENTE pode ser confirmada, e
+     * o vínculo usa o mesmo núcleo do vínculo manual (validação estrutural, janela, barreira, habilitação).
+     */
+    confirmProposal(ownerId: string, projectId: string, orderId: string, proposalId: unknown, confirm: HumanConfirm): Promise<HandoffView> {
+      return serial(async () => {
+        assertStore();
+        const actorId = confirmHuman(ownerId, confirm);
+        const body = store.body();
+        const scope = orderScope(body, ownerId, projectId, orderId);
+        if (!scope || !orderHandoff(body, orderId)) throw new GatewayError('not_found');
+        const list = proposalsOf(body, orderId);
+        if (typeof proposalId !== 'string' || !list.some((p) => p.id === proposalId)) throw new GatewayError('not_found');
+        const latest = list[list.length - 1];
+        if (latest.id !== proposalId) throw new GatewayError('proposal_superseded');
+        return linkCore(ownerId, projectId, orderId, `${scope.code.repository}#${latest.prNumber}`, actorId);
+      });
     },
 
     /**
@@ -2194,6 +2643,15 @@ export function createGateway(options: GatewayServiceOptions) {
         await store.commit((tx) => {
           extIn(tx).projectSettings.push(setting);
           tx.append(history('gateway.project_enablement', 'disabled', { actor: { kind: 'human', id: actorId }, projectId }));
+          // Issue #055: desabilitar o projeto revoga as credenciais da ponte dele.
+          if ((tx.body.bridgeCredentials ?? []).length > 0) {
+            const b = bridgeIn(tx);
+            for (const c of b.bridgeCredentials) {
+              if (c.ownerId !== ownerId || c.projectId !== projectId || b.bridgeRevocations.some((r) => r.credentialId === c.id)) continue;
+              b.bridgeRevocations.push({ id: generateId(), ownerId, credentialId: c.id, at: iso(), by: actorId, reason: 'project_disabled' });
+              tx.append(history('gateway.bridge_credential_revoked', 'project_disabled', { actor: { kind: 'human', id: actorId }, projectId, ref: c.id }));
+            }
+          }
           for (const scope of tx.body.scopes as GatewayScope[]) {
             if (scope.ownerId === ownerId && scope.projectId === projectId && scope.code) closeOrderIn(tx, scope, 'project_disabled', { kind: 'human', id: actorId }, effects);
           }
@@ -2218,6 +2676,11 @@ export function createGateway(options: GatewayServiceOptions) {
           handoff: orderHandoff(body, s.code!.orderId) ? view(orderHandoff(body, s.code!.orderId)!) : null,
           marks: ext(body).orderMarks.filter((m) => m.orderId === s.code!.orderId).map((m) => view(m)),
           verifications: entriesOf(body, s.code!.orderId).map((v) => view(v)),
+          // Issue #055: entregas pela ponte e PRs propostos (sem resumos de chave nem de pedido).
+          deliveries: bext(body)
+            .deliveries.filter((d) => d.orderId === s.code!.orderId)
+            .map((d) => ({ id: d.id, kind: d.kind, at: d.at, by: d.by, credentialId: d.credentialId })),
+          proposals: proposalsOf(body, s.code!.orderId).map((p) => ({ id: p.id, prNumber: p.prNumber, at: p.at, credentialId: p.credentialId, claimId: p.claimId })),
         }));
     },
 

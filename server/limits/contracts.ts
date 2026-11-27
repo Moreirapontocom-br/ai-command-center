@@ -158,10 +158,11 @@ export type CancellationResult = 'cancelled' | 'not_supported' | 'failed';
  */
 export interface HumanApproval {
   id: string;
-  operation: 'limits.change' | 'killswitch.release' | 'gateway.claude_project_enable';
+  operation: 'limits.change' | 'killswitch.release' | 'gateway.claude_project_enable' | 'gateway.claude_bridge_credential';
   /**
    * `limits.change`: impressão digital dos novos limites. `killswitch.release`: `global` ou id do
    * projeto. `gateway.claude_project_enable` (Issue #008): resumo dos parâmetros (projeto + repositório).
+   * `gateway.claude_bridge_credential` (Issue #055): resumo dos parâmetros da credencial da ponte.
    */
   target: string;
   approvedBy: { kind: 'human'; id: string };

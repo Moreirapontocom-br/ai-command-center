@@ -20,6 +20,8 @@ export const SECRET_PATTERNS = Object.freeze([
   { id: 'private-key', label: 'chave privada PEM', regex: /^\s*-----BEGIN [A-Z ]*PRIVATE KEY-----\s*$/g },
   { id: 'private-key', label: 'chave privada PEM', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\\r)?\\n[A-Za-z0-9+/=]{20,}/g },
   { id: 'aws-access-key', label: 'chave de acesso AWS', regex: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
+  // Issue #055: token local da ponte MCP do ACC (`accb_` + 43 caracteres base64url).
+  { id: 'acc-bridge-token', label: 'token da ponte MCP do ACC', regex: /\baccb_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g },
 ]);
 
 /** Variáveis que nunca podem ter valor preenchido em arquivos de exemplo (`.env.example`). */

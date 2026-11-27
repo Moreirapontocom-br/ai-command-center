@@ -38,6 +38,7 @@ import type { SnapshotService } from '../snapshotService.ts';
 import { APPROVAL_POST_ROUTES, approvalMethods, approvalRouteName, createApprovalRoutes, isApprovalPath, type ApprovalsRuntime } from './approvalRoutes.ts';
 import { CLAUDE_ORDER_POST_ROUTES, claudeOrderMethods, claudeOrderRouteName, createClaudeOrderRoutes, isClaudeOrderPath } from './claudeOrderRoutes.ts';
 import type { ClaudeOrders } from '../gateway/orders.ts';
+import { BRIDGE_ROUTE, createMcpBridge, type McpBridgeDeps } from './mcpBridge.ts';
 import { createRateLimiter } from './rateLimiter.ts';
 
 export interface AppDeps {
@@ -70,6 +71,11 @@ export interface AppDeps {
    * gateway não configurado — as rotas respondem indisponível e o restante do ACC funciona.
    */
   claudeOrders?: { orders: ClaudeOrders; status: () => { state: string; reason: string | null } } | null;
+  /**
+   * Ponte MCP local (Issue #055). Ausente ou `null`: desligada (padrão) — `/mcp` responde 404 e
+   * nada mais muda. Tem pipeline e autenticação PRÓPRIOS (`server/http/mcpBridge.ts`).
+   */
+  bridge?: McpBridgeDeps['bridge'];
   logger: Logger;
   now?: () => number;
 }
@@ -624,7 +630,9 @@ export function createRequestHandler(deps: AppDeps) {
     audit: deps.audit,
     allowedRepositories: deps.config.allowedRepositories,
     logger: deps.logger,
+    bridgeEndpoint: deps.bridge ? `http://127.0.0.1:${deps.config.port}${BRIDGE_ROUTE}` : null,
   });
+  const mcpBridge = createMcpBridge({ bridge: deps.bridge ?? null, port: deps.config.port, audit: deps.audit, logger: deps.logger, now: deps.now });
   const claudeOrderIo = { readJsonBody, sendJson, assertOnlyParams, enforce };
 
   const limiter = createRateLimiter({ limit: deps.config.rateLimitPerMinute, windowMs: 60_000, now: deps.now });
@@ -640,6 +648,14 @@ export function createRequestHandler(deps: AppDeps) {
     try {
       const url = new URL(req.url ?? '/', 'http://internal');
       pathname = url.pathname;
+
+      // Issue #055: a ponte MCP tem pipeline e autenticação PRÓPRIOS (nunca a sessão/CSRF do
+      // administrador). Fica FORA de `/api`: o proxy do Vite não a encaminha a partir do navegador.
+      if (pathname === BRIDGE_ROUTE) {
+        if (url.search !== '') fail('bad_request');
+        await mcpBridge.handle(req, res);
+        return;
+      }
 
       const methods = allowedMethods(pathname);
       if (!methods.includes(req.method ?? '')) {

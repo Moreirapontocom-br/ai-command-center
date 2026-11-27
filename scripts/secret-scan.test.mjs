@@ -24,6 +24,8 @@ describe('regras de detecção', () => {
     ['token OAuth do gh', fakeOAuth(), 'github-token'],
     ['token clássico', `ghp_${alnum(36)}`, 'github-token'],
     ['chave AWS', `AKIA${alnum(16).toUpperCase().replace(/[^A-Z0-9]/g, 'Q')}`, 'aws-access-key'],
+    // Issue #055: token local da ponte MCP do ACC.
+    ['token da ponte MCP do ACC', `accb_${randomBytes(32).toString('base64url')}`, 'acc-bridge-token'],
   ])('detecta %s em qualquer arquivo', (_name, value, rule) => {
     const findings = scanLine(`const x = "${value}";`, { path: 'src/qualquer.ts', lineNumber: 7 });
     expect(findings.map((f) => f.rule)).toContain(rule);

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { POLICY_ACTIONS, type ClaudeOrderView } from '../../shared/contracts.ts';
 import { createClaudeOrders, type ClaudeOrders } from '../gateway/orders.ts';
+import { publicOrderCode } from '../http/claudeOrderRoutes.ts';
 import type { GatewayServiceOptions } from '../gateway/service.ts';
 import { GitHubReadError, type CompareRead, type MainHeadRead, type PullRequestRead, type PullRequestReaderPort, type PullRequestSnapshot } from '../github/prTypes.ts';
 import { createGatewayStack, PROJECT, TASK, TASK_B, type GatewayStack } from './gatewayFixtures.ts';
@@ -132,6 +133,7 @@ export async function createOrderStack(options: { gateway?: Partial<GatewayServi
         .list(ownerId)
         .filter((a) => a.binding.resource.type === 'gateway_scope' && a.binding.resource.id === scopeId)
         .map((a) => ({ id: a.id, action: a.binding.action, state: a.state })),
+    publicCode: (code) => publicOrderCode(code),
     now: () => g.s.h.clock.now,
   });
   const stack: OrderStack = {

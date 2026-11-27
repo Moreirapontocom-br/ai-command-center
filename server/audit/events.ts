@@ -179,23 +179,51 @@ export function validateEventLog(raw: unknown, dropped: unknown, sequence: Audit
 }
 
 /**
+ * Operação do registro final da liberação da barreira global (Issue #008). Igual a
+ * `RELEASE_OPERATION` de `server/admin/journal.ts` (igualdade fixada em teste; literal aqui para a
+ * auditoria não importar o comando administrativo).
+ */
+export const PRESERVED_RELEASE_OPERATION = 'barrier_release_global';
+
+/**
+ * Eventos que a retenção NUNCA descarta (fechamento da #008, C1): o registro final de sucesso da
+ * liberação da barreira global. O cruzamento #011 × #006 (`server/admin/consistency.ts`) exige esse
+ * registro para sempre; se a retenção pudesse apagá-lo, uma lacuna verdadeira ficaria igual a um
+ * descarte legítimo. São no máximo um por liberação aplicada (só `initial_install` é liberável, uma
+ * vez por linhagem), então o custo é desprezível diante do limite.
+ */
+export function isPreservedEvent(event: StoredAuditEvent): boolean {
+  return event.action === 'approval.configuration' && event.outcome === 'success' && event.context.operation === PRESERVED_RELEASE_OPERATION;
+}
+
+/**
  * Retenção: mantém no máximo `max` eventos. Primeiro descarta os mais antigos de clientes não
  * autenticados (`actor.id === 'anonymous'`), para que ruído externo não empurre para fora o
- * histórico atribuível; depois, os mais antigos em geral. O total descartado fica registrado.
+ * histórico atribuível; depois, os mais antigos em geral. Eventos preservados (`isPreservedEvent`)
+ * nunca são descartados: se só restarem eles, o registro fica acima de `max` em vez de perdê-los.
+ * O total efetivamente descartado fica registrado.
  */
 export function applyRetention(log: EventLog, max: number) {
   let excess = log.events.length - max;
   if (excess <= 0) return;
-  log.droppedEvents += excess;
   const kept: StoredAuditEvent[] = [];
   for (const event of log.events) {
-    if (excess > 0 && event.actor.kind === 'system' && event.actor.id === 'anonymous') {
+    if (excess > 0 && event.actor.kind === 'system' && event.actor.id === 'anonymous' && !isPreservedEvent(event)) {
       excess -= 1;
       continue;
     }
     kept.push(event);
   }
-  log.events = excess > 0 ? kept.slice(excess) : kept;
+  const result: StoredAuditEvent[] = [];
+  for (const event of kept) {
+    if (excess > 0 && !isPreservedEvent(event)) {
+      excess -= 1;
+      continue;
+    }
+    result.push(event);
+  }
+  log.droppedEvents += log.events.length - result.length;
+  log.events = result;
 }
 
 /** Converte para o formato público (sem `ownerId`), como cópia. */

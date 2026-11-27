@@ -3,10 +3,12 @@
  * Issue #008, P1: comando local de liberação da barreira global inicial (matriz F, itens 1–21).
  * Armazenamentos reais em diretórios temporários; nenhum servidor, rede, agente ou provedor.
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { hostname, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { bindingDigest } from '../approvals/binding.ts';
 import { APPROVAL_TTL_MS, ApprovalError, RECEIPT_TTL_MS, STEP_UP_TTL_MS } from '../approvals/contracts.ts';
@@ -23,6 +25,7 @@ import { openQueueStore } from '../queue/store.ts';
 import { REAL_EXECUTION_ENABLED } from '../sandbox/contracts.ts';
 import { deriveSubkey, QUEUE_KEY_DOMAIN } from '../storage/subkeys.ts';
 import { TEST_ADMIN_PASSWORD, testPasswordHash } from '../test/authFixtures.ts';
+import { checkReleaseAudit } from './consistency.ts';
 import { acquireInstanceLock, adminReleasePending, INSTANCE_LOCK_FILES } from './instance.ts';
 import { JOURNAL_FILE, readJournal } from './journal.ts';
 import { defaultJournalOps } from './journal.ts';
@@ -449,7 +452,7 @@ describe('F9 — falha de armazenamento da #011', () => {
     ['histórico', 'approvals-history.json', 'interrupted', null],
     ['ledger', LEDGER_FILE, 'interrupted', null],
     ['anchor', ANCHOR_FILE, 'reconciled', 'released_on_disk'],
-  ])('falha ao gravar o %s na liberação → store degradado; reconciliação determinística', async (_name, file, reason, disk) => {
+  ])('falha ao gravar o %s na liberação → INDETERMINADO (código 4); reconciliação determinística', async (_name, file, reason, disk) => {
     const t = await setup();
     let armed = false;
     const approvalsWriteFile = async (path: string, content: string) => {
@@ -457,11 +460,47 @@ describe('F9 — falha de armazenamento da #011', () => {
       return writeFileAtomic(path, content);
     };
     const result = await t.run({}, { approvalsWriteFile, checkpoint: (p) => void (p === 'P8' ? (armed = true) : undefined) });
-    expect(result).toMatchObject({ exitCode: 1, outcome: 'pending', reason: 'store_write_failed' });
+    // L1: a gravação começou e falhou; o comando não afirma "não liberada" (no anchor, ela foi).
+    expect(result).toEqual({ exitCode: 4, outcome: 'indeterminate', reason: 'store_write_failed' });
+    expect(await adminReleasePending(t.dirs.data)).toBe(true);
     const state = await t.inspect();
     if (disk) expect(state.global).toBeNull(); // ledger gravado, anchor não: a abertura aceita a geração seguinte.
     else expect(state.global).toMatchObject({ reason: 'initial_install' });
     expect(await t.run()).toMatchObject({ exitCode: 0, outcome: 'reconciled', reason });
+    // Recuperação idempotente: o cruzamento fica consistente e a reconciliação repetida não grava nada.
+    expect((await facts(t)).check.state).toBe('consistent');
+    const before = (await t.audit()).length;
+    const again = await t.run();
+    expect(again.reason).toBe(disk ? 'no_global_barrier' : 'released');
+    if (disk) expect((await t.audit()).length).toBe(before);
+  });
+});
+
+describe('L1 — falha comprovada × resultado incerto', () => {
+  it('recusa do núcleo ANTES de gravar (recibo vencido) → NÃO LIBERADA (código 1), nunca indeterminado', async () => {
+    const t = await setup();
+    const result = await t.run({}, { checkpoint: (p) => void (p === 'P8' ? t.advance(RECEIPT_TTL_MS + 1_000) : undefined) });
+    expect(result.exitCode).toBe(1);
+    expect(result.outcome).toBe('pending');
+    expect(result.reason).not.toBe('store_write_failed');
+    expect((await t.inspect()).global).toMatchObject({ reason: 'initial_install' });
+    expect(await t.run()).toMatchObject({ exitCode: 0, outcome: 'reconciled', reason: 'interrupted' });
+    expect(await t.run()).toMatchObject({ exitCode: 0, outcome: 'released' });
+  });
+
+  it('releitura contradiz o commit (store ilegível na reabertura) → INDETERMINADO; nada é afirmado nem reconciliado sozinho', async () => {
+    const t = await setup();
+    const result = await t.run({}, { checkpoint: async (p) => { if (p === 'P10') await writeFile(join(t.dirs.ledger, LEDGER_FILE), '{adulterado'); } });
+    expect(result).toEqual({ exitCode: 4, outcome: 'indeterminate', reason: 'release_not_durable' });
+    expect(await adminReleasePending(t.dirs.data)).toBe(true);
+    expect(await t.run()).toMatchObject({ exitCode: 1 });
+    expect(await t.journalExists()).toBe(true);
+    expect((await t.audit()).filter((e) => e.action === 'approval.configuration')).toEqual([]);
+  });
+
+  it('queda depois do commit continua código 3 (a liberação foi confirmada pelo núcleo)', async () => {
+    const t = await setup();
+    expect(await t.run({}, t.crashAt('P9'))).toMatchObject({ exitCode: 3, outcome: 'audit_pending' });
   });
 });
 
@@ -649,5 +688,261 @@ describe('F17/F19/F20 — reacionamento, nenhuma execução e as aprovações da
     expect(await runBarrierRelease({ config: { ...t.config, admin: null }, env: t.env, prompt })).toMatchObject({ reason: 'admin_not_configured' });
     expect(await runBarrierRelease({ config: { ...t.config, approvals: { state: 'disabled' } }, env: t.env, prompt })).toMatchObject({ reason: 'approvals_disabled' });
     expect((await t.inspect()).global).toMatchObject({ reason: 'initial_install' });
+  });
+});
+
+// ── L3: cruzamento #011 × #006 ─────────────────────────────────────────────────────────────────
+
+type AuditDoc = { format: string; version: number; events: Array<Record<string, unknown> & { seq: number; at: string; context: Record<string, unknown>; resource: { type: string; id: string | null }; actor: { kind: string; id: string } }>; droppedEvents: number };
+
+/** Lê os fatos (#011 e #006) e o veredito do cruzamento, como o servidor faz na subida. */
+async function facts(t: Setup, dataDir = t.dirs.data) {
+  const store = await t.openStore();
+  const history = structuredClone(store.history());
+  await store.close();
+  const audit = JSON.parse(await readFile(join(dataDir, 'audit.json'), 'utf8')) as AuditDoc;
+  const check = checkReleaseAudit(history, { events: audit.events as never, droppedEvents: audit.droppedEvents });
+  return { history, audit, check, releases: releaseEvents(history.items.filter((i): i is HistoryEntry => i.kind === 'entry')) };
+}
+
+async function editAudit(t: Setup, edit: (doc: AuditDoc) => void, dataDir = t.dirs.data) {
+  const path = join(dataDir, 'audit.json');
+  const doc = JSON.parse(await readFile(path, 'utf8')) as AuditDoc;
+  edit(doc);
+  await writeFile(path, `${JSON.stringify(doc, null, 2)}\n`);
+}
+
+const finalRecord = (doc: AuditDoc) => doc.events.find((e) => e.action === 'approval.configuration' && e.outcome === 'success')!;
+/** Cópia de um evento com novo id e próximo seq (o arquivo exige ids únicos e seq crescente). */
+const cloneEvent = (doc: AuditDoc, base: AuditDoc['events'][number], change: (e: AuditDoc['events'][number]) => void) => {
+  const copy = structuredClone(base);
+  copy.id = randomUUID();
+  copy.seq = doc.events[doc.events.length - 1].seq + 1;
+  change(copy);
+  doc.events.push(copy);
+};
+
+describe('L3 — cruzamento #011 × #006 (identidade, escopo e correlação)', () => {
+  it('instalação nova e histórico legítimo sem liberação → consistente (compatibilidade)', async () => {
+    const t = await setup();
+    await mkdir(t.dirs.data, { recursive: true });
+    // Primeira execução recusada (frase errada) grava só eventos de confirmação: nada a cruzar.
+    await t.run({ phrase: 'errada' });
+    await engage(t, 'manual');
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 0 });
+  });
+
+  it('liberação completa → consistente; reinicializações sucessivas não mudam o veredito', async () => {
+    const t = await setup();
+    await t.run();
+    for (let i = 0; i < 3; i += 1) expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+  });
+
+  it('registro final ausente (diário apagado) → missing; o comando reconcilia pelos fatos; a repetição não duplica nem libera', async () => {
+    const t = await setup();
+    await t.run({}, t.crashAt('P11'));
+    await rm(join(t.dirs.data, JOURNAL_FILE));
+    expect(await adminReleasePending(t.dirs.data)).toBe(false); // o diário sumiu...
+    const gap = await facts(t);
+    expect(gap.check).toMatchObject({ state: 'missing', missing: [{ seq: gap.releases[0].seq }] }); // ...mas o cruzamento vê
+    for (let i = 0; i < 2; i += 1) expect((await facts(t)).check.state).toBe('missing'); // reinícios: continua pendente
+    expect(await t.run()).toEqual({ exitCode: 0, outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    const finals = (await t.audit()).filter((e) => e.action === 'approval.configuration');
+    expect(finals).toHaveLength(1);
+    expect(finals[0]).toMatchObject({ outcome: 'success', context: { operation: OP, reason: 'reconciled_from_facts', seq: gap.releases[0].seq } });
+    // Reconciliação repetida: nada mais a fazer; nenhum registro novo; nenhuma aprovação criada.
+    const before = await t.inspect();
+    expect(await t.run()).toMatchObject({ exitCode: 1, reason: 'no_global_barrier' });
+    expect((await t.audit()).filter((e) => e.action === 'approval.configuration')).toHaveLength(1);
+    expect((await t.inspect()).approvals.length).toBe(before.approvals.length);
+  });
+
+  it('diário apagado numa operação INTERROMPIDA antes da liberação → consistente; a próxima execução libera normalmente', async () => {
+    const t = await setup();
+    await t.run({}, t.crashAt('P7'));
+    await rm(join(t.dirs.data, JOURNAL_FILE));
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 0 });
+    expect(await t.run()).toMatchObject({ exitCode: 0, outcome: 'released' });
+  });
+
+  it.each([
+    ['seq trocado com a mesma aprovação', (e: AuditDoc['events'][number]) => void (e.context.seq = (e.context.seq as number) + 1)],
+    ['ator agente', (e: AuditDoc['events'][number]) => void (e.actor = { kind: 'agent', id: 'admin' })],
+    ['outro dono', (e: AuditDoc['events'][number]) => void (e.ownerId = 'outro')],
+    ['tipo de recurso trocado', (e: AuditDoc['events'][number]) => void (e.resource.type = 'project')],
+    ['com projeto', (e: AuditDoc['events'][number]) => void (e.projectId = randomUUID())],
+    ['resultado de falha', (e: AuditDoc['events'][number]) => void (e.outcome = 'failure')],
+  ])('registro da MESMA aprovação adulterado (%s) → inconsistente; o comando recusa sem gravar e sem liberar', async (_name, tamper) => {
+    const t = await setup();
+    await t.run();
+    await editAudit(t, (doc) => tamper(finalRecord(doc)));
+    expect((await facts(t)).check).toEqual({ state: 'inconsistent', reason: 'audit_record_mismatch' });
+    await engage(t, 'manual');
+    const count = (await t.audit()).length;
+    expect(await t.run()).toMatchObject({ exitCode: 1, outcome: 'refused', reason: 'consistency_audit_record_mismatch' });
+    expect((await t.audit()).length).toBe(count);
+    expect((await t.inspect()).global).toMatchObject({ reason: 'manual' });
+  });
+
+  it('registro de OUTRA aprovação com seq coincidente → ignorado: não valida (missing); o comando grava o correto e o outro continua sem validar', async () => {
+    const t = await setup();
+    await t.run();
+    await editAudit(t, (doc) => void (finalRecord(doc).resource.id = randomUUID()));
+    expect((await facts(t)).check.state).toBe('missing');
+    expect(await t.run()).toEqual({ exitCode: 0, outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    expect((await t.audit()).filter((e) => e.action === 'approval.configuration')).toHaveLength(2);
+  });
+
+  it('registro duplicado → inconsistente (nunca gravado pela reconciliação idempotente)', async () => {
+    const t = await setup();
+    await t.run();
+    await editAudit(t, (doc) => cloneEvent(doc, finalRecord(doc), () => undefined));
+    expect((await facts(t)).check).toEqual({ state: 'inconsistent', reason: 'audit_record_duplicate' });
+    expect(await t.run()).toMatchObject({ exitCode: 1, reason: 'consistency_audit_record_duplicate' });
+  });
+
+  it.each([
+    ['anterior', -86_400_000],
+    ['posterior (relógio adiantado na linhagem antiga)', 3_600_000],
+  ])('registro de outra linhagem com seq coincidente, %s à liberação → não conta e não bloqueia', async (_name, offset) => {
+    const t = await setup();
+    await t.run({}, t.crashAt('P11'));
+    await rm(join(t.dirs.data, JOURNAL_FILE));
+    const { releases } = await facts(t);
+    await editAudit(t, (doc) => {
+      const base = doc.events.find((e) => e.action === 'approval.confirmation')!;
+      cloneEvent(doc, base, (e) => {
+        e.action = 'approval.configuration';
+        e.resource = { type: 'approval', id: randomUUID() };
+        e.context = { operation: OP, seq: releases[0].seq };
+        e.at = new Date(Date.parse(releases[0].at) + offset).toISOString();
+      });
+    });
+    expect((await facts(t)).check.state).toBe('missing');
+    expect(await t.run()).toMatchObject({ outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    expect((await facts(t)).check.state).toBe('consistent');
+  });
+
+  it('C1: registro final ausente continua missing mesmo com descarte e só eventos posteriores (sem tolerância à retenção)', async () => {
+    const t = await setup();
+    await t.run();
+    const { releases } = await facts(t);
+    await editAudit(t, (doc) => {
+      doc.events = doc.events.filter((e) => e.action !== 'approval.configuration');
+      for (const e of doc.events) e.at = new Date(Date.parse(releases[0].at) + 60_000).toISOString();
+      doc.droppedEvents = 45_000;
+    });
+    expect((await facts(t)).check.state).toBe('missing');
+    expect(await t.run()).toMatchObject({ outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+  });
+
+  it('C2: relógio atrasado e depois adiantado → registro conta pela aprovação; reconciliações sucessivas não duplicam', async () => {
+    const t = await setup();
+    await t.run({}, t.crashAt('P11'));
+    await rm(join(t.dirs.data, JOURNAL_FILE));
+    const { releases } = await facts(t);
+    t.clock.wall -= 3_600_000; // relógio volta 1 h: o registro fica "anterior" à liberação
+    expect(await t.run()).toEqual({ exitCode: 0, outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    const finals = () => t.audit().then((events) => events.filter((e) => e.action === 'approval.configuration'));
+    expect(Date.parse((await finals())[0].at)).toBeLessThan(Date.parse(releases[0].at));
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    for (const jump of [0, 7_200_000, 86_400_000]) {
+      t.clock.wall += jump; // relógio corrigido e adiantado
+      expect(await t.run()).toMatchObject({ exitCode: 1, reason: 'no_global_barrier' });
+      expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    }
+    expect(await finals()).toHaveLength(1);
+  });
+
+  it('falha de leitura (auditoria malformada em memória) → inconsistente; auditoria ilegível no disco → o comando recusa', async () => {
+    const t = await setup();
+    await t.run();
+    const { history } = await facts(t);
+    expect(checkReleaseAudit(history, { events: null as never, droppedEvents: 0 })).toEqual({ state: 'inconsistent', reason: 'check_failed' });
+    expect(checkReleaseAudit({ items: null as never }, { events: [], droppedEvents: 0 })).toEqual({ state: 'inconsistent', reason: 'check_failed' });
+    await writeFile(join(t.dirs.data, 'audit.json'), '{ilegível');
+    expect(await t.run()).toMatchObject({ exitCode: 1, reason: 'data_files_unavailable' });
+  });
+
+  it('divergência entre diretórios: outro ACC_DATA_DIR sobre as MESMAS aprovações vê a lacuna e reconcilia na própria #006', async () => {
+    const t = await setup();
+    await t.run();
+    const otherData = join(t.root, 'data-b');
+    const configB: ServerConfig = { ...loadConfig({ ...t.env, ACC_DATA_DIR: otherData }), admin: t.config.admin };
+    const prompt: ReleasePrompt = { show: () => undefined, password: async () => TEST_ADMIN_PASSWORD, line: async () => phraseFor(t.lineage) };
+    const runB = () => runBarrierRelease({ config: configB, env: { ...t.env, ACC_DATA_DIR: otherData }, prompt, now: () => t.clock.wall, monotonicNow: () => t.clock.mono });
+    expect(await adminReleasePending(otherData)).toBe(false);
+    expect(await runB()).toEqual({ exitCode: 0, outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    expect((await facts(t, otherData)).check).toEqual({ state: 'consistent', releases: 1 });
+    expect((await facts(t)).check).toEqual({ state: 'consistent', releases: 1 });
+    expect(await runB()).toMatchObject({ exitCode: 1, reason: 'no_global_barrier' });
+  });
+});
+
+const freePort = () =>
+  new Promise<number>((done, fail) => {
+    const s = createServer();
+    s.once('error', fail);
+    s.listen(0, '127.0.0.1', () => {
+      const port = (s.address() as { port: number }).port;
+      s.close(() => done(port));
+    });
+  });
+
+/** Servidor real (processo filho, loopback, sem credenciais) sobre os diretórios do teste. */
+async function startServer(t: Setup, dataDir = t.dirs.data) {
+  const cwd = await mkdtemp(join(tmpdir(), 'acc-l3-cwd-'));
+  roots.push(cwd);
+  const env: Record<string, string> = { ...t.env, ACC_DATA_DIR: dataDir, API_PORT: String(await freePort()) };
+  for (const name of ['PATH', 'Path', 'SystemRoot', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']) if (process.env[name]) env[name] = process.env[name]!;
+  const child: ChildProcess = spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', resolve('server/index.ts')], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout!.on('data', (c) => (output += c));
+  child.stderr!.on('data', (c) => (output += c));
+  const exited = new Promise<void>((r) => child.once('exit', () => r()));
+  const started = await new Promise<boolean>((r) => {
+    const timer = setInterval(() => {
+      if (output.includes('Servidor iniciado')) {
+        clearInterval(timer);
+        r(true);
+      }
+    }, 25);
+    void exited.then(() => {
+      clearInterval(timer);
+      r(false);
+    });
+  });
+  child.kill('SIGKILL');
+  await exited;
+  return { started, output };
+}
+
+describe('L3 — servidor real: aprovações indisponíveis enquanto houver lacuna', { timeout: 90_000 }, () => {
+  it('lacuna (diário apagado) → admin_reconcile_pending; adulteração → admin_audit_inconsistent; conciliado → aprovações abertas', async () => {
+    const t = await setup();
+    await t.run({}, t.crashAt('P11'));
+    await rm(join(t.dirs.data, JOURNAL_FILE));
+
+    const gap = await startServer(t);
+    expect(gap.started).toBe(true);
+    expect(gap.output).toContain('admin_reconcile_pending');
+    expect(gap.output).not.toContain('approvals_opened');
+
+    // Outro ACC_DATA_DIR sobre as mesmas aprovações: a lacuna também aparece (não depende do diário).
+    const other = await startServer(t, join(t.root, 'data-b'));
+    expect(other.output).toContain('admin_reconcile_pending');
+
+    expect(await t.run()).toMatchObject({ outcome: 'reconciled', reason: 'reconciled_from_facts' });
+    const ok = await startServer(t);
+    expect(ok.output).toContain('approvals_opened');
+    expect(ok.output).not.toContain('admin_reconcile_pending');
+
+    await editAudit(t, (doc) => void (finalRecord(doc).context.seq = 999_999));
+    const bad = await startServer(t);
+    expect(bad.output).toContain('admin_audit_inconsistent');
+    expect(bad.output).not.toContain('approvals_opened');
   });
 });

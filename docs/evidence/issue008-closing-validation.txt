@@ -1,0 +1,45 @@
+Issue #008 — PR de fechamento (L1, L3, L2): validação local
+Data: 2026-11-26 · Base: main 3718703580a073ac099e2aced94ed51338acad36 · Branch: feature/008-closing
+Ambiente: Windows 11, Node v24.18.1, checkout com core.autocrlf=true
+
+Baseline (main 3718703, antes das alterações)
+  npx vitest run → 1460 testes: 1459 ok, 1 falha conhecida (scripts/main-audit.test.mjs, CRLF do checkout)
+
+Com as alterações
+  npx vitest run → Tests  1 failed | 1477 passed (1478)
+                   Test Files  1 failed | 70 passed (71)
+                   falha única: scripts/main-audit.test.mjs (mesma falha de CRLF da baseline; arquivo não alterado)
+  testes novos: 18 (1460 → 1478); F9 ajustado para o código 4 (L1)
+  npx vitest run server/admin server/security.test.ts → todos ok
+  npx eslint . → limpo
+  npx tsc -b / npm run build → ok
+  npm run check:secrets (dist) → nenhuma credencial
+  npm run check:csp → compatível com a CSP de produção
+  node scripts/check-secrets.mjs tracked → nenhuma credencial
+
+Restrições
+  Nenhuma execução contra dados reais; nenhuma liberação de barreira; .env.local não lido nem alterado;
+  nenhum arquivo de server/approvals/ (núcleo #011) alterado; throttle.ts (L2) inalterado;
+  sem merge; PR #52 não tocado; #009/#010 não iniciadas; sem APIs pagas; R$ 0.
+
+CI do PR: registrada no próprio PR (três checks obrigatórios).
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+Correções C1–C4 (validação final R1–R3; autorizadas pelo PO) · base 6bf2a2b9f6caf1d32832712b1fb0bcf0514c27e9
+  npx vitest run → Tests  1 failed | 1506 passed (1507)
+                   Test Files  1 failed | 71 passed (72)
+                   falha única: scripts/main-audit.test.mjs (CRLF do checkout; idem baseline)
+  comparação: baseline main 1460 → 6bf2a2b 1478 → C1–C4 1507 (+29: 26 em consistency.test.ts, +3 líquidos em releaseBarrier.test.ts)
+  npx eslint . / npx tsc -b / npm run build → ok
+  check:secrets (dist) / check:csp / check-secrets tracked → ok
+  núcleo #011 (server/approvals/) e throttle.ts → inalterados
+
+Sonda R1–R3 (consistency.ts com fatos sintéticos), antes (6bf2a2b) → depois (C1–C2):
+  R1.c sem registro final + 45.000 eventos              consistent            → missing
+  R2.a registro final gravado com relógio atrasado     missing               → consistent
+  R2.b/c reconciliações repetidas (2–3 registros)       missing/consistent    → não ocorrem (R2.a já é consistente);
+                                                                                se existirem por adulteração: audit_record_duplicate
+  R2.d linhagem antiga, seq igual, relógio adiantado    inconsistent          → consistent (ignorada)
+  R3.a outra aprovação com seq igual                    inconsistent          → missing (ignorada; não valida)
+  R3.b seq errado / R3.c falha da mesma aprovação       mismatch / missing    → mismatch / mismatch
+  R3.d sem attempt_succeeded / R3.e outra ação          uncorrelated / unexpected (inalterados)

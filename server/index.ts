@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname } from 'node:path';
+import { ADMIN_AUDIT_INCONSISTENT, checkReleaseAudit, ReleaseAuditGap } from './admin/consistency.ts';
 import { acquireInstanceLock, ADMIN_RECONCILE_PENDING, adminReleasePending } from './admin/instance.ts';
 import { createPasswordConfirmer, createStepUpRegistry } from './approvals/identity.ts';
 import { createEnvKeyProvider, createFileKeyProvider } from './approvals/keyProvider.ts';
@@ -131,6 +132,17 @@ if (releasePending) {
       environment,
       initialize: settings.initialize,
     });
+    // Cruzamento #011 × #006 da liberação administrativa (Issue #008, fechamento — L3): não depende
+    // do diário nem de `ACC_DATA_DIR`. Liberação sem registro final correlacionado, ou registro
+    // contraditório → aprovações INDISPONÍVEIS (nega tudo) até o comando reconciliar/humano decidir.
+    if (approvalStore.status().state === 'available') {
+      const consistency = audit ? checkReleaseAudit(approvalStore.history(), audit.log()) : ({ state: 'inconsistent', reason: 'check_failed' } as const);
+      if (consistency.state !== 'consistent') {
+        await approvalStore.close().catch(() => undefined);
+        approvalStore = null;
+        throw new ReleaseAuditGap(consistency.state === 'missing' ? ADMIN_RECONCILE_PENDING : ADMIN_AUDIT_INCONSISTENT);
+      }
+    }
     const identity = createStepUpRegistry({
       confirmers: [createPasswordConfirmer(config.admin ? { userId: ADMIN_USER_ID, passwordHash: config.admin.passwordHash } : null)],
     });
@@ -151,9 +163,13 @@ if (releasePending) {
       },
       onError: (reason) => logger.log('warn', 'Falha na manutenção das aprovações', { event: 'approvals_maintenance_failed', reason }),
     });
-  } catch {
+  } catch (error) {
     approvals = null;
-    logger.log('error', 'Aprovações indisponíveis: falha ao abrir o armazenamento.', { event: 'approvals_open_failed' });
+    if (error instanceof ReleaseAuditGap) {
+      logger.log('warn', 'Aprovações indisponíveis: liberação administrativa sem registro conciliado na auditoria (npm run admin:release-barrier; docs/BARRIER_RELEASE.md).', { event: 'approvals_unavailable', reason: error.reason });
+    } else {
+      logger.log('error', 'Aprovações indisponíveis: falha ao abrir o armazenamento.', { event: 'approvals_open_failed' });
+    }
   }
 }
 

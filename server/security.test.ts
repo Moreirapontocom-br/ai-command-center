@@ -260,6 +260,8 @@ describe('superfície de escrita do servidor', () => {
     // PR 2: só estes pontos revisados usam o núcleo — a configuração/abertura do servidor, as rotas
     // de decisão do administrador e os componentes que pedem/consomem aprovações (#021/#022).
     expect(filesMatching(server.filter((f) => !f.path.startsWith('server/approvals/')), /approvals\/(service|store|identity|keyProvider|lock|paths|documents|binding|canonical|contracts|maintenance|presentation)/).sort()).toEqual([
+      // Issue #008 (fechamento, L3): cruzamento PURO #011 × #006 (só o TIPO do histórico).
+      'server/admin/consistency.ts',
       // Issue #008 (P1): o comando LOCAL de liberação da barreira inicial (nunca uma rota; N9 emendado).
       'server/admin/releaseBarrier.ts',
       // Issue #028 (I1): só o TIPO `ApprovalCoordinator` (pedido, reserva de uso único e resultado).
@@ -516,6 +518,7 @@ describe('Issue #008, P1 — comando local de liberação da barreira global (N9
 
   it('arquivos fixos; sem rede, subprocesso, HTTP, eval nem execução', () => {
     expect(admin.map((f) => f.path).sort()).toEqual([
+      'server/admin/consistency.ts',
       'server/admin/instance.ts',
       'server/admin/journal.ts',
       'server/admin/releaseBarrier.ts',
@@ -549,6 +552,7 @@ describe('Issue #008, P1 — comando local de liberação da barreira global (N9
       '../storage/lock.ts',
       '../storage/subkeys.ts',
       '../tasks/taskStore.ts',
+      './consistency.ts',
       './instance.ts',
       './journal.ts',
       './throttle.ts',
@@ -560,13 +564,18 @@ describe('Issue #008, P1 — comando local de liberação da barreira global (N9
     expect(importsOf('server/admin/instance.ts')).toEqual(['../storage/errors.ts', '../storage/lock.ts', './journal.ts', 'node:fs/promises']);
     expect(importsOf('server/admin/journal.ts')).toEqual(['../storage/jsonFile.ts', 'node:fs/promises', 'node:path']);
     expect(importsOf('server/admin/throttle.ts')).toEqual(['./journal.ts', 'node:path']);
+    // L3: o cruzamento é PURO (nenhum acesso a arquivo, núcleo só por tipo): só decide, nunca grava.
+    expect(importsOf('server/admin/consistency.ts')).toEqual(['../approvals/documents.ts', '../audit/events.ts', '../auth/adminAuth.ts', './journal.ts']);
+    expect(code('server/admin/consistency.ts')).toMatch(/^import type \{[^}]*\} from '\.\.\/approvals\/documents\.ts';$/m);
+    expect(code('server/admin/consistency.ts')).toMatch(/^import type \{[^}]*\} from '\.\.\/audit\/events\.ts';$/m);
+    expect(code('server/admin/consistency.ts')).not.toMatch(/node:|\.append\(|\.commit\(|writeFile|releaseBarrier|engageBarrier|confirmOwner|reserve\(/);
   });
 
-  it('nenhuma rota: POST_ROUTES sem liberação; nada em http/ importa admin/; o servidor só usa o lock e o diário', () => {
+  it('nenhuma rota: POST_ROUTES sem liberação; nada em http/ importa admin/; o servidor só usa o lock, o diário e o cruzamento', () => {
     expect(POST_ROUTES.some((route) => /kill|barrier|release|unlock|admin/.test(route))).toBe(false);
     expect(filesMatching(server.filter((f) => f.path.startsWith('server/http/')), /admin\//)).toEqual([]);
     expect(filesMatching(server.filter((f) => !f.path.startsWith('server/admin/')), /from '[^']*admin\//)).toEqual(['server/index.ts']);
-    expect([...code('server/index.ts').matchAll(/from '(\.\/admin\/[^']+)'/g)].map((m) => m[1])).toEqual(['./admin/instance.ts']);
+    expect([...code('server/index.ts').matchAll(/from '(\.\/admin\/[^']+)'/g)].map((m) => m[1])).toEqual(['./admin/consistency.ts', './admin/instance.ts']);
     expect(code('server/index.ts')).not.toMatch(/releaseBarrier|runBarrierRelease|releaseBarrierCli/);
     // Só o comando (e o núcleo, que a define) chama `releaseBarrier`.
     expect(filesMatching(stripComments(server).filter((f) => !f.path.startsWith('server/test/')), /\.releaseBarrier\(/)).toEqual(['server/admin/releaseBarrier.ts']);
@@ -582,6 +591,10 @@ describe('Issue #008, P1 — comando local de liberação da barreira global (N9
     expect(index).toMatch(/approvalStore\?\.close\(\)\]\)\s*\.then\(\(\) => instanceLock\.release\(\)\)/);
     // Diário pendente: as aprovações nem são abertas.
     expect(index.indexOf('adminReleasePending(dataDir)')).toBeLessThan(index.indexOf('openApprovalStore('));
+    // L3: o cruzamento roda DEPOIS de abrir o store e ANTES de criar o serviço (sem serviço → nega tudo).
+    const checkAt = index.indexOf('checkReleaseAudit(approvalStore.history(), audit.log())');
+    expect(checkAt).toBeGreaterThan(index.indexOf('openApprovalStore('));
+    expect(checkAt).toBeLessThan(index.indexOf('createApprovalService('));
   });
 
   it('tripwire #022: ninguém entrega `controllerKillSwitch` ao serviço de aprovações em produção', () => {
